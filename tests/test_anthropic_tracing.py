@@ -6,7 +6,7 @@ Strategy:
   from test_otel.py's global OTel provider.
 - respx intercepts the underlying httpx calls so no real API traffic is sent.
 
-Requires: pip install anthropic  (not yet in pyproject.toml — see PR #1).
+Requires: anthropic (added as a dev dependency in pyproject.toml).
 """
 
 import pytest
