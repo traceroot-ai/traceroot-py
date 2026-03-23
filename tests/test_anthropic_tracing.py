@@ -158,11 +158,12 @@ def test_basic_message_creates_span(anthropic_exporter):
     span = finished[0]
     assert span.name == "messages.create"
     assert span.attributes.get(OI_SPAN_KIND) == LLM_KIND
+    assert span.attributes.get(LLM_PROVIDER) == "anthropic"
 
 
 @respx.mock
 def test_message_captures_model_and_tokens(anthropic_exporter):
-    """Span attributes include the model name and prompt/completion token counts."""
+    """Span attributes include the model name, token counts, and raw input/output values."""
     respx.post("https://api.anthropic.com/v1/messages").mock(
         return_value=Response(200, json=_SIMPLE_RESPONSE)
     )
@@ -178,6 +179,8 @@ def test_message_captures_model_and_tokens(anthropic_exporter):
     assert span.attributes.get(LLM_MODEL_NAME) == "claude-3-5-sonnet-20241022"
     assert span.attributes.get(LLM_TOKEN_COUNT_PROMPT) == 10
     assert span.attributes.get(LLM_TOKEN_COUNT_COMPLETION) == 8
+    assert "Hello" in span.attributes.get(INPUT_VALUE, "")
+    assert "Hello! How can I help you?" in span.attributes.get(OUTPUT_VALUE, "")
 
 
 @respx.mock
