@@ -31,6 +31,7 @@ class Integration(StrEnum):
     GROQ = "groq"
     DSPY = "dspy"
     GOOGLE_ADK = "google_adk"
+    MISTRAL = "mistral"
 
 
 # Maps Integration enum ->
@@ -100,6 +101,11 @@ _BUILTIN_REGISTRY: dict[Integration, tuple[str, str, str]] = {
         "google-adk",
         "openinference.instrumentation.google_adk",
         "GoogleADKInstrumentor",
+    ),
+    Integration.MISTRAL: (
+        "mistralai",
+        "openinference.instrumentation.mistralai",
+        "MistralAIInstrumentor",
     ),
 }
 
