@@ -2,6 +2,10 @@
   "permissions": {
     "defaultMode": "bypassPermissions"
   },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_FORK_SUBAGENT": "1"
+  },
   "hooks": {
     "PostToolUse": [
       {
@@ -15,5 +19,9 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "superpowers@claude-plugins-official": true,
+    "code-simplifier@claude-plugins-official": true
   }
 }
