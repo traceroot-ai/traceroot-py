@@ -1,8 +1,8 @@
 """Tests for auto-instrumentation registry and initialization."""
 
-import pytest
 from unittest.mock import MagicMock, patch
 
+import pytest
 from opentelemetry.sdk.trace import TracerProvider
 
 import traceroot
