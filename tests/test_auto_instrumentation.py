@@ -1,11 +1,13 @@
 """Tests for auto-instrumentation registry and initialization."""
 
+import pytest
 from unittest.mock import MagicMock, patch
 
 from opentelemetry.sdk.trace import TracerProvider
 
 import traceroot
 from tests.utils import reset_traceroot
+from traceroot.instrumentation._instrumentors import AutogenInstrumentor, PydanticAIInstrumentor
 from traceroot.instrumentation.registry import (
     Integration,
     _is_package_installed,
@@ -26,6 +28,7 @@ def test_integration_enum_values():
     assert Integration.CREWAI == "crewai"
     assert Integration.LLAMA_INDEX == "llama_index"
     assert Integration.DSPY == "dspy"
+    assert Integration.PYDANTIC_AI == "pydantic_ai"
 
 
 def test_integration_exported_from_traceroot():
@@ -488,3 +491,141 @@ def test_mistral_missing_warns_and_skips(mock_installed, caplog):
     assert result == []
     assert "skipping" in caplog.text
     assert "mistralai" in caplog.text
+
+
+# =============================================================================
+# Pydantic AI integration
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def reset_custom_instrumentors():
+    """Reset adapter instrumentor flags before and after each test."""
+    AutogenInstrumentor._instrumented = False
+    PydanticAIInstrumentor._instrumented = False
+    yield
+    AutogenInstrumentor._instrumented = False
+    PydanticAIInstrumentor._instrumented = False
+
+
+def test_pydantic_ai_integration_enum_value():
+    assert Integration.PYDANTIC_AI == "pydantic_ai"
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_pydantic_ai_skipped_if_not_installed(mock_installed, caplog):
+    import logging
+
+    mock_installed.return_value = False
+
+    provider = TracerProvider()
+    with caplog.at_level(logging.WARNING, logger="traceroot.instrumentation.registry"):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.PYDANTIC_AI],
+        )
+
+    assert result == []
+    assert "skipping" in caplog.text
+    assert "pydantic-ai" in caplog.text
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_pydantic_ai_installs_processor_and_calls_instrument_all(mock_installed):
+    import sys
+
+    mock_installed.return_value = True
+
+    mock_processor = MagicMock()
+    mock_processor_cls = MagicMock(return_value=mock_processor)
+    mock_agent_cls = MagicMock()
+
+    provider = MagicMock(spec=TracerProvider)
+
+    # Pass sys.modules (the object) not "sys.modules" (a string) so patch.dict
+    # doesn't try to resolve it via importlib and hit an unrelated mock.
+    with patch.dict(
+        sys.modules,
+        {
+            "openinference.instrumentation.pydantic_ai": MagicMock(
+                OpenInferenceSpanProcessor=mock_processor_cls
+            ),
+            "pydantic_ai": MagicMock(Agent=mock_agent_cls),
+        },
+    ):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.PYDANTIC_AI],
+        )
+
+    assert result == [Integration.PYDANTIC_AI]
+    mock_processor_cls.assert_called_once_with()
+    provider.add_span_processor.assert_called_once_with(mock_processor)
+    mock_agent_cls.instrument_all.assert_called_once_with()
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_pydantic_ai_idempotent(mock_installed):
+    """Calling initialize_integrations twice must not add the processor twice."""
+    import sys
+
+    mock_installed.return_value = True
+
+    mock_processor = MagicMock()
+    mock_processor_cls = MagicMock(return_value=mock_processor)
+    mock_agent_cls = MagicMock()
+
+    provider = MagicMock(spec=TracerProvider)
+
+    with patch.dict(
+        sys.modules,
+        {
+            "openinference.instrumentation.pydantic_ai": MagicMock(
+                OpenInferenceSpanProcessor=mock_processor_cls
+            ),
+            "pydantic_ai": MagicMock(Agent=mock_agent_cls),
+        },
+    ):
+        initialize_integrations(provider, [Integration.PYDANTIC_AI])
+        initialize_integrations(provider, [Integration.PYDANTIC_AI])
+
+    assert provider.add_span_processor.call_count == 1
+    assert mock_agent_cls.instrument_all.call_count == 1
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_pydantic_ai_can_be_requested_with_other_integrations(mock_installed):
+    import sys
+
+    mock_installed.return_value = True
+
+    mock_oi_processor = MagicMock()
+    mock_agent_cls = MagicMock()
+    mock_openai_instrumentor = MagicMock()
+    mock_openai_cls = MagicMock(return_value=mock_openai_instrumentor)
+
+    provider = MagicMock(spec=TracerProvider)
+
+    # Inject all third-party modules via sys.modules so importlib.import_module
+    # finds them via the cache without importing or patching the function itself.
+    # traceroot.instrumentation._instrumentors is our own module and imports normally.
+    with patch.dict(
+        sys.modules,
+        {
+            "openinference.instrumentation.openai": MagicMock(OpenAIInstrumentor=mock_openai_cls),
+            "openinference.instrumentation.pydantic_ai": MagicMock(
+                OpenInferenceSpanProcessor=MagicMock(return_value=mock_oi_processor)
+            ),
+            "pydantic_ai": MagicMock(Agent=mock_agent_cls),
+        },
+    ):
+        result = initialize_integrations(
+            provider,
+            [Integration.OPENAI, Integration.PYDANTIC_AI],
+        )
+
+    assert Integration.OPENAI in result
+    assert Integration.PYDANTIC_AI in result
+    mock_openai_instrumentor.instrument.assert_called_once_with(tracer_provider=provider)
+    provider.add_span_processor.assert_called_once_with(mock_oi_processor)
+    mock_agent_cls.instrument_all.assert_called_once_with()

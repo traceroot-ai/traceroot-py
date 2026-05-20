@@ -37,6 +37,7 @@ dependencies = [
     "openinference-instrumentation-llama-index>=4.0.0,<5.0",
     "openinference-instrumentation-autogen>=0.1.10,<1.0",
     "openinference-instrumentation-google-adk>=0.1.10,<1.0",
+    "openinference-instrumentation-pydantic-ai>=0.1.15,<1.0",
 ]
 
 [project.optional-dependencies]
