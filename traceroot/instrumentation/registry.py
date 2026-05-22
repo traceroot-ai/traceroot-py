@@ -6,6 +6,7 @@ import importlib
 import importlib.metadata
 import logging
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
@@ -32,80 +33,101 @@ class Integration(StrEnum):
     DSPY = "dspy"
     GOOGLE_ADK = "google_adk"
     MISTRAL = "mistral"
+    PYDANTIC_AI = "pydantic_ai"
 
 
-# Maps Integration enum ->
-# (library to detect, instrumentor module path, instrumentor class name)
-_BUILTIN_REGISTRY: dict[Integration, tuple[str, str, str]] = {
-    Integration.OPENAI: (
-        "openai",
-        "openinference.instrumentation.openai",
-        "OpenAIInstrumentor",
+@dataclass
+class InstrumentorEntry:
+    """Registry entry: import module_path, get class_name, call .instrument()."""
+
+    package: str
+    module_path: str
+    class_name: str
+    # Alternative package names that also provide this integration (e.g. slim variants).
+    # The integration is considered available if *any* of package or alt_packages is installed.
+    alt_packages: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def all_packages(self) -> tuple[str, ...]:
+        return (self.package,) + self.alt_packages
+
+
+_BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
+    Integration.OPENAI: InstrumentorEntry(
+        package="openai",
+        module_path="openinference.instrumentation.openai",
+        class_name="OpenAIInstrumentor",
     ),
-    Integration.ANTHROPIC: (
-        "anthropic",
-        "openinference.instrumentation.anthropic",
-        "AnthropicInstrumentor",
+    Integration.ANTHROPIC: InstrumentorEntry(
+        package="anthropic",
+        module_path="openinference.instrumentation.anthropic",
+        class_name="AnthropicInstrumentor",
     ),
-    Integration.LANGCHAIN: (
-        "langchain",
-        "openinference.instrumentation.langchain",
-        "LangChainInstrumentor",
+    Integration.LANGCHAIN: InstrumentorEntry(
+        package="langchain",
+        module_path="openinference.instrumentation.langchain",
+        class_name="LangChainInstrumentor",
     ),
-    Integration.GOOGLE_GENAI: (
-        "google-genai",
-        "openinference.instrumentation.google_genai",
-        "GoogleGenAIInstrumentor",
+    Integration.GOOGLE_GENAI: InstrumentorEntry(
+        package="google-genai",
+        module_path="openinference.instrumentation.google_genai",
+        class_name="GoogleGenAIInstrumentor",
     ),
-    Integration.CREWAI: (
-        "crewai",
-        "openinference.instrumentation.crewai",
-        "CrewAIInstrumentor",
+    Integration.CREWAI: InstrumentorEntry(
+        package="crewai",
+        module_path="openinference.instrumentation.crewai",
+        class_name="CrewAIInstrumentor",
     ),
-    Integration.OPENAI_AGENTS: (
-        "openai-agents",
-        "openinference.instrumentation.openai_agents",
-        "OpenAIAgentsInstrumentor",
+    Integration.OPENAI_AGENTS: InstrumentorEntry(
+        package="openai-agents",
+        module_path="openinference.instrumentation.openai_agents",
+        class_name="OpenAIAgentsInstrumentor",
     ),
-    Integration.CLAUDE_AGENT_SDK: (
-        "claude-agent-sdk",
-        "openinference.instrumentation.claude_agent_sdk",
-        "ClaudeAgentSDKInstrumentor",
+    Integration.CLAUDE_AGENT_SDK: InstrumentorEntry(
+        package="claude-agent-sdk",
+        module_path="openinference.instrumentation.claude_agent_sdk",
+        class_name="ClaudeAgentSDKInstrumentor",
     ),
-    Integration.LLAMA_INDEX: (
-        "llama-index-core",
-        "openinference.instrumentation.llama_index",
-        "LlamaIndexInstrumentor",
+    Integration.LLAMA_INDEX: InstrumentorEntry(
+        package="llama-index-core",
+        module_path="openinference.instrumentation.llama_index",
+        class_name="LlamaIndexInstrumentor",
     ),
-    Integration.AUTOGEN: (
-        "ag2",
-        "openinference.instrumentation.autogen",
-        "AutogenInstrumentor",
+    Integration.AUTOGEN: InstrumentorEntry(
+        package="ag2",
+        module_path="traceroot.instrumentation._instrumentors",
+        class_name="AutogenInstrumentor",
     ),
-    Integration.AGNO: (
-        "agno",
-        "openinference.instrumentation.agno",
-        "AgnoInstrumentor",
+    Integration.AGNO: InstrumentorEntry(
+        package="agno",
+        module_path="openinference.instrumentation.agno",
+        class_name="AgnoInstrumentor",
     ),
-    Integration.GROQ: (
-        "groq",
-        "openinference.instrumentation.groq",
-        "GroqInstrumentor",
+    Integration.GROQ: InstrumentorEntry(
+        package="groq",
+        module_path="openinference.instrumentation.groq",
+        class_name="GroqInstrumentor",
     ),
-    Integration.DSPY: (
-        "dspy",
-        "openinference.instrumentation.dspy",
-        "DSPyInstrumentor",
+    Integration.DSPY: InstrumentorEntry(
+        package="dspy",
+        module_path="openinference.instrumentation.dspy",
+        class_name="DSPyInstrumentor",
     ),
-    Integration.GOOGLE_ADK: (
-        "google-adk",
-        "openinference.instrumentation.google_adk",
-        "GoogleADKInstrumentor",
+    Integration.GOOGLE_ADK: InstrumentorEntry(
+        package="google-adk",
+        module_path="openinference.instrumentation.google_adk",
+        class_name="GoogleADKInstrumentor",
     ),
-    Integration.MISTRAL: (
-        "mistralai",
-        "openinference.instrumentation.mistralai",
-        "MistralAIInstrumentor",
+    Integration.MISTRAL: InstrumentorEntry(
+        package="mistralai",
+        module_path="openinference.instrumentation.mistralai",
+        class_name="MistralAIInstrumentor",
+    ),
+    Integration.PYDANTIC_AI: InstrumentorEntry(
+        package="pydantic-ai",
+        alt_packages=("pydantic-ai-slim",),
+        module_path="traceroot.instrumentation._instrumentors",
+        class_name="PydanticAIInstrumentor",
     ),
 }
 
@@ -131,45 +153,36 @@ def initialize_integrations(
 
     Returns:
         List of Integration values that were successfully instrumented.
-
-    Raises:
-        ImportError: If a requested library is not installed.
     """
     instrumented: list[Integration] = []
 
     for instrument in integrations:
-        library, module_path, class_name = _BUILTIN_REGISTRY[instrument]
+        entry = _BUILTIN_REGISTRY[instrument]
 
-        if not _is_package_installed(library):
+        if not any(_is_package_installed(p) for p in entry.all_packages):
+            all_pkgs = entry.all_packages
+            pkg_label = (
+                f"'{all_pkgs[0]}'"
+                if len(all_pkgs) == 1
+                else " or ".join(f"'{p}'" for p in all_pkgs)
+            )
             logger.warning(
-                "traceroot: skipping %s integration — '%s' is not installed. "
+                "traceroot: skipping %s integration — %s is not installed. "
                 "Install it with: pip install %s",
                 instrument.value,
-                library,
-                library,
+                pkg_label,
+                all_pkgs[0],
             )
             continue
 
         try:
-            module = importlib.import_module(module_path)
-            instrumentor_cls = getattr(module, class_name)
+            module = importlib.import_module(entry.module_path)
+            instrumentor_cls = getattr(module, entry.class_name)
             instrumentor = instrumentor_cls()
-
-            # AutoGen instrumentor (OpenInference) currently does not accept tracer_provider
-            # https://github.com/Arize-ai/openinference/blob/main/python/instrumentation/openinference-instrumentation-autogen/src/openinference/instrumentation/autogen/__init__.py
-            if instrument is Integration.AUTOGEN:
-                instrumentor.instrument()
-            else:
-                instrumentor.instrument(tracer_provider=tracer_provider)
-
-            logger.info(
-                "Instrumented %s via %s.%s",
-                library,
-                module_path,
-                class_name,
-            )
+            instrumentor.instrument(tracer_provider=tracer_provider)
+            logger.info("Instrumented %s via %s", instrument.value, entry.module_path)
             instrumented.append(instrument)
         except Exception:
-            logger.warning("Failed to instrument %s", library, exc_info=True)
+            logger.warning("Failed to instrument %s", instrument.value, exc_info=True)
 
     return instrumented
