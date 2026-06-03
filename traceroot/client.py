@@ -3,6 +3,7 @@
 import atexit
 import logging
 import os
+import threading
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -28,15 +29,17 @@ from traceroot.transport.span_processor import TracerootSpanProcessor
 logger = logging.getLogger(__name__)
 
 # Guard so the "git context unresolved" warning fires at most once per process.
+_git_context_warning_lock = threading.Lock()
 _git_context_warning_emitted: bool = False
 
 
 def _warn_git_context_unresolved() -> None:
     """Emit a one-time warning when git context cannot be resolved from any source."""
     global _git_context_warning_emitted
-    if _git_context_warning_emitted:
-        return
-    _git_context_warning_emitted = True
+    with _git_context_warning_lock:
+        if _git_context_warning_emitted:
+            return
+        _git_context_warning_emitted = True
     logger.warning(
         "TraceRoot: Git context could not be resolved. "
         "Set TRACEROOT_GIT_REPO and TRACEROOT_GIT_REF in production so traces "
