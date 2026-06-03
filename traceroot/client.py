@@ -21,11 +21,28 @@ from traceroot.env import (
     TRACEROOT_HOST_URL,
     TRACEROOT_TIMEOUT,
 )
-from traceroot.git_context import auto_detect_git_context
+from traceroot.git_context import auto_detect_git_context, harvest_ci_git_context
 from traceroot.instrumentation.registry import Integration
 from traceroot.transport.span_processor import TracerootSpanProcessor
 
 logger = logging.getLogger(__name__)
+
+# Guard so the "git context unresolved" warning fires at most once per process.
+_git_context_warning_emitted: bool = False
+
+
+def _warn_git_context_unresolved() -> None:
+    """Emit a one-time warning when git context cannot be resolved from any source."""
+    global _git_context_warning_emitted
+    if _git_context_warning_emitted:
+        return
+    _git_context_warning_emitted = True
+    logger.warning(
+        "TraceRoot: Git context could not be resolved. "
+        "Set TRACEROOT_GIT_REPO and TRACEROOT_GIT_REF in production so traces "
+        "can be correlated to source code. "
+        "See https://docs.traceroot.ai/tracing/git-context"
+    )
 
 
 class TracerootClient:
@@ -69,10 +86,13 @@ class TracerootClient:
                 (e.g. ["openai", "langchain"]).
             git_repo: Repository in "owner/repo" format.
                 Falls back to TRACEROOT_GIT_REPO env var,
+                CI/platform env vars (GitHub Actions, Vercel,
+                GitLab CI, CircleCI, Bitbucket, Render),
                 then auto-detected from git remote.
             git_ref: Git reference (commit SHA, tag, branch).
                 Falls back to TRACEROOT_GIT_REF env var,
-                then auto-detected from git HEAD.
+                CI/platform env vars, then auto-detected from
+                git HEAD.
         """
         # Resolve config with env var fallbacks
         self.api_key = api_key or os.environ.get(TRACEROOT_API_KEY, "")
@@ -99,10 +119,34 @@ class TracerootClient:
 
         self._integrations = integrations
 
-        # Resolve git context (explicit > env var > auto-detect)
-        git_ctx = auto_detect_git_context()
-        self.git_repo = git_repo or os.environ.get("TRACEROOT_GIT_REPO") or git_ctx.get("git_repo")
-        self.git_ref = git_ref or os.environ.get("TRACEROOT_GIT_REF") or git_ctx.get("git_ref")
+
+        _env_repo: str | None = os.environ.get("TRACEROOT_GIT_REPO") or None
+        _env_ref: str | None = os.environ.get("TRACEROOT_GIT_REF") or None
+
+        _ci_ctx: dict[str, str | None] = {}
+        if not (git_repo or _env_repo) or not (git_ref or _env_ref):
+            _ci_ctx = harvest_ci_git_context()
+        _git_ctx: dict[str, str | None] = {}
+        _need_repo = not (git_repo or _env_repo or _ci_ctx.get("git_repo"))
+        _need_ref = not (git_ref or _env_ref or _ci_ctx.get("git_ref"))
+        if _need_repo or _need_ref:
+            _git_ctx = auto_detect_git_context()
+
+        self.git_repo = (
+            git_repo
+            or _env_repo
+            or _ci_ctx.get("git_repo")
+            or _git_ctx.get("git_repo")
+        )
+        self.git_ref = (
+            git_ref
+            or _env_ref
+            or _ci_ctx.get("git_ref")
+            or _git_ctx.get("git_ref")
+        )
+
+        if not self.git_repo and not self.git_ref:
+            _warn_git_context_unresolved()
 
         self._enabled = enabled and bool(self.api_key)
         if enabled and not self.api_key:
