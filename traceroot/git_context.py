@@ -137,17 +137,6 @@ def auto_detect_git_context() -> dict[str, str | None]:
 
     return result
 
-
-# ---------------------------------------------------------------------------
-# CI/platform environment variable resolution
-# ---------------------------------------------------------------------------
-
-# Each entry is (platform_name, repo_resolver, ref_resolver).
-# repo_resolver: callable(env) -> str | None
-# ref_resolver:  callable(env) -> str | None
-#
-# Platforms are probed in order; the first non-empty value for each field wins.
-
 def _gh_repo(env: dict[str, str]) -> str | None:
     return env.get("GITHUB_REPOSITORY") or None
 
