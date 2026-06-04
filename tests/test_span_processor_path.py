@@ -352,3 +352,98 @@ def test_map_stays_empty_when_only_non_recording_spans_processed(proc_setup):
 
     assert processor._ids_path_by_span_id == {}
     assert processor._name_path_by_span_id == {}
+
+
+# ── Git context attributes ─────────────────────────────────────────────────────
+
+
+def test_git_attrs_on_all_spans():
+    """git_repo and git_ref passed to the processor are stamped on every span."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    proc = TracerootSpanProcessor(
+        api_key="test",
+        host_url="http://localhost:9999",
+        git_repo="acme/web",
+        git_ref="a" * 40,
+    )
+    provider = TracerProvider()
+    provider.add_span_processor(proc)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+    with tracer.start_as_current_span("plain-span"):
+        pass
+    provider.force_flush()
+    span = next(s for s in exporter.get_finished_spans() if s.name == "plain-span")
+    assert span.attributes.get("traceroot.git.repo") == "acme/web"
+    assert span.attributes.get("traceroot.git.ref") == "a" * 40
+
+
+def test_git_attrs_absent_when_not_configured():
+    """No git attributes are stamped when git_repo/git_ref are not provided."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    proc = TracerootSpanProcessor(api_key="test", host_url="http://localhost:9999")
+    provider = TracerProvider()
+    provider.add_span_processor(proc)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+    with tracer.start_as_current_span("plain-span"):
+        pass
+    provider.force_flush()
+    span = next(s for s in exporter.get_finished_spans() if s.name == "plain-span")
+    assert span.attributes.get("traceroot.git.repo") is None
+    assert span.attributes.get("traceroot.git.ref") is None
+
+
+def test_git_attrs_stamped_independently():
+    """repo and ref stamp independently — repo set, ref absent stamps only repo."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    proc = TracerootSpanProcessor(
+        api_key="test", host_url="http://localhost:9999", git_repo="acme/web"
+    )
+    provider = TracerProvider()
+    provider.add_span_processor(proc)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+    with tracer.start_as_current_span("plain-span"):
+        pass
+    provider.force_flush()
+    span = next(s for s in exporter.get_finished_spans() if s.name == "plain-span")
+    assert span.attributes.get("traceroot.git.repo") == "acme/web"
+    assert span.attributes.get("traceroot.git.ref") is None
+
+
+def test_git_attrs_on_child_spans():
+    """git_repo and git_ref are stamped on child spans too."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    proc = TracerootSpanProcessor(
+        api_key="test",
+        host_url="http://localhost:9999",
+        git_repo="org/repo",
+        git_ref="deadbeef" * 5,
+    )
+    provider = TracerProvider()
+    provider.add_span_processor(proc)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+    with tracer.start_as_current_span("root"), tracer.start_as_current_span("child"):
+        pass
+    provider.force_flush()
+    child = next(s for s in exporter.get_finished_spans() if s.name == "child")
+    assert child.attributes.get("traceroot.git.repo") == "org/repo"
+    assert child.attributes.get("traceroot.git.ref") == "deadbeef" * 5

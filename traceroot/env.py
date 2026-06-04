@@ -153,3 +153,19 @@ Auto-detected from git HEAD if not set.
 
 **Example:** ``v1.2.3`` or ``abc123def``
 """
+
+# =============================================================================
+# CI Platform — GitHub Actions
+# =============================================================================
+
+GITHUB_REPOSITORY = "GITHUB_REPOSITORY"
+"""
+GitHub Actions: repository in ``owner/repo`` form. Used for CI git-context
+harvesting.
+"""
+
+GITHUB_SHA = "GITHUB_SHA"
+"""
+GitHub Actions: commit SHA of the checked-out code. Used for CI git-context
+harvesting.
+"""

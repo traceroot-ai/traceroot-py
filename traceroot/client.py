@@ -18,10 +18,16 @@ from traceroot.env import (
     TRACEROOT_ENABLED,
     TRACEROOT_FLUSH_AT,
     TRACEROOT_FLUSH_INTERVAL,
+    TRACEROOT_GIT_REF,
+    TRACEROOT_GIT_REPO,
     TRACEROOT_HOST_URL,
     TRACEROOT_TIMEOUT,
 )
-from traceroot.git_context import auto_detect_git_context
+from traceroot.git_context import (
+    auto_detect_git_context,
+    git_context_from_files,
+    harvest_ci_git_context,
+)
 from traceroot.instrumentation.registry import Integration
 from traceroot.transport.span_processor import TracerootSpanProcessor
 
@@ -99,10 +105,36 @@ class TracerootClient:
 
         self._integrations = integrations
 
-        # Resolve git context (explicit > env var > auto-detect)
-        git_ctx = auto_detect_git_context()
-        self.git_repo = git_repo or os.environ.get("TRACEROOT_GIT_REPO") or git_ctx.get("git_repo")
-        self.git_ref = git_ref or os.environ.get("TRACEROOT_GIT_REF") or git_ctx.get("git_ref")
+        # Resolve git context: explicit > env > CI vars > auto-detect.
+        # `or None` so an empty env var ("") is treated as unset — otherwise it
+        # would block fallback detection and suppress the missing-context warning.
+        self.git_repo = git_repo or os.environ.get(TRACEROOT_GIT_REPO) or None
+        self.git_ref = git_ref or os.environ.get(TRACEROOT_GIT_REF) or None
+
+        if self.git_repo is None or self.git_ref is None:
+            ci = harvest_ci_git_context()
+            self.git_repo = self.git_repo or ci["git_repo"]
+            self.git_ref = self.git_ref or ci["git_ref"]
+
+        if self.git_repo is None or self.git_ref is None:
+            from_files = git_context_from_files()
+            self.git_repo = self.git_repo or from_files["git_repo"]
+            self.git_ref = self.git_ref or from_files["git_ref"]
+
+        if self.git_repo is None or self.git_ref is None:
+            auto = auto_detect_git_context()
+            self.git_repo = self.git_repo or auto.get("git_repo")
+            self.git_ref = self.git_ref or auto.get("git_ref")
+
+        if self.git_repo is None or self.git_ref is None:
+            logger.warning(
+                "TraceRoot: git context incomplete (repo=%s, ref=%s). The AI "
+                "agent needs both to correlate traces to source. Set "
+                "TRACEROOT_GIT_REPO / TRACEROOT_GIT_REF — see "
+                "https://docs.traceroot.ai/tracing/git-context",
+                self.git_repo or "unset",
+                self.git_ref or "unset",
+            )
 
         self._enabled = enabled and bool(self.api_key)
         if enabled and not self.api_key:
@@ -131,6 +163,8 @@ class TracerootClient:
             flush_at=self.batch_size,
             flush_interval=self.flush_interval,
             timeout=self.timeout,
+            git_repo=self.git_repo,
+            git_ref=self.git_ref,
         )
 
         # Create and configure TracerProvider
