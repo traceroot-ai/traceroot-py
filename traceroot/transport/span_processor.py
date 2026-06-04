@@ -60,6 +60,8 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         flush_at: int | None = None,
         flush_interval: float | None = None,
         timeout: float | None = None,
+        git_repo: str | None = None,
+        git_ref: str | None = None,
     ):
         """Initialize the span processor.
 
@@ -73,6 +75,10 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 TRACEROOT_FLUSH_INTERVAL env var, then DEFAULT_FLUSH_INTERVAL.
             timeout: HTTP request timeout in seconds. Falls back to
                 TRACEROOT_TIMEOUT env var, then DEFAULT_TIMEOUT.
+            git_repo: Repository in "owner/repo" format. When provided, stamped
+                as ``traceroot.git.repo`` on every recording span.
+            git_ref: Git reference (commit SHA, tag, branch). When provided,
+                stamped as ``traceroot.git.ref`` on every recording span.
         """
         # Resolve flush_at with env var fallback
         if flush_at is None:
@@ -115,6 +121,8 @@ class TracerootSpanProcessor(BatchSpanProcessor):
 
         self._flush_at = flush_at
         self._flush_interval = flush_interval
+        self._git_repo = git_repo
+        self._git_ref = git_ref
         self._paths_lock = threading.RLock()
         # Bounded OrderedDict: evicts oldest entry when capacity is exceeded,
         # eliminating the on_end race where a parent was removed before a
@@ -126,6 +134,10 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         if span.is_recording():
             span.set_attribute("traceroot.sdk.name", SDK_NAME)
             span.set_attribute("traceroot.sdk.version", SDK_VERSION)
+            if self._git_repo:
+                span.set_attribute("traceroot.git.repo", self._git_repo)
+            if self._git_ref:
+                span.set_attribute("traceroot.git.ref", self._git_ref)
 
             try:
                 # span.parent is the SpanContext of the parent (set by the SDK at

@@ -109,7 +109,7 @@ def observe(
                     session_id,
                     user_id,
                 )
-                _set_source_and_git_context(span)
+                _set_source_context(span)
                 gen = func(*args, **kwargs)
                 async for item in _wrap_async_generator(gen, span, capture_output):
                     yield item
@@ -135,7 +135,7 @@ def observe(
                     session_id,
                     user_id,
                 )
-                _set_source_and_git_context(span)
+                _set_source_context(span)
                 gen = func(*args, **kwargs)
                 yield from _wrap_sync_generator(gen, span, capture_output)
 
@@ -160,7 +160,7 @@ def observe(
                         session_id,
                         user_id,
                     )
-                    _set_source_and_git_context(span)
+                    _set_source_context(span)
 
                     try:
                         result = await func(*args, **kwargs)
@@ -193,7 +193,7 @@ def observe(
                         session_id,
                         user_id,
                     )
-                    _set_source_and_git_context(span)
+                    _set_source_context(span)
 
                     try:
                         result = func(*args, **kwargs)
@@ -254,8 +254,13 @@ async def _wrap_async_generator(
         span.end()
 
 
-def _set_source_and_git_context(span: trace.Span) -> None:
-    """Set source location and git context attributes on span."""
+def _set_source_context(span: trace.Span) -> None:
+    """Set source location attributes on span.
+
+    Git repo/ref are now stamped on every recording span by the
+    TracerootSpanProcessor (constructor-injected), so this function only
+    handles the per-call source file/line/function context.
+    """
     source = capture_source_location()
     if source.get("git_source_file"):
         span.set_attribute(SpanAttributes.GIT_SOURCE_FILE, source["git_source_file"])
@@ -263,14 +268,6 @@ def _set_source_and_git_context(span: trace.Span) -> None:
         span.set_attribute(SpanAttributes.GIT_SOURCE_LINE, source["git_source_line"])
     if source.get("git_source_function"):
         span.set_attribute(SpanAttributes.GIT_SOURCE_FUNCTION, source["git_source_function"])
-
-    from traceroot import get_client
-
-    client = get_client()
-    if client and client.git_repo:
-        span.set_attribute(SpanAttributes.GIT_REPO, client.git_repo)
-    if client and client.git_ref:
-        span.set_attribute(SpanAttributes.GIT_REF, client.git_ref)
 
 
 def _set_span_attributes(
