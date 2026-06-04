@@ -106,8 +106,10 @@ class TracerootClient:
         self._integrations = integrations
 
         # Resolve git context: explicit > env > CI vars > auto-detect.
-        self.git_repo = git_repo or os.environ.get(TRACEROOT_GIT_REPO)
-        self.git_ref = git_ref or os.environ.get(TRACEROOT_GIT_REF)
+        # `or None` so an empty env var ("") is treated as unset — otherwise it
+        # would block fallback detection and suppress the missing-context warning.
+        self.git_repo = git_repo or os.environ.get(TRACEROOT_GIT_REPO) or None
+        self.git_ref = git_ref or os.environ.get(TRACEROOT_GIT_REF) or None
 
         if self.git_repo is None or self.git_ref is None:
             ci = harvest_ci_git_context()

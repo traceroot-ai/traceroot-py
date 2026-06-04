@@ -142,10 +142,29 @@ def git_context_from_files(cwd: str | None = None) -> dict[str, str | None]:
         else:
             rm = re.match(r"ref:\s+(\S+)", head)
             if rm:
-                with open(os.path.join(git_dir, rm.group(1)), encoding="utf-8") as f:
-                    ref_content = f.read().strip()
-                if _SHA_RE.match(ref_content):
-                    result["git_ref"] = ref_content
+                ref_path = rm.group(1)  # e.g. refs/heads/main
+                try:
+                    with open(os.path.join(git_dir, ref_path), encoding="utf-8") as f:
+                        loose = f.read().strip()
+                    if _SHA_RE.match(loose):
+                        result["git_ref"] = loose
+                except OSError:
+                    pass  # loose ref missing — the ref may be packed
+                if result["git_ref"] is None:
+                    try:
+                        # Packed refs (after `git gc` / fresh clone).
+                        with open(os.path.join(git_dir, "packed-refs"), encoding="utf-8") as f:
+                            packed = f.read()
+                        for line in packed.splitlines():
+                            if not line or line[0] in "#^":
+                                continue
+                            # OIDs are exactly 40 (SHA-1) or 64 (SHA-256) hex.
+                            m = re.match(r"^([0-9a-f]{40}|[0-9a-f]{64})\s+(.+)$", line)
+                            if m and m.group(2) == ref_path:
+                                result["git_ref"] = m.group(1)
+                                break
+                    except OSError:
+                        pass
     except OSError:
         pass
 

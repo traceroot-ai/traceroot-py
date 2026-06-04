@@ -45,6 +45,19 @@ def test_files_ref_based_head(tmp_path):
     assert r["git_ref"] == "1" * 40
 
 
+def test_files_packed_refs(tmp_path):
+    # HEAD points at a branch whose loose ref file is absent (gc'd / fresh clone);
+    # the SHA lives in packed-refs.
+    git_dir = tmp_path / ".git"
+    _write(git_dir / "HEAD", "ref: refs/heads/main\n")
+    _write(
+        git_dir / "packed-refs",
+        "# pack-refs with: peeled fully-peeled sorted\n" + "2" * 40 + " refs/heads/main\n",
+    )
+    r = git_context_from_files(str(tmp_path))
+    assert r["git_ref"] == "2" * 40
+
+
 def test_files_https_url(tmp_path):
     git_dir = tmp_path / ".git"
     _write(git_dir / "config", '[remote "origin"]\n\turl = https://github.com/acme/web.git\n')
@@ -88,4 +101,27 @@ def test_client_warns_when_git_unresolved(monkeypatch, caplog):
     monkeypatch.setattr(client_mod.TracerootClient, "_initialize", lambda self: None)
     with caplog.at_level(logging.WARNING):
         client_mod.TracerootClient(api_key="test", git_repo=None, git_ref=None)
+    assert any("git context incomplete" in r.message for r in caplog.records)
+
+
+def test_client_treats_empty_git_env_as_unset(monkeypatch, caplog):
+    # Empty TRACEROOT_GIT_* must behave like unset: fall through and warn,
+    # never store "" as a resolved value.
+    monkeypatch.setenv("TRACEROOT_GIT_REPO", "")
+    monkeypatch.setenv("TRACEROOT_GIT_REF", "")
+    for v in ("GITHUB_REPOSITORY", "GITHUB_SHA"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setattr(
+        client_mod, "auto_detect_git_context", lambda: {"git_repo": None, "git_ref": None}
+    )
+    monkeypatch.setattr(
+        client_mod, "harvest_ci_git_context", lambda: {"git_repo": None, "git_ref": None}
+    )
+    monkeypatch.setattr(
+        client_mod, "git_context_from_files", lambda: {"git_repo": None, "git_ref": None}
+    )
+    monkeypatch.setattr(client_mod.TracerootClient, "_initialize", lambda self: None)
+    with caplog.at_level(logging.WARNING):
+        c = client_mod.TracerootClient(api_key="test", git_repo=None, git_ref=None)
+    assert c.git_repo is None and c.git_ref is None
     assert any("git context incomplete" in r.message for r in caplog.records)
