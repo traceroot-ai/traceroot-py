@@ -129,6 +129,7 @@ def _msg_type(message: Any) -> str:
 # Tool & subagent state
 # ---------------------------------------------------------------------------
 
+
 class _ToolState:
     __slots__ = ("ctx", "has_subagent", "name", "span", "tool_use_id")
 
@@ -154,6 +155,7 @@ class _SubagentState:
 # ---------------------------------------------------------------------------
 # Query state — tracks everything for a single query() call
 # ---------------------------------------------------------------------------
+
 
 class _QueryState:
     def __init__(
@@ -210,6 +212,7 @@ class _QueryState:
         parent_ctx = self._get_llm_parent_ctx(parent_tool_use_id)
 
         import time as _time
+
         start = self.pending_start_time or _time.time()
         span = self.tracer.start_span(
             LLM_SPAN_NAME,
@@ -273,6 +276,7 @@ class _QueryState:
 
         if msg_type == "assistant":
             import time as _time
+
             message_id = getattr(message, "message_id", None)
             if message_id and message_id != self.current_message_id:
                 self.flush_pending_llm()
@@ -315,6 +319,7 @@ class _QueryState:
 # ---------------------------------------------------------------------------
 # Hook creation — injected into query options
 # ---------------------------------------------------------------------------
+
 
 def _create_hooks(state: _QueryState) -> dict[str, list[Any]]:
     from claude_agent_sdk.types import HookMatcher
@@ -385,7 +390,9 @@ def _create_hooks(state: _QueryState) -> dict[str, list[Any]]:
             sub.ended = True
         return {}
 
-    async def post_tool_use_failure(input_data: dict[str, Any], tool_use_id: str | None, ctx: Any) -> dict:
+    async def post_tool_use_failure(
+        input_data: dict[str, Any], tool_use_id: str | None, ctx: Any
+    ) -> dict:
         tuid = tool_use_id or input_data.get("tool_use_id", "")
         error_msg = input_data.get("error", "Tool failed")
         tool = state.tools.pop(tuid, None)
@@ -471,6 +478,7 @@ def _create_hooks(state: _QueryState) -> dict[str, list[Any]]:
 # Hook merging
 # ---------------------------------------------------------------------------
 
+
 def _merge_hooks(
     options: Any | None,
     tracing_hooks: dict[str, list[dict[str, Any]]],
@@ -485,6 +493,7 @@ def _merge_hooks(
 # ---------------------------------------------------------------------------
 # Main wrapper
 # ---------------------------------------------------------------------------
+
 
 def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
     """Wrap claude_agent_sdk.query() with OTel tracing."""
@@ -513,7 +522,9 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
             query_span.set_attribute(CLAUDE_AGENT_MODEL, model)
 
         query_ctx = trace.set_span_in_context(query_span, parent_ctx)
-        state = _QueryState(tracer, query_span, query_ctx, prompt if isinstance(prompt, str) else None)
+        state = _QueryState(
+            tracer, query_span, query_ctx, prompt if isinstance(prompt, str) else None
+        )
 
         # Inject tracing hooks into options
         hooks = _create_hooks(state)
@@ -522,6 +533,7 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
         import dataclasses
 
         from claude_agent_sdk.types import ClaudeAgentOptions as _Opts
+
         if options is not None and dataclasses.is_dataclass(options):
             modified_options = dataclasses.replace(options, hooks=merged_hooks)
         else:
@@ -531,7 +543,9 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
         try:
             token = otel_context.attach(query_ctx)
             try:
-                async for message in original(prompt=prompt, options=modified_options, transport=transport):
+                async for message in original(
+                    prompt=prompt, options=modified_options, transport=transport
+                ):
                     state.process_message(message)
                     yield message
             finally:
