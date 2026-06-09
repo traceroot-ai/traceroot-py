@@ -519,7 +519,7 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
         hooks = _create_hooks(state)
         merged_hooks = _merge_hooks(options, hooks)
 
-        import dataclasses  # noqa: I001
+        import dataclasses
 
         from claude_agent_sdk.types import ClaudeAgentOptions as _Opts
         if options is not None and dataclasses.is_dataclass(options):
