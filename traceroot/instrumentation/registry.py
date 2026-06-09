@@ -180,7 +180,7 @@ def initialize_integrations(
             try:
                 from traceroot.instrumentation.claude_agent_sdk import instrument_claude_agent_sdk
 
-                instrument_claude_agent_sdk()
+                instrument_claude_agent_sdk(tracer_provider)
                 logger.info("Instrumented %s via in-house wrapper", instrument.value)
                 instrumented.append(instrument)
             except Exception:

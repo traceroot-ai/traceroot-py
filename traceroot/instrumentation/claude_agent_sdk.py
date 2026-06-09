@@ -484,9 +484,12 @@ def _merge_hooks(
 # Main wrapper
 # ---------------------------------------------------------------------------
 
-def wrap_query(original: Any) -> Any:
+def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
     """Wrap claude_agent_sdk.query() with OTel tracing."""
-    tracer = trace.get_tracer(TRACER_NAME)
+    if tracer_provider is not None:
+        tracer = tracer_provider.get_tracer(TRACER_NAME)
+    else:
+        tracer = trace.get_tracer(TRACER_NAME)
 
     async def wrapped_query(
         *,
@@ -551,12 +554,12 @@ def wrap_query(original: Any) -> Any:
 _WRAPPED = False
 
 
-def instrument_claude_agent_sdk() -> None:
+def instrument_claude_agent_sdk(tracer_provider: Any = None) -> None:
     """Monkey-patch claude_agent_sdk.query with tracing wrapper."""
     global _WRAPPED
     if _WRAPPED:
         return
     import claude_agent_sdk
 
-    claude_agent_sdk.query = wrap_query(claude_agent_sdk.query)
+    claude_agent_sdk.query = wrap_query(claude_agent_sdk.query, tracer_provider)
     _WRAPPED = True
