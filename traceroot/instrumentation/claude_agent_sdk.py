@@ -301,10 +301,12 @@ class _QueryState:
     def end_all(self, status: StatusCode = StatusCode.OK, error: str | None = None) -> None:
         self.flush_pending_llm()
         for tool in self.tools.values():
+            tool.span.set_status(status, error)
             tool.span.end()
         self.tools.clear()
         for sub in self.subagents.values():
             if not sub.ended:
+                sub.span.set_status(status, error)
                 sub.span.end()
                 sub.ended = True
         self.subagents.clear()
