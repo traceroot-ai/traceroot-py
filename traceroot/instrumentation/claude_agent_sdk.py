@@ -430,7 +430,7 @@ def _create_hooks(state: _QueryState) -> dict[str, list[Any]]:
             tool.has_subagent = True
 
         span = state.tracer.start_span(
-            agent_type or "Subagent",
+            "Subagent",
             attributes={
                 OI_SPAN_KIND: "AGENT",
                 CLAUDE_AGENT_TOOL_USE_ID: tuid,
