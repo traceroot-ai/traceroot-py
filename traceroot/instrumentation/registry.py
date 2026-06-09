@@ -181,10 +181,10 @@ def initialize_integrations(
                 from traceroot.instrumentation.claude_agent_sdk import instrument_claude_agent_sdk
 
                 instrument_claude_agent_sdk()
-                logger.info("Instrumented %s via in-house wrapper", library)
+                logger.info("Instrumented %s via in-house wrapper", instrument.value)
                 instrumented.append(instrument)
             except Exception:
-                logger.warning("Failed to instrument %s", library, exc_info=True)
+                logger.warning("Failed to instrument %s", instrument.value, exc_info=True)
             continue
 
         try:

@@ -15,7 +15,8 @@ import logging
 from collections.abc import AsyncIterator
 from typing import Any
 
-from opentelemetry import context as otel_context, trace
+from opentelemetry import context as otel_context
+from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 
 logger = logging.getLogger(__name__)
@@ -129,7 +130,7 @@ def _msg_type(message: Any) -> str:
 # ---------------------------------------------------------------------------
 
 class _ToolState:
-    __slots__ = ("span", "ctx", "name", "tool_use_id", "has_subagent")
+    __slots__ = ("ctx", "has_subagent", "name", "span", "tool_use_id")
 
     def __init__(self, span: trace.Span, ctx: otel_context.Context, name: str, tool_use_id: str):
         self.span = span
@@ -140,7 +141,7 @@ class _ToolState:
 
 
 class _SubagentState:
-    __slots__ = ("span", "ctx", "tool_use_id", "agent_id", "ended")
+    __slots__ = ("agent_id", "ctx", "ended", "span", "tool_use_id")
 
     def __init__(self, span: trace.Span, ctx: otel_context.Context, tool_use_id: str):
         self.span = span
@@ -513,7 +514,8 @@ def wrap_query(original: Any) -> Any:
         hooks = _create_hooks(state)
         merged_hooks = _merge_hooks(options, hooks)
 
-        import dataclasses
+        import dataclasses  # noqa: I001
+
         from claude_agent_sdk.types import ClaudeAgentOptions as _Opts
         if options is not None and dataclasses.is_dataclass(options):
             modified_options = dataclasses.replace(options, hooks=merged_hooks)
