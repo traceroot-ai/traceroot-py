@@ -175,6 +175,18 @@ def initialize_integrations(
             )
             continue
 
+        # In-house instrumentation for Claude Agent SDK (replaces OpenInference)
+        if instrument is Integration.CLAUDE_AGENT_SDK:
+            try:
+                from traceroot.instrumentation.claude_agent_sdk import instrument_claude_agent_sdk
+
+                instrument_claude_agent_sdk()
+                logger.info("Instrumented %s via in-house wrapper", library)
+                instrumented.append(instrument)
+            except Exception:
+                logger.warning("Failed to instrument %s", library, exc_info=True)
+            continue
+
         try:
             module = importlib.import_module(entry.module_path)
             instrumentor_cls = getattr(module, entry.class_name)
