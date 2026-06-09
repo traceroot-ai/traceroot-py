@@ -525,6 +525,7 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
         else:
             modified_options = _Opts(hooks=merged_hooks)
 
+        error: Exception | None = None
         try:
             token = otel_context.attach(query_ctx)
             try:
@@ -533,15 +534,17 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
                     yield message
             finally:
                 otel_context.detach(token)
-
-            state.end_all(StatusCode.OK)
-            query_span.set_status(StatusCode.OK)
         except Exception as exc:
-            state.end_all(StatusCode.ERROR, str(exc))
-            query_span.set_status(StatusCode.ERROR, str(exc))
-            query_span.record_exception(exc)
+            error = exc
             raise
         finally:
+            if error is not None:
+                state.end_all(StatusCode.ERROR, str(error))
+                query_span.set_status(StatusCode.ERROR, str(error))
+                query_span.record_exception(error)
+            else:
+                state.end_all(StatusCode.OK)
+                query_span.set_status(StatusCode.OK)
             query_span.end()
 
     return wrapped_query
