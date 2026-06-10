@@ -329,7 +329,8 @@ class _QueryState:
         tool_use_id_str = str(tool_use_id) if tool_use_id is not None else None
 
         if msg_cls == "TaskStartedMessage":
-            if tool_use_id_str in self.tasks:
+            existing = self.tasks.get(tool_use_id_str)
+            if existing and not existing.ended:
                 return
             # Find parent: the Agent tool span if it exists
             parent_ctx = self.query_ctx
