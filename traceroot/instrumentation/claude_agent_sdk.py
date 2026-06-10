@@ -245,7 +245,7 @@ class _QueryState:
             if val:
                 span.set_attribute(OI_OUTPUT_VALUE, val)
 
-        # Start tool spans from tool_use blocks in assistant messages
+        # Create tool spans from tool_use blocks
         llm_ctx = trace.set_span_in_context(span, parent_ctx)
         for msg in self.pending_messages:
             self._start_tool_spans_from_message(msg, llm_ctx)
@@ -414,7 +414,7 @@ class _QueryState:
 
 
 # ---------------------------------------------------------------------------
-# Main wrapper — no hooks, pure message-driven
+# Main wrapper — pure message-driven, no hooks
 # ---------------------------------------------------------------------------
 
 
