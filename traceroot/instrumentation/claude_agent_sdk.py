@@ -181,6 +181,37 @@ class _QueryState:
         self.tool_use_to_parent: dict[str, str | None] = {}
         # Maps Agent tool_use_id → subagent tool_use_id (they differ)
         self.agent_tool_to_subagent: dict[str, str] = {}
+        # Dedup: maps raw SubagentStart tool_use_id → canonical tool_use_id
+        self.raw_subagent_to_canonical: dict[str, str] = {}
+
+    def _canonical_subagent_id(self, raw_id: str, agent_id: str | None = None) -> str:
+        """Map a SubagentStart tool_use_id to a canonical ID, deduplicating
+        multiple sub-sub-agents onto the same parent Agent tool span.
+        Mirrors TS SDK's canonicalSubagentToolUseId()."""
+        existing = self.raw_subagent_to_canonical.get(raw_id)
+        if existing:
+            return existing
+
+        # Direct match in tools
+        if raw_id in self.tools:
+            self.raw_subagent_to_canonical[raw_id] = raw_id
+            return raw_id
+
+        # Map via agent_id → existing tool_use_id
+        if agent_id:
+            mapped = self.agent_id_to_tool_use_id.get(agent_id)
+            if mapped:
+                self.raw_subagent_to_canonical[raw_id] = mapped
+                return mapped
+
+        # Find the most recent unlinked Agent tool
+        for t in reversed(list(self.tools.values())):
+            if t.name == "Agent" and not t.has_subagent:
+                self.raw_subagent_to_canonical[raw_id] = t.tool_use_id
+                return t.tool_use_id
+
+        self.raw_subagent_to_canonical[raw_id] = raw_id
+        return raw_id
 
     # -- LLM span management --
 
@@ -411,13 +442,26 @@ def _create_hooks(state: _QueryState) -> dict[str, list[Any]]:
     async def subagent_start(input_data: dict[str, Any], tool_use_id: str | None, ctx: Any) -> dict:
         agent_id = input_data.get("agent_id", "")
         agent_type = input_data.get("agent_type", "")
-        tuid = tool_use_id or ""
-        if not tuid:
+        raw_tuid = tool_use_id or ""
+        if not raw_tuid:
             return {}
 
-        # Find the Agent tool span to parent under.
-        # SubagentStart's tool_use_id differs from the Agent tool's tool_use_id,
-        # so find the most recent unlinked Agent tool and map them.
+        # Deduplicate: map raw tool_use_id to canonical ID so multiple
+        # sub-sub-agents reuse the same Subagent span (matches TS SDK).
+        tuid = state._canonical_subagent_id(raw_tuid, agent_id)
+
+        # If subagent already exists for this canonical ID, just update mapping
+        existing = state.subagents.get(tuid)
+        if existing:
+            if agent_id:
+                existing.agent_id = agent_id
+                state.agent_id_to_tool_use_id[agent_id] = tuid
+                existing.span.set_attribute(CLAUDE_AGENT_AGENT_ID, agent_id)
+            if agent_type:
+                existing.span.set_attribute(CLAUDE_AGENT_AGENT_TYPE, agent_type)
+            return {}
+
+        # Find the Agent tool span to parent under
         tool = state.tools.get(tuid)
         if not tool:
             for t in reversed(list(state.tools.values())):
@@ -451,7 +495,8 @@ def _create_hooks(state: _QueryState) -> dict[str, list[Any]]:
         return {}
 
     async def subagent_stop(input_data: dict[str, Any], tool_use_id: str | None, ctx: Any) -> dict:
-        tuid = tool_use_id or ""
+        raw_tuid = tool_use_id or ""
+        tuid = state._canonical_subagent_id(raw_tuid, input_data.get("agent_id"))
         sub = state.subagents.get(tuid)
         if not sub or sub.ended:
             return {}
