@@ -3,7 +3,7 @@
 Wraps claude_agent_sdk.query() to create OTel spans for LLM calls, tools,
 and task/subagent spans with accurate token/cost tracking.
 
-Uses a message-driven approach (like Braintrust) rather than hooks:
+Uses a message-driven approach rather than hooks:
 - AssistantMessage → LLM spans (anthropic.messages.create)
 - AssistantMessage tool_use blocks → tool span start
 - UserMessage tool_result blocks → tool span end
@@ -468,7 +468,15 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
             token = otel_context.attach(query_ctx)
             try:
                 async for message in original(prompt=prompt, options=options, transport=transport):
-                    state.process_message(message)
+                    # Never let instrumentation break the user's query: a bad
+                    # message shape must not propagate out of their async-for.
+                    try:
+                        state.process_message(message)
+                    except Exception:
+                        logger.warning(
+                            "traceroot: failed to process claude_agent_sdk message",
+                            exc_info=True,
+                        )
                     yield message
             finally:
                 otel_context.detach(token)
