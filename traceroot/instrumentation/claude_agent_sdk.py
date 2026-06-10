@@ -384,7 +384,9 @@ class _QueryState:
             self.pending_messages.append(message)
             # Create tool spans immediately (not waiting for flush) so that
             # TaskStartedMessage can find the Agent tool span as parent.
-            self._start_tool_spans_from_message(message, self.query_ctx)
+            parent_tool_use_id = getattr(message, "parent_tool_use_id", None)
+            tool_parent_ctx = self._get_task_parent_ctx(parent_tool_use_id)
+            self._start_tool_spans_from_message(message, tool_parent_ctx)
 
         elif msg_type == "user":
             self.flush_pending_llm()
