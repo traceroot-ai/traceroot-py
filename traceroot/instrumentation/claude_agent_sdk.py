@@ -183,6 +183,8 @@ class _QueryState:
 
         # Tool spans: tool_use_id → _ToolSpan
         self.active_tools: dict[str, _ToolSpan] = {}
+        # Preserve Agent tool contexts after they close, for parenting task spans
+        self.agent_tool_contexts: dict[str, otel_context.Context] = {}
 
         # Task spans: tool_use_id → _TaskSpan (from SystemMessage TaskStarted)
         self.tasks: dict[str | None, _TaskSpan] = {}
@@ -245,11 +247,6 @@ class _QueryState:
             if val:
                 span.set_attribute(OI_OUTPUT_VALUE, val)
 
-        # Create tool spans from tool_use blocks
-        llm_ctx = trace.set_span_in_context(span, parent_ctx)
-        for msg in self.pending_messages:
-            self._start_tool_spans_from_message(msg, llm_ctx)
-
         span.set_status(StatusCode.OK)
         span.end()
 
@@ -290,6 +287,15 @@ class _QueryState:
 
             tool_ctx = trace.set_span_in_context(tool_span, llm_ctx)
             self.active_tools[tool_use_id] = _ToolSpan(tool_span, tool_ctx, tool_name, tool_use_id)
+
+            # For Agent tools, check if a task span was already created (TaskStartedMessage
+            # arrives before AssistantMessage). If so, reparent won't work in OTel,
+            # so we just save the context for future task spans.
+            if tool_name == "Agent":
+                self.agent_tool_contexts[tool_use_id] = tool_ctx
+                # If a task span exists for this tool_use_id, it was created
+                # before the Agent tool span (with query as parent). We can't
+                # reparent, but this is the expected timing issue.
 
     def _finish_tool_spans_from_message(self, message: Any) -> None:
         """End tool spans from tool_result blocks in a UserMessage."""
@@ -332,10 +338,13 @@ class _QueryState:
             existing = self.tasks.get(tool_use_id_str)
             if existing and not existing.ended:
                 return
-            # Find parent: the Agent tool span if it exists
+            # Find parent: the Agent tool span (active or closed)
             parent_ctx = self.query_ctx
-            if tool_use_id_str and tool_use_id_str in self.active_tools:
-                parent_ctx = self.active_tools[tool_use_id_str].ctx
+            if tool_use_id_str:
+                if tool_use_id_str in self.active_tools:
+                    parent_ctx = self.active_tools[tool_use_id_str].ctx
+                elif tool_use_id_str in self.agent_tool_contexts:
+                    parent_ctx = self.agent_tool_contexts[tool_use_id_str]
 
             description = getattr(message, "description", None)
             task_type = getattr(message, "task_type", None)
@@ -373,6 +382,9 @@ class _QueryState:
             if not self.pending_messages:
                 self.pending_start_time = time.time()
             self.pending_messages.append(message)
+            # Create tool spans immediately (not waiting for flush) so that
+            # TaskStartedMessage can find the Agent tool span as parent.
+            self._start_tool_spans_from_message(message, self.query_ctx)
 
         elif msg_type == "user":
             self.flush_pending_llm()
