@@ -128,10 +128,6 @@ def _msg_type(message: Any) -> str:
     return name.lower()
 
 
-def _msg_subtype(message: Any) -> str | None:
-    return getattr(message, "subtype", None)
-
-
 # ---------------------------------------------------------------------------
 # Active span tracking
 # ---------------------------------------------------------------------------
@@ -179,12 +175,17 @@ class _QueryState:
         self.current_message_id: str | None = None
         self.pending_messages: list[Any] = []
         self.pending_start_time: float | None = None
-        self.accumulated_output_tokens = 0
+        # One open LLM span per agent context, keyed by the spawning tool's id
+        # (the root/top-level turn uses the None key); held open so the final
+        # ResultMessage usage can be recorded on the root turn's span.
+        self.open_llm_spans: dict[str | None, trace.Span] = {}
 
         # Tool spans: tool_use_id → _ToolSpan
         self.active_tools: dict[str, _ToolSpan] = {}
         # Preserve Agent tool contexts after they close, for parenting task spans
         self.agent_tool_contexts: dict[str, otel_context.Context] = {}
+        # tool_use_id → subagent role (e.g. "researcher"), used as the task span name.
+        self.subagent_names: dict[str, str] = {}
 
         # Task spans: tool_use_id → _TaskSpan (from SystemMessage TaskStarted)
         self.tasks: dict[str | None, _TaskSpan] = {}
@@ -193,10 +194,14 @@ class _QueryState:
     # -- LLM parent resolution --
 
     def _get_task_parent_ctx(self, parent_tool_use_id: str | None) -> otel_context.Context:
-        """Find the task span context for a given parent_tool_use_id."""
-        if parent_tool_use_id is not None and parent_tool_use_id in self.tasks:
+        """Parent context for a message's parent_tool_use_id."""
+        # Orchestrator turns (None) parent under the query, not the active subagent
+        # task — otherwise sibling subagents nest inside each other.
+        if parent_tool_use_id is None:
+            return self.query_ctx
+        if parent_tool_use_id in self.tasks:
             return self.tasks[parent_tool_use_id].ctx
-        # Walk task_order in reverse to find the most recent active task
+        # Subagent message before its task span exists: most recent active task, else query.
         for key in reversed(self.task_order):
             task = self.tasks.get(key)
             if task and not task.ended:
@@ -216,11 +221,18 @@ class _QueryState:
         parent_ctx = self._get_task_parent_ctx(parent_tool_use_id)
 
         start = self.pending_start_time or time.time()
+        start_ns = int(start * 1e9)
+
+        # Tile: close this context's previous open span at the new turn's start.
+        prev = self.open_llm_spans.pop(parent_tool_use_id, None)
+        if prev is not None:
+            prev.end(end_time=start_ns)
+
         span = self.tracer.start_span(
             LLM_SPAN_NAME,
             attributes={OI_SPAN_KIND: "LLM"},
             context=parent_ctx,
-            start_time=int(start * 1e9),
+            start_time=start_ns,
         )
 
         model = getattr(last, "model", None)
@@ -230,7 +242,8 @@ class _QueryState:
                 if model:
                     break
         _set_model(span, model)
-        _set_usage_attrs(span, getattr(last, "usage", None))
+        # No per-turn usage: streamed counts are unreliable. The ResultMessage total
+        # is attached to the orchestrator span in process_message().
 
         if not parent_tool_use_id and self.prompt:
             val = _try_json([{"role": "user", "content": self.prompt}])
@@ -248,10 +261,9 @@ class _QueryState:
                 span.set_attribute(OI_OUTPUT_VALUE, val)
 
         span.set_status(StatusCode.OK)
-        span.end()
+        # Keep open; closed on the next flush of this context or in end_all().
+        self.open_llm_spans[parent_tool_use_id] = span
 
-        usage = getattr(last, "usage", None) or {}
-        self.accumulated_output_tokens += usage.get("output_tokens", 0)
         self.pending_messages = []
         self.pending_start_time = None
 
@@ -293,9 +305,10 @@ class _QueryState:
             # so we just save the context for future task spans.
             if tool_name == "Agent":
                 self.agent_tool_contexts[tool_use_id] = tool_ctx
-                # If a task span exists for this tool_use_id, it was created
-                # before the Agent tool span (with query as parent). We can't
-                # reparent, but this is the expected timing issue.
+                if isinstance(tool_input, dict):
+                    role = tool_input.get("subagent_type") or tool_input.get("name")
+                    if role:
+                        self.subagent_names[tool_use_id] = str(role)
 
     def _finish_tool_spans_from_message(self, message: Any) -> None:
         """End tool spans from tool_result blocks in a UserMessage."""
@@ -329,16 +342,41 @@ class _QueryState:
     # -- Task span management (from SystemMessage) --
 
     def _handle_task_event(self, message: Any) -> None:
-        """Create/update/end task spans from TaskStarted/TaskNotification."""
+        """Create/update/end subagent task spans from task system messages.
+
+        Created on the first task event of any type (incl. TaskProgress, so a subagent
+        that never emits TaskStarted still gets a span), keyed by tool_use_id and
+        parented under the spawning tool span; ended on TaskNotification.
+        """
         msg_cls = type(message).__name__
+        if msg_cls not in (
+            "TaskStartedMessage",
+            "TaskProgressMessage",
+            "TaskNotificationMessage",
+        ):
+            return
+
         tool_use_id = getattr(message, "tool_use_id", None)
         tool_use_id_str = str(tool_use_id) if tool_use_id is not None else None
+        task_id = getattr(message, "task_id", None)
+        # Key by tool_use_id (links to the spawning tool span); fall back to task_id.
+        key = (
+            tool_use_id_str
+            if tool_use_id_str is not None
+            else (str(task_id) if task_id is not None else None)
+        )
+        if key is None:
+            return
 
-        if msg_cls == "TaskStartedMessage":
-            existing = self.tasks.get(tool_use_id_str)
-            if existing and not existing.ended:
-                return
-            # Find parent: the Agent tool span (active or closed)
+        description = getattr(message, "description", None)
+        task_type = getattr(message, "task_type", None)
+        # Low-cardinality span name: the subagent role, else the task type, else generic.
+        # The free-text description is kept as an attribute, not as the span name.
+        span_name = self.subagent_names.get(key) or (str(task_type) if task_type else "subagent")
+
+        task = self.tasks.get(key)
+        if task is None:
+            # Parent under the spawning tool span (Agent/Skill/Workflow) if known.
             parent_ctx = self.query_ctx
             if tool_use_id_str:
                 if tool_use_id_str in self.active_tools:
@@ -346,28 +384,28 @@ class _QueryState:
                 elif tool_use_id_str in self.agent_tool_contexts:
                     parent_ctx = self.agent_tool_contexts[tool_use_id_str]
 
-            description = getattr(message, "description", None)
-            task_type = getattr(message, "task_type", None)
-            span_name = (
-                str(description) if description else (str(task_type) if task_type else "Task")
-            )
-
             task_span = self.tracer.start_span(
                 span_name,
                 attributes={OI_SPAN_KIND: "AGENT", CLAUDE_AGENT_TOOL_USE_ID: tool_use_id_str or ""},
                 context=parent_ctx,
             )
+            if description:
+                task_span.set_attribute(OI_INPUT_VALUE, str(description))
             task_ctx = trace.set_span_in_context(task_span, parent_ctx)
-            self.tasks[tool_use_id_str] = _TaskSpan(task_span, task_ctx, tool_use_id_str)
-            self.task_order.append(tool_use_id_str)
+            task = _TaskSpan(task_span, task_ctx, tool_use_id_str)
+            self.tasks[key] = task
+            self.task_order.append(key)
+        elif not task.ended:
+            # Update to the role once the spawning Agent tool reveals it (rare ordering).
+            role = self.subagent_names.get(key)
+            if role:
+                task.span.update_name(role)
 
-        elif msg_cls == "TaskNotificationMessage":
-            task = self.tasks.get(tool_use_id_str)
-            if task and not task.ended:
-                task.span.set_status(StatusCode.OK)
-                task.span.end()
-                task.ended = True
-                self.task_order = [k for k in self.task_order if k != tool_use_id_str]
+        if msg_cls == "TaskNotificationMessage" and not task.ended:
+            task.span.set_status(StatusCode.OK)
+            task.span.end()
+            task.ended = True
+            self.task_order = [k for k in self.task_order if k != key]
 
     # -- Message processing --
 
@@ -394,6 +432,12 @@ class _QueryState:
 
         elif msg_type == "result":
             self.flush_pending_llm()
+            # Attach the ResultMessage usage to the orchestrator (None) span only;
+            # subagent turns stay empty (sparse).
+            result_usage = getattr(message, "usage", None)
+            orchestrator_span = self.open_llm_spans.get(None)
+            if orchestrator_span is not None and result_usage:
+                _set_usage_attrs(orchestrator_span, result_usage)
             result = getattr(message, "result", None)
             if isinstance(result, str):
                 self.query_span.set_attribute(OI_OUTPUT_VALUE, result)
@@ -414,6 +458,11 @@ class _QueryState:
 
     def end_all(self, status: StatusCode = StatusCode.OK, error: str | None = None) -> None:
         self.flush_pending_llm()
+        for span in self.open_llm_spans.values():
+            if error is not None:
+                span.set_status(status, error)
+            span.end()
+        self.open_llm_spans.clear()
         for tool in self.active_tools.values():
             tool.span.set_status(status, error)
             tool.span.end()
