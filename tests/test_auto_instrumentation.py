@@ -29,6 +29,7 @@ def test_integration_enum_values():
     assert Integration.LLAMA_INDEX == "llama_index"
     assert Integration.DSPY == "dspy"
     assert Integration.PYDANTIC_AI == "pydantic_ai"
+    assert Integration.BEDROCK == "bedrock"
 
 
 def test_integration_exported_from_traceroot():
@@ -629,3 +630,50 @@ def test_pydantic_ai_can_be_requested_with_other_integrations(mock_installed):
     mock_openai_instrumentor.instrument.assert_called_once_with(tracer_provider=provider)
     provider.add_span_processor.assert_called_once_with(mock_oi_processor)
     mock_agent_cls.instrument_all.assert_called_once_with()
+
+
+# =============================================================================
+# Bedrock integration
+# =============================================================================
+
+
+def test_bedrock_integration_enum_value():
+    assert Integration.BEDROCK == "bedrock"
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_bedrock_integration_uses_bedrock_instrumentor(mock_installed):
+    mock_installed.return_value = True
+    mock_instrumentor = MagicMock()
+    mock_cls = MagicMock(return_value=mock_instrumentor)
+    mock_module = MagicMock()
+    mock_module.BedrockInstrumentor = mock_cls
+
+    provider = TracerProvider()
+
+    with patch("importlib.import_module", return_value=mock_module):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.BEDROCK],
+        )
+
+    assert result == [Integration.BEDROCK]
+    mock_instrumentor.instrument.assert_called_once_with(tracer_provider=provider)
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_bedrock_missing_warns_and_skips(mock_installed, caplog):
+    import logging
+
+    mock_installed.return_value = False
+
+    provider = TracerProvider()
+    with caplog.at_level(logging.WARNING, logger="traceroot.instrumentation.registry"):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.BEDROCK],
+        )
+
+    assert result == []
+    assert "skipping" in caplog.text
+    assert "boto3" in caplog.text
