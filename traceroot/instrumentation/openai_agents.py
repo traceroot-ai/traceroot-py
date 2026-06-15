@@ -511,7 +511,8 @@ class _TracerootTracingProcessor:
 
         self._create_tool_call_spans(child, response, start_ns, end_ns)
 
-        child.set_status(StatusCode.OK)
+        status_code, desc = _get_span_status(sdk_span)
+        child.set_status(status_code, desc)
         child.end(end_ns)
 
     def _create_tool_call_spans(
