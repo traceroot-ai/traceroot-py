@@ -64,7 +64,7 @@ def _iso_to_ns(iso: str | None) -> int | None:
         return None
     try:
         dt = datetime.fromisoformat(iso)
-        return int(dt.astimezone(timezone.utc).timestamp() * 1_000_000_000)
+        return int(dt.astimezone(timezone.utc).timestamp() * 1_000_000_000)  # noqa: UP017
     except (ValueError, OSError):
         return None
 
@@ -433,8 +433,15 @@ class _TracerootTracingProcessor:
         except Exception:
             logger.debug("Failed to set span data attributes", exc_info=True)
 
-        # Track first input / last output for the root trace span
         stype = getattr(span.span_data, "type", None)
+        start_ns = _iso_to_ns(getattr(span, "started_at", None))
+        end_ns = _iso_to_ns(getattr(span, "ended_at", None))
+
+        # For response spans, create a nested openai.responses.create LLM span
+        if stype == "response":
+            self._create_responses_create_span(otel_span, span, start_ns, end_ns)
+
+        # Track first input / last output for the root trace span
         if stype == "response":
             input_val = getattr(span.span_data, "input", None)
             if span.trace_id not in self._first_input and input_val is not None:
@@ -451,10 +458,59 @@ class _TracerootTracingProcessor:
             if output is not None:
                 self._last_output[span.trace_id] = output
 
-        end_ns = _iso_to_ns(getattr(span, "ended_at", None))
         status_code, desc = _get_span_status(span)
         otel_span.set_status(status_code, desc)
         otel_span.end(end_ns)
+
+    def _create_responses_create_span(
+        self,
+        parent_otel_span: trace.Span,
+        sdk_span: Any,
+        start_ns: int | None,
+        end_ns: int | None,
+    ) -> None:
+        """Create a nested openai.responses.create LLM span under the Response span."""
+        data = sdk_span.span_data
+        response = getattr(data, "response", None)
+        if response is None:
+            return
+
+        parent_ctx = trace.set_span_in_context(parent_otel_span)
+        child = self._tracer.start_span(
+            name="openai.responses.create",
+            context=parent_ctx,
+            start_time=start_ns,
+            attributes={
+                OI_SPAN_KIND: "LLM",
+                OI_LLM_SYSTEM: "openai",
+            },
+        )
+
+        model = getattr(response, "model", None)
+        if model:
+            child.set_attribute(OI_LLM_MODEL_NAME, model)
+            child.set_attribute(GEN_AI_RESPONSE_MODEL, model)
+
+        usage = getattr(response, "usage", None)
+        _set_usage_attrs(child, usage)
+
+        input_val = getattr(data, "input", None)
+        if input_val is not None:
+            val = _try_json(input_val)
+            if val:
+                child.set_attribute(OI_INPUT_VALUE, val)
+                if not isinstance(input_val, str):
+                    child.set_attribute(OI_INPUT_MIME_TYPE, MIME_JSON)
+
+        output = getattr(response, "output", None)
+        if output is not None:
+            val = _try_json(output)
+            if val:
+                child.set_attribute(OI_OUTPUT_VALUE, val)
+                child.set_attribute(OI_OUTPUT_MIME_TYPE, MIME_JSON)
+
+        child.set_status(StatusCode.OK)
+        child.end(end_ns)
 
     def shutdown(self) -> None:
         pass
