@@ -509,8 +509,51 @@ class _TracerootTracingProcessor:
                 child.set_attribute(OI_OUTPUT_VALUE, val)
                 child.set_attribute(OI_OUTPUT_MIME_TYPE, MIME_JSON)
 
+        self._create_tool_call_spans(child, response, start_ns, end_ns)
+
         child.set_status(StatusCode.OK)
         child.end(end_ns)
+
+    def _create_tool_call_spans(
+        self,
+        parent_span: trace.Span,
+        response: Any,
+        start_ns: int | None,
+        end_ns: int | None,
+    ) -> None:
+        """Create TOOL child spans for each function_call in the response output."""
+        output = getattr(response, "output", None)
+        if not output or not isinstance(output, (list, tuple)):
+            return
+
+        parent_ctx = trace.set_span_in_context(parent_span)
+        for item in output:
+            item_type = getattr(item, "type", None)
+            if item_type != "function_call":
+                continue
+
+            name = getattr(item, "name", None) or "tool_call"
+            tool_span = self._tracer.start_span(
+                name=name,
+                context=parent_ctx,
+                start_time=start_ns,
+                attributes={
+                    OI_SPAN_KIND: "TOOL",
+                    OI_LLM_SYSTEM: "openai",
+                    OI_TOOL_NAME: name,
+                },
+            )
+
+            arguments = getattr(item, "arguments", None)
+            if arguments is not None:
+                tool_span.set_attribute(OI_INPUT_VALUE, str(arguments))
+
+            call_id = getattr(item, "call_id", None)
+            if call_id:
+                tool_span.set_attribute("tool.call_id", call_id)
+
+            tool_span.set_status(StatusCode.OK)
+            tool_span.end(end_ns)
 
     def shutdown(self) -> None:
         pass
