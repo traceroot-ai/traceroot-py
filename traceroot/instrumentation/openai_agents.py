@@ -16,7 +16,6 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace import StatusCode
 
@@ -344,9 +343,7 @@ class _TracerootTracingProcessor:
     def __init__(self, tracer: trace.Tracer) -> None:
         self._tracer = tracer
         self._root_spans: dict[str, trace.Span] = {}
-        self._root_tokens: dict[str, object] = {}
         self._otel_spans: dict[str, trace.Span] = {}
-        self._span_tokens: dict[str, object] = {}
         self._first_input: dict[str, Any] = {}
         self._last_output: dict[str, Any] = {}
 
@@ -358,10 +355,7 @@ class _TracerootTracingProcessor:
                 OI_LLM_SYSTEM: "openai",
             },
         )
-        ctx = trace.set_span_in_context(otel_span)
-        token = otel_context.attach(ctx)
         self._root_spans[sdk_trace.trace_id] = otel_span
-        self._root_tokens[sdk_trace.trace_id] = token
 
     def on_trace_end(self, sdk_trace: Any) -> None:
         otel_span = self._root_spans.pop(sdk_trace.trace_id, None)
@@ -382,10 +376,6 @@ class _TracerootTracingProcessor:
 
         otel_span.set_status(StatusCode.OK)
         otel_span.end()
-
-        token = self._root_tokens.pop(sdk_trace.trace_id, None)
-        if token is not None:
-            otel_context.detach(token)
 
     def on_span_start(self, span: Any) -> None:
         start_ns = _iso_to_ns(getattr(span, "started_at", None))
@@ -413,15 +403,7 @@ class _TracerootTracingProcessor:
         )
         self._otel_spans[span.span_id] = otel_span
 
-        ctx = trace.set_span_in_context(otel_span, parent_ctx)
-        token = otel_context.attach(ctx)
-        self._span_tokens[span.span_id] = token
-
     def on_span_end(self, span: Any) -> None:
-        token = self._span_tokens.pop(span.span_id, None)
-        if token is not None:
-            otel_context.detach(token)
-
         otel_span = self._otel_spans.pop(span.span_id, None)
         if not otel_span:
             return
