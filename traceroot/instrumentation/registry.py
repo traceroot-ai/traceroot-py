@@ -34,6 +34,7 @@ class Integration(StrEnum):
     GOOGLE_ADK = "google_adk"
     MISTRAL = "mistral"
     PYDANTIC_AI = "pydantic_ai"
+    BEDROCK = "bedrock"
 
 
 @dataclass
@@ -128,6 +129,11 @@ _BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
         alt_packages=("pydantic-ai-slim",),
         module_path="traceroot.instrumentation._instrumentors",
         class_name="PydanticAIInstrumentor",
+    ),
+    Integration.BEDROCK: InstrumentorEntry(
+        package="boto3",
+        module_path="openinference.instrumentation.bedrock",
+        class_name="BedrockInstrumentor",
     ),
 }
 
