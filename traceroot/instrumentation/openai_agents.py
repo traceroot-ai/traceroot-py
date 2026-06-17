@@ -214,9 +214,6 @@ def _set_response_attrs(otel_span: trace.Span, span: Any) -> None:
             otel_span.set_attribute(OI_LLM_MODEL_NAME, model)
             otel_span.set_attribute(GEN_AI_RESPONSE_MODEL, model)
 
-        usage = getattr(response, "usage", None)
-        _set_usage_attrs(otel_span, usage)
-
 
 def _set_generation_attrs(otel_span: trace.Span, span: Any) -> None:
     data = span.span_data
