@@ -13,11 +13,13 @@ Uses a message-driven approach rather than hooks:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from collections.abc import AsyncIterator
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -546,6 +548,131 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Persistent streaming client (ClaudeSDKClient)
+# ---------------------------------------------------------------------------
+#
+# Unlike query(), which is a single async generator, the client splits one turn
+# across separate calls: query() sends the prompt, receive_response() consumes
+# the message stream. The _QueryState message engine is reused unchanged; only
+# the orchestration differs. State must live on the client *instance* (not a
+# closure) because send and receive are distinct calls, so we key it by instance
+# in a WeakKeyDictionary. Each query()/receive_response() turn gets its own root
+# span, mirroring wrap_query's per-request structure.
+
+# client instance -> active turn state (one in-flight turn per client)
+_CLIENT_STATES: WeakKeyDictionary[Any, _QueryState] = WeakKeyDictionary()
+
+
+def _end_client_turn(client: Any, error: Exception | None = None) -> None:
+    state = _CLIENT_STATES.pop(client, None)
+    if state is None:
+        return
+    if error is not None:
+        state.end_all(StatusCode.ERROR, str(error))
+        state.query_span.set_status(StatusCode.ERROR, str(error))
+        state.query_span.record_exception(error)
+    else:
+        state.end_all(StatusCode.OK)
+        state.query_span.set_status(StatusCode.OK)
+    state.query_span.end()
+
+
+def _safe_end_client_turn(client: Any, error: Exception | None = None) -> None:
+    # Teardown must never raise into the user's code path.
+    try:
+        _end_client_turn(client, error)
+    except Exception:
+        logger.warning("traceroot: failed to end claude_agent_sdk client turn", exc_info=True)
+
+
+def wrap_client(client_cls: Any, tracer_provider: Any = None) -> tuple[Any, Any, Any]:
+    """Build tracing wrappers for ClaudeSDKClient.query/receive_response/disconnect.
+
+    Returns ``(wrapped_query, wrapped_receive_response, wrapped_disconnect)``.
+    """
+    if tracer_provider is not None:
+        tracer = tracer_provider.get_tracer(TRACER_NAME)
+    else:
+        tracer = trace.get_tracer(TRACER_NAME)
+
+    orig_query = client_cls.query
+    orig_receive = client_cls.receive_response
+    orig_disconnect = client_cls.disconnect
+
+    async def wrapped_query(self: Any, prompt: Any, session_id: str = "default") -> None:
+        # Start a fresh turn. Defensively close any prior turn that never had its
+        # response consumed so its span is not leaked.
+        try:
+            _end_client_turn(self)
+            parent_ctx = otel_context.get_current()
+            query_span = tracer.start_span(
+                QUERY_SPAN_NAME,
+                attributes={OI_SPAN_KIND: "AGENT"},
+                context=parent_ctx,
+            )
+            if isinstance(prompt, str):
+                query_span.set_attribute(OI_INPUT_VALUE, prompt)
+            model = getattr(getattr(self, "options", None), "model", None)
+            if model:
+                query_span.set_attribute(CLAUDE_AGENT_MODEL, model)
+            query_ctx = trace.set_span_in_context(query_span, parent_ctx)
+            _CLIENT_STATES[self] = _QueryState(
+                tracer, query_span, query_ctx, prompt if isinstance(prompt, str) else None
+            )
+        except Exception:
+            logger.warning("traceroot: failed to start claude_agent_sdk client turn", exc_info=True)
+
+        try:
+            return await orig_query(self, prompt, session_id)
+        except Exception as exc:
+            _safe_end_client_turn(self, exc)
+            raise
+
+    async def wrapped_receive_response(self: Any) -> AsyncIterator[Any]:
+        state = _CLIENT_STATES.get(self)
+        if state is None:
+            # No active turn (e.g. receive_response without a preceding query) —
+            # pass through untraced rather than guess at a span.
+            async for message in orig_receive(self):
+                yield message
+            return
+
+        error: Exception | None = None
+        token = otel_context.attach(state.query_ctx)
+        try:
+            async for message in orig_receive(self):
+                try:
+                    state.process_message(message)
+                except Exception:
+                    logger.warning(
+                        "traceroot: failed to process claude_agent_sdk message",
+                        exc_info=True,
+                    )
+                yield message
+        except asyncio.CancelledError:
+            # The claude_agent_sdk subprocess transport (anyio) can raise
+            # CancelledError during normal cleanup — e.g. when subagents
+            # finish — rather than as a genuine external cancellation. End the
+            # turn cleanly and stop without propagating; a real caller
+            # cancellation still re-fires at the caller's next await point.
+            pass
+        except Exception as exc:
+            error = exc
+            raise
+        finally:
+            otel_context.detach(token)
+            _safe_end_client_turn(self, error)
+
+    async def wrapped_disconnect(self: Any) -> None:
+        # Covers explicit disconnect() and `async with` exit (__aexit__ calls
+        # disconnect). Close any turn whose stream was never fully consumed.
+        _safe_end_client_turn(self)
+        return await orig_disconnect(self)
+
+    return wrapped_query, wrapped_receive_response, wrapped_disconnect
+
+
+# ---------------------------------------------------------------------------
 # Public entry point — called by registry
 # ---------------------------------------------------------------------------
 
@@ -553,11 +680,23 @@ _WRAPPED = False
 
 
 def instrument_claude_agent_sdk(tracer_provider: Any = None) -> None:
-    """Monkey-patch claude_agent_sdk.query with tracing wrapper."""
+    """Monkey-patch claude_agent_sdk.query and the ClaudeSDKClient path."""
     global _WRAPPED
     if _WRAPPED:
         return
     import claude_agent_sdk
 
     claude_agent_sdk.query = wrap_query(claude_agent_sdk.query, tracer_provider)
+
+    # Persistent streaming client: wrap the send / receive / teardown methods so
+    # ClaudeSDKClient sessions are traced, not only the one-shot query() helper.
+    client_cls = getattr(claude_agent_sdk, "ClaudeSDKClient", None)
+    if client_cls is not None:
+        wrapped_query, wrapped_receive_response, wrapped_disconnect = wrap_client(
+            client_cls, tracer_provider
+        )
+        client_cls.query = wrapped_query
+        client_cls.receive_response = wrapped_receive_response
+        client_cls.disconnect = wrapped_disconnect
+
     _WRAPPED = True

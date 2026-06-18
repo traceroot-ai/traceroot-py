@@ -12,12 +12,14 @@ emits (the instrumentor dispatches on ``type(message).__name__``).
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from traceroot.instrumentation.claude_agent_sdk import wrap_query
+from traceroot.instrumentation.claude_agent_sdk import wrap_client, wrap_query
 
 LLM_COMPLETION = "llm.token_count.completion"
 LLM_PROMPT = "llm.token_count.prompt"
@@ -365,3 +367,222 @@ async def test_all_spans_share_single_root():
     roots = [s for s in spans if s.parent is None or s.parent.span_id not in ids]
     assert len(roots) == 1, f"expected exactly 1 root, got {len(roots)}: {[s.name for s in roots]}"
     assert roots[0].name == "ClaudeAgent.query"
+
+
+# --- ClaudeSDKClient (persistent streaming client) path ---------------------
+
+
+def _make_fake_client_cls(receive=None, query=None):
+    """A stand-in for ClaudeSDKClient: query() stashes the prompt, and
+    receive_response() replays the instance's preset message list.
+
+    ``receive`` / ``query`` override those methods to simulate errors,
+    cancellation, or non-string prompts.
+    """
+
+    class FakeClient:
+        def __init__(self, options=None, msgs=None):
+            self.options = options
+            self._msgs = msgs or []
+            self.disconnected = False
+
+        async def disconnect(self):
+            self.disconnected = True
+
+    if query is None:
+
+        async def _default_query(self, prompt, session_id="default"):
+            self._last_prompt = prompt
+
+        FakeClient.query = _default_query
+    else:
+        FakeClient.query = query
+
+    if receive is None:
+
+        async def _default_receive(self):
+            for m in self._msgs:
+                yield m
+
+        FakeClient.receive_response = _default_receive
+    else:
+        FakeClient.receive_response = receive
+
+    return FakeClient
+
+
+def _wrap_fake_client(provider, receive=None, query=None):
+    cls = _make_fake_client_cls(receive=receive, query=query)
+    wq, wr, wd = wrap_client(cls, provider)
+    cls.query, cls.receive_response, cls.disconnect = wq, wr, wd
+    return cls
+
+
+@pytest.mark.asyncio
+async def test_client_turn_creates_root_and_llm_spans():
+    """A query()/receive_response() turn produces the same span shape as query():
+    one ClaudeAgent.query root with the LLM span nested under it."""
+    provider, exporter = _provider()
+    cls = _wrap_fake_client(provider)
+    messages = [
+        AssistantMessage(
+            [TextBlock("answer")],
+            model="claude-sonnet-4",
+            message_id="m1",
+            usage={"input_tokens": 10, "output_tokens": 5},
+        ),
+        ResultMessage(
+            result="done", usage={"input_tokens": 10, "output_tokens": 200}, total_cost_usd=0.5
+        ),
+    ]
+    client = cls(options=None, msgs=messages)
+    await client.query("hello")
+    async for _ in client.receive_response():
+        pass
+
+    spans = exporter.get_finished_spans()
+    roots = [s for s in spans if s.parent is None]
+    assert len(roots) == 1 and roots[0].name == "ClaudeAgent.query"
+    llm = _llm_spans(exporter)
+    assert llm, "expected an anthropic.messages.create LLM span on the client path"
+    total = sum((s.attributes.get(LLM_COMPLETION) or 0) for s in llm)
+    assert total == 200, f"expected 200 (ResultMessage total), got {total}"
+    # LLM span nests under the query root.
+    assert llm[0].parent is not None and llm[0].parent.span_id == roots[0].context.span_id
+
+
+@pytest.mark.asyncio
+async def test_client_multi_turn_creates_separate_roots():
+    """Each turn on a persistent client is its own root span."""
+    provider, exporter = _provider()
+    cls = _wrap_fake_client(provider)
+    messages = [
+        AssistantMessage([TextBlock("a")], model="m", message_id="m1", usage={"input_tokens": 1}),
+        ResultMessage(result="r", usage={"input_tokens": 1, "output_tokens": 2}),
+    ]
+    client = cls(options=None, msgs=messages)
+    for _ in range(2):
+        await client.query("hi")
+        async for _ in client.receive_response():
+            pass
+
+    roots = [s for s in exporter.get_finished_spans() if s.name == "ClaudeAgent.query"]
+    assert len(roots) == 2, f"expected 2 turn roots, got {len(roots)}"
+
+
+@pytest.mark.asyncio
+async def test_client_receive_without_query_is_passthrough():
+    """receive_response with no active turn yields messages untraced, no crash."""
+    provider, exporter = _provider()
+    cls = _wrap_fake_client(provider)
+    client = cls(options=None, msgs=[ResultMessage(result="r")])
+    got = [m async for m in client.receive_response()]
+    assert len(got) == 1
+    assert exporter.get_finished_spans() == ()
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_ends_dangling_turn():
+    """query() with no consumed response still has its span closed on disconnect()."""
+    provider, exporter = _provider()
+    cls = _wrap_fake_client(provider)
+    client = cls(options=None, msgs=[])
+    await client.query("hello")
+    assert exporter.get_finished_spans() == (), "span should still be open before disconnect"
+    await client.disconnect()
+    roots = [s for s in exporter.get_finished_spans() if s.name == "ClaudeAgent.query"]
+    assert len(roots) == 1, "disconnect must close the dangling turn span"
+    assert client.disconnected is True, "original disconnect must still run"
+
+
+@pytest.mark.asyncio
+async def test_client_cancelled_error_in_stream_is_suppressed():
+    """A CancelledError leaked by the subprocess transport (e.g. anyio cleanup
+    when subagents finish) ends the turn cleanly and is NOT propagated."""
+    provider, exporter = _provider()
+
+    async def receive_then_cancel(self):
+        for m in self._msgs:
+            yield m
+        raise asyncio.CancelledError()
+
+    cls = _wrap_fake_client(provider, receive=receive_then_cancel)
+    msgs = [
+        AssistantMessage([TextBlock("a")], model="m", message_id="m1", usage={"input_tokens": 1}),
+        ResultMessage(result="r", usage={"input_tokens": 1, "output_tokens": 2}),
+    ]
+    client = cls(options=None, msgs=msgs)
+    await client.query("hello")
+    got = [m async for m in client.receive_response()]  # must not raise
+    assert len(got) == 2
+    roots = [s for s in exporter.get_finished_spans() if s.name == "ClaudeAgent.query"]
+    assert len(roots) == 1, "turn span must still be closed after a suppressed cancel"
+    assert roots[0].status.status_code.name != "ERROR"
+
+
+@pytest.mark.asyncio
+async def test_client_async_iterable_prompt_is_handled():
+    """A non-string (AsyncIterable) prompt is accepted; the turn still traces and
+    no input.value is recorded for it."""
+    provider, exporter = _provider()
+    cls = _wrap_fake_client(provider)
+    msgs = [
+        AssistantMessage([TextBlock("a")], model="m", message_id="m1", usage={"input_tokens": 1}),
+        ResultMessage(result="r", usage={"input_tokens": 1, "output_tokens": 2}),
+    ]
+
+    async def prompt_stream():
+        yield {"type": "user", "message": {"role": "user", "content": "hi"}}
+
+    client = cls(options=None, msgs=msgs)
+    await client.query(prompt_stream())  # async iterable, not str
+    async for _ in client.receive_response():
+        pass
+
+    roots = [s for s in exporter.get_finished_spans() if s.name == "ClaudeAgent.query"]
+    assert len(roots) == 1
+    assert "input.value" not in (roots[0].attributes or {})
+    assert _llm_spans(exporter), "LLM span should still be produced for a streamed prompt"
+
+
+@pytest.mark.asyncio
+async def test_client_error_in_stream_marks_span_error_and_propagates():
+    """A genuine exception mid-stream is re-raised and the turn span is ERROR."""
+    provider, exporter = _provider()
+
+    async def receive_then_raise(self):
+        for m in self._msgs:
+            yield m
+        raise ValueError("boom")
+
+    cls = _wrap_fake_client(provider, receive=receive_then_raise)
+    msgs = [
+        AssistantMessage([TextBlock("a")], model="m", message_id="m1", usage={"input_tokens": 1})
+    ]
+    client = cls(options=None, msgs=msgs)
+    await client.query("hello")
+    with pytest.raises(ValueError, match="boom"):
+        async for _ in client.receive_response():
+            pass
+
+    roots = [s for s in exporter.get_finished_spans() if s.name == "ClaudeAgent.query"]
+    assert len(roots) == 1
+    assert roots[0].status.status_code.name == "ERROR"
+
+
+@pytest.mark.asyncio
+async def test_client_query_send_error_marks_span_error_and_propagates():
+    """If query() (send) raises, the turn span is closed as ERROR and the error propagates."""
+    provider, exporter = _provider()
+
+    async def query_raises(self, prompt, session_id="default"):
+        raise RuntimeError("send failed")
+
+    cls = _wrap_fake_client(provider, query=query_raises)
+    client = cls(options=None, msgs=[])
+    with pytest.raises(RuntimeError, match="send failed"):
+        await client.query("hello")
+
+    roots = [s for s in exporter.get_finished_spans() if s.name == "ClaudeAgent.query"]
+    assert len(roots) == 1
+    assert roots[0].status.status_code.name == "ERROR"
