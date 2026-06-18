@@ -556,7 +556,9 @@ async def test_client_error_in_stream_marks_span_error_and_propagates():
         raise ValueError("boom")
 
     cls = _wrap_fake_client(provider, receive=receive_then_raise)
-    msgs = [AssistantMessage([TextBlock("a")], model="m", message_id="m1", usage={"input_tokens": 1})]
+    msgs = [
+        AssistantMessage([TextBlock("a")], model="m", message_id="m1", usage={"input_tokens": 1})
+    ]
     client = cls(options=None, msgs=msgs)
     await client.query("hello")
     with pytest.raises(ValueError, match="boom"):
