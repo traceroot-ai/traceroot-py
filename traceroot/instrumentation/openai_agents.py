@@ -11,10 +11,8 @@ Span data type mapping:
 
 from __future__ import annotations
 
-import functools
 import json
 import logging
-from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import Any
 
@@ -47,12 +45,6 @@ GRAPH_NODE_ID = "graph.node.id"
 GRAPH_NODE_PARENT_ID = "graph.node.parent_id"
 
 MIME_JSON = "application/json"
-
-# Links Layer 1 (TracingProcessor) with Layer 2 (client wrapper).
-# Set when a Response span starts so the client wrapper can parent under it.
-_active_response_span: ContextVar[trace.Span | None] = ContextVar(
-    "_active_response_span", default=None
-)
 
 
 def _try_json(value: Any) -> str | None:
@@ -221,6 +213,8 @@ def _set_response_attrs(otel_span: trace.Span, span: Any) -> None:
         if model:
             otel_span.set_attribute(OI_LLM_MODEL_NAME, model)
             otel_span.set_attribute(GEN_AI_RESPONSE_MODEL, model)
+
+        _set_usage_attrs(otel_span, getattr(response, "usage", None))
 
 
 def _set_generation_attrs(otel_span: trace.Span, span: Any) -> None:
@@ -408,10 +402,6 @@ class _TracerootTracingProcessor:
         )
         self._otel_spans[span.span_id] = otel_span
 
-        stype = getattr(span.span_data, "type", None)
-        if stype == "response":
-            _active_response_span.set(otel_span)
-
     def on_span_end(self, span: Any) -> None:
         otel_span = self._otel_spans.pop(span.span_id, None)
         if not otel_span:
@@ -426,9 +416,6 @@ class _TracerootTracingProcessor:
 
         stype = getattr(span.span_data, "type", None)
         end_ns = _iso_to_ns(getattr(span, "ended_at", None))
-
-        if stype == "response":
-            _active_response_span.set(None)
 
         # Track first input / last output for the root trace span
         if stype == "response":
@@ -462,117 +449,6 @@ class _TracerootTracingProcessor:
 # Public entry point — called by registry
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Layer 2 — wrap OpenAI client for real timing on openai.responses.create
-# ---------------------------------------------------------------------------
-
-
-def _wrap_responses_create(tracer: trace.Tracer) -> None:
-    """Monkey-patch AsyncOpenAI.responses.create to produce OTel spans with real timestamps."""
-    try:
-        from openai.resources.responses.responses import AsyncResponses
-    except ImportError:
-        return
-
-    original = AsyncResponses.create
-
-    @functools.wraps(original)
-    async def wrapped(self: Any, *args: Any, **kwargs: Any) -> Any:
-        parent_otel = _active_response_span.get()
-        if parent_otel is None:
-            return await original(self, *args, **kwargs)
-
-        parent_ctx = trace.set_span_in_context(parent_otel)
-        span = tracer.start_span(
-            "openai.responses.create",
-            context=parent_ctx,
-            attributes={
-                OI_SPAN_KIND: "LLM",
-                OI_LLM_SYSTEM: "openai",
-            },
-        )
-
-        try:
-            response = await original(self, *args, **kwargs)
-        except Exception as exc:
-            span.set_status(StatusCode.ERROR, str(exc))
-            span.end()
-            raise
-
-        try:
-            model = getattr(response, "model", None)
-            if model:
-                span.set_attribute(OI_LLM_MODEL_NAME, model)
-                span.set_attribute(GEN_AI_RESPONSE_MODEL, model)
-
-            _set_usage_attrs(span, getattr(response, "usage", None))
-
-            input_val = kwargs.get("input")
-            if input_val is not None:
-                val = _try_json(input_val)
-                if val:
-                    span.set_attribute(OI_INPUT_VALUE, val)
-                    if not isinstance(input_val, str):
-                        span.set_attribute(OI_INPUT_MIME_TYPE, MIME_JSON)
-
-            output = getattr(response, "output", None)
-            if output is not None:
-                val = _try_json(output)
-                if val:
-                    span.set_attribute(OI_OUTPUT_VALUE, val)
-                    span.set_attribute(OI_OUTPUT_MIME_TYPE, MIME_JSON)
-
-            _create_tool_call_child_spans(tracer, span, response)
-        except Exception:
-            logger.debug("Failed to set Layer 2 span attributes", exc_info=True)
-
-        span.set_status(StatusCode.OK)
-        span.end()
-        return response
-
-    AsyncResponses.create = wrapped  # type: ignore[assignment]
-
-
-def _create_tool_call_child_spans(
-    tracer: trace.Tracer, parent_span: trace.Span, response: Any
-) -> None:
-    """Create TOOL child spans for each function_call in the response output."""
-    output = getattr(response, "output", None)
-    if not output or not isinstance(output, (list, tuple)):
-        return
-
-    parent_ctx = trace.set_span_in_context(parent_span)
-    for item in output:
-        if getattr(item, "type", None) != "function_call":
-            continue
-
-        name = getattr(item, "name", None) or "tool_call"
-        tool_span = tracer.start_span(
-            name=name,
-            context=parent_ctx,
-            attributes={
-                OI_SPAN_KIND: "TOOL",
-                OI_LLM_SYSTEM: "openai",
-                OI_TOOL_NAME: name,
-            },
-        )
-
-        arguments = getattr(item, "arguments", None)
-        if arguments is not None:
-            tool_span.set_attribute(OI_INPUT_VALUE, str(arguments))
-
-        call_id = getattr(item, "call_id", None)
-        if call_id:
-            tool_span.set_attribute("tool.call_id", call_id)
-
-        tool_span.set_status(StatusCode.OK)
-        tool_span.end()
-
-
-# ---------------------------------------------------------------------------
-# Public entry point — called by registry
-# ---------------------------------------------------------------------------
-
 _INSTRUMENTED = False
 
 
@@ -590,15 +466,11 @@ def instrument_openai_agents(tracer_provider: Any = None) -> None:
     else:
         tracer = trace.get_tracer(TRACER_NAME)
 
-    # Layer 1: SDK trace/span callbacks → OTel spans
     processor = _TracerootTracingProcessor(tracer)
 
     existing = _get_processors(agents_tracing)
     if not any(isinstance(p, _TracerootTracingProcessor) for p in existing):
         agents_mod.add_trace_processor(processor)
-
-    # Layer 2: wrap OpenAI client for real API call timing
-    _wrap_responses_create(tracer)
 
     agents_mod.set_tracing_disabled(False)
     _INSTRUMENTED = True
