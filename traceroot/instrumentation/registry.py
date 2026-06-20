@@ -35,6 +35,7 @@ class Integration(StrEnum):
     MISTRAL = "mistral"
     PYDANTIC_AI = "pydantic_ai"
     BEDROCK = "bedrock"
+    AGENT_FRAMEWORK = "agent_framework"
 
 
 @dataclass
@@ -134,6 +135,11 @@ _BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
         package="boto3",
         module_path="openinference.instrumentation.bedrock",
         class_name="BedrockInstrumentor",
+    ),
+    Integration.AGENT_FRAMEWORK: InstrumentorEntry(
+        package="agent-framework-core",
+        module_path="traceroot.instrumentation._instrumentors",
+        class_name="AgentFrameworkInstrumentor",
     ),
 }
 
