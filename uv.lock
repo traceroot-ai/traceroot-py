@@ -3,6 +3,21 @@ revision = 3
 requires-python = ">=3.11"
 
 [[package]]
+name = "agent-framework-core"
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opentelemetry-api" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f1/38/5b4f1f69cfe62ecf0b66838a09d82678dfc0a90084e16b3f1c0f52aa53c3/agent_framework_core-1.9.0.tar.gz", hash = "sha256:09c5f18a43209f6db53dfe0da25d3dfbf1e5176a930a8ec3859091687d8f80a2", size = 449168, upload-time = "2026-06-18T09:42:48.308Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d9/4b/1c0140cfbb134c51d335274948bcbdcee837a3bdad86bea92ef6b7235d13/agent_framework_core-1.9.0-py3-none-any.whl", hash = "sha256:aa33c588ec839dc7fc8e4768f4ff3d3cd44d4b38d7aa9733f5ee0a37ff4de956", size = 496431, upload-time = "2026-06-18T09:42:46.613Z" },
+]
+
+[[package]]
 name = "aiohappyeyeballs"
 version = "2.6.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1275,6 +1290,22 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/be/0d/10f658e2a7738a55c7de9717d07cfbb40537f2fc620c94718bd9e1b21c4a/openinference_instrumentation-0.1.52.tar.gz", hash = "sha256:0fce0f390f706ca37f385ee64f19df8b290bf9e43e9a701c97377d2ad2745807", size = 33307, upload-time = "2026-05-22T21:10:45.943Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/67/f2/c730507f42a538e76a12fc315b1e65e08c9d0344f6eb448189a086724120/openinference_instrumentation-0.1.52-py3-none-any.whl", hash = "sha256:98f668a5ceaf057eeee82272e855160131849766b5ffe3266cb1c229d9dfe561", size = 40508, upload-time = "2026-05-22T21:10:44.152Z" },
+]
+
+[[package]]
+name = "openinference-instrumentation-agent-framework"
+version = "0.1.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "openinference-semantic-conventions" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-sdk" },
+    { name = "opentelemetry-semantic-conventions" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/83/09/b48ba01ccaee73c63427e5f2d31766480d0e3de83dbbe64082c046c7490f/openinference_instrumentation_agent_framework-0.1.5.tar.gz", hash = "sha256:3d1269262e7f63b80270693e710d61c45f77846c2b96ea8fd4749a0df873253b", size = 10104, upload-time = "2026-05-22T21:10:42.679Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/51/82db5cf6379556ab846362564df04cc77a87a44c459e0b1a35b5f5e26dbb/openinference_instrumentation_agent_framework-0.1.5-py3-none-any.whl", hash = "sha256:7af906938f4f5ecca37e01dcf684dc3b31159e335738ef130c1dbfd7fae49808", size = 12357, upload-time = "2026-05-22T21:10:41.609Z" },
 ]
 
 [[package]]
@@ -2574,7 +2605,7 @@ wheels = [
 
 [[package]]
 name = "traceroot"
-version = "0.1.9"
+version = "0.1.10"
 source = { editable = "." }
 dependencies = [
     { name = "openinference-instrumentation" },
@@ -2600,6 +2631,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+agent-framework = [
+    { name = "agent-framework-core" },
+    { name = "openinference-instrumentation-agent-framework" },
+]
 dspy = [
     { name = "dspy" },
     { name = "openinference-instrumentation-dspy" },
@@ -2617,8 +2652,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-framework-core", marker = "extra == 'agent-framework'", specifier = ">=1.0.0,<2.0" },
     { name = "dspy", marker = "extra == 'dspy'", specifier = ">=2.6.22,<4.0" },
     { name = "openinference-instrumentation", specifier = ">=0.1.40,<1.0" },
+    { name = "openinference-instrumentation-agent-framework", marker = "extra == 'agent-framework'", specifier = ">=0.1.0,<1.0" },
     { name = "openinference-instrumentation-agno", specifier = ">=0.1.29,<1.0" },
     { name = "openinference-instrumentation-anthropic", specifier = ">=1.0.0,<2.0" },
     { name = "openinference-instrumentation-autogen", specifier = ">=0.1.10,<1.0" },
@@ -2640,7 +2677,7 @@ requires-dist = [
     { name = "opentelemetry-sdk", specifier = ">=1.34.0,<2.0" },
     { name = "pydantic", specifier = ">=2.0,<3.0" },
 ]
-provides-extras = ["dspy"]
+provides-extras = ["dspy", "agent-framework"]
 
 [package.metadata.requires-dev]
 dev = [
