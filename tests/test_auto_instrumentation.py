@@ -7,7 +7,11 @@ from opentelemetry.sdk.trace import TracerProvider
 
 import traceroot
 from tests.utils import reset_traceroot
-from traceroot.instrumentation._instrumentors import AutogenInstrumentor, PydanticAIInstrumentor
+from traceroot.instrumentation._instrumentors import (
+    AgentFrameworkInstrumentor,
+    AutogenInstrumentor,
+    PydanticAIInstrumentor,
+)
 from traceroot.instrumentation.registry import (
     Integration,
     _is_package_installed,
@@ -504,9 +508,11 @@ def reset_custom_instrumentors():
     """Reset adapter instrumentor flags before and after each test."""
     AutogenInstrumentor._instrumented = False
     PydanticAIInstrumentor._instrumented = False
+    AgentFrameworkInstrumentor._instrumented = False
     yield
     AutogenInstrumentor._instrumented = False
     PydanticAIInstrumentor._instrumented = False
+    AgentFrameworkInstrumentor._instrumented = False
 
 
 def test_pydantic_ai_integration_enum_value():
@@ -677,3 +683,91 @@ def test_bedrock_missing_warns_and_skips(mock_installed, caplog):
     assert result == []
     assert "skipping" in caplog.text
     assert "boto3" in caplog.text
+
+
+# =============================================================================
+# Microsoft Agent Framework integration
+# =============================================================================
+
+
+def test_agent_framework_integration_enum_value():
+    assert Integration.AGENT_FRAMEWORK == "agent_framework"
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_agent_framework_skipped_if_not_installed(mock_installed, caplog):
+    import logging
+
+    mock_installed.return_value = False
+
+    provider = TracerProvider()
+    with caplog.at_level(logging.WARNING, logger="traceroot.instrumentation.registry"):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.AGENT_FRAMEWORK],
+        )
+
+    assert result == []
+    assert "skipping" in caplog.text
+    assert "agent-framework-core" in caplog.text
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_agent_framework_installs_processor_and_enables_instrumentation(mock_installed):
+    import sys
+
+    mock_installed.return_value = True
+
+    mock_processor = MagicMock()
+    mock_processor_cls = MagicMock(return_value=mock_processor)
+    mock_enable = MagicMock()
+
+    provider = MagicMock(spec=TracerProvider)
+
+    with patch.dict(
+        sys.modules,
+        {
+            "openinference.instrumentation.agent_framework": MagicMock(
+                AgentFrameworkToOpenInferenceProcessor=mock_processor_cls
+            ),
+            "agent_framework.observability": MagicMock(enable_instrumentation=mock_enable),
+        },
+    ):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.AGENT_FRAMEWORK],
+        )
+
+    assert result == [Integration.AGENT_FRAMEWORK]
+    mock_processor_cls.assert_called_once_with()
+    provider.add_span_processor.assert_called_once_with(mock_processor)
+    mock_enable.assert_called_once_with(enable_sensitive_data=True)
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_agent_framework_idempotent(mock_installed):
+    """Calling initialize_integrations twice must not re-register the processor."""
+    import sys
+
+    mock_installed.return_value = True
+
+    mock_processor = MagicMock()
+    mock_processor_cls = MagicMock(return_value=mock_processor)
+    mock_enable = MagicMock()
+
+    provider = MagicMock(spec=TracerProvider)
+
+    with patch.dict(
+        sys.modules,
+        {
+            "openinference.instrumentation.agent_framework": MagicMock(
+                AgentFrameworkToOpenInferenceProcessor=mock_processor_cls
+            ),
+            "agent_framework.observability": MagicMock(enable_instrumentation=mock_enable),
+        },
+    ):
+        initialize_integrations(provider, [Integration.AGENT_FRAMEWORK])
+        initialize_integrations(provider, [Integration.AGENT_FRAMEWORK])
+
+    assert provider.add_span_processor.call_count == 1
+    assert mock_enable.call_count == 1
