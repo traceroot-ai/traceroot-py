@@ -217,6 +217,46 @@ async def test_tool_spans_nest_under_their_llm_span():
 
 
 @pytest.mark.asyncio
+async def test_turns_split_on_tool_result_when_message_id_absent():
+    """message_id is an OPTIONAL SDK field. When it is missing, turns separated by a
+    tool_result must still become DISTINCT LLM spans (the tool_result is the boundary),
+    not collapse into one merged span with every tool nested under it."""
+    provider, exporter = _provider()
+    messages = [
+        # turn 1: no message_id, requests a tool
+        AssistantMessage(
+            [ToolUseBlock(id="c1", name="first_tool", input={"x": 1})],
+            model="claude-sonnet-4",
+        ),
+        UserMessage([ToolResultBlock(tool_use_id="c1", content="r1")]),
+        # turn 2: still no message_id, requests another tool
+        AssistantMessage(
+            [ToolUseBlock(id="c2", name="second_tool", input={"x": 2})],
+            model="claude-sonnet-4",
+        ),
+        UserMessage([ToolResultBlock(tool_use_id="c2", content="r2")]),
+        ResultMessage(
+            result="done", usage={"input_tokens": 5, "output_tokens": 20}, total_cost_usd=0.01
+        ),
+    ]
+    await _run(provider, messages)
+
+    spans = exporter.get_finished_spans()
+    llm = _llm_spans(exporter)
+    assert len(llm) == 2, f"expected 2 LLM turns split by the tool_result, got {len(llm)}"
+
+    # Each tool nests under its OWN turn, not both under one merged span.
+    first = next(s for s in spans if s.name == "first_tool")
+    second = next(s for s in spans if s.name == "second_tool")
+    assert first.parent is not None and second.parent is not None
+    assert first.parent.span_id != second.parent.span_id, (
+        "tools from different turns must not share one merged LLM span"
+    )
+    llm_ids = {s.context.span_id for s in llm}
+    assert first.parent.span_id in llm_ids and second.parent.span_id in llm_ids
+
+
+@pytest.mark.asyncio
 async def test_task_progress_only_creates_subagent_span():
     """A subagent that streams only TaskProgress (no TaskStarted) must still get a
     task span (named by role), parented under the Agent tool span."""

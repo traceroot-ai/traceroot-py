@@ -114,6 +114,14 @@ def _try_json(value: Any) -> str | None:
         return str(value)
 
 
+def _has_tool_result(message: Any) -> bool:
+    """True if a UserMessage carries any tool_result block (a turn boundary)."""
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return False
+    return any(type(block).__name__ == "ToolResultBlock" for block in content)
+
+
 def _msg_type(message: Any) -> str:
     """Get message type from class name."""
     name = type(message).__name__
@@ -182,6 +190,10 @@ class _QueryState:
         self.open_llm_ctx: dict[str | None, otel_context.Context] = {}
         # Per-context id of the in-progress turn, to detect turn boundaries.
         self.current_message_ids: dict[str | None, str | None] = {}
+        # Contexts whose next AssistantMessage must begin a fresh turn because a
+        # tool_result just closed the prior one. This makes message_id (an
+        # optional SDK field) an optimization, not the sole boundary signal.
+        self.pending_turn_boundary: set[str | None] = set()
         # Accumulated assistant output blocks for the in-progress turn per context.
         self.llm_output_parts: dict[str | None, list[Any]] = {}
 
@@ -223,8 +235,13 @@ class _QueryState:
         key = getattr(message, "parent_tool_use_id", None)
         message_id = getattr(message, "message_id", None)
 
-        is_new_turn = key not in self.open_llm_spans or (
-            message_id is not None and self.current_message_ids.get(key) != message_id
+        forced = key in self.pending_turn_boundary
+        self.pending_turn_boundary.discard(key)
+
+        is_new_turn = (
+            key not in self.open_llm_spans
+            or forced
+            or (message_id is not None and self.current_message_ids.get(key) != message_id)
         )
 
         if is_new_turn:
@@ -423,6 +440,12 @@ class _QueryState:
 
         elif msg_type == "user":
             self._finish_tool_spans_from_message(message)
+            # A tool_result closes the current turn for its context: the next
+            # AssistantMessage there starts a fresh LLM turn even if message_id
+            # is absent. Key by the user message's parent_tool_use_id (the same
+            # context the answering AssistantMessage will carry).
+            if _has_tool_result(message):
+                self.pending_turn_boundary.add(getattr(message, "parent_tool_use_id", None))
 
         elif msg_type == "result":
             # Attach the ResultMessage usage to the orchestrator (None) span only;
