@@ -186,6 +186,37 @@ async def test_tokens_on_llm_spans_not_on_query_or_task():
 
 
 @pytest.mark.asyncio
+async def test_tool_spans_nest_under_their_llm_span():
+    """A tool call must be a CHILD of the LLM span that requested it, not a flat
+    sibling under the query root: query -> LLM turn -> tool."""
+    provider, exporter = _provider()
+    messages = [
+        AssistantMessage(
+            [ToolUseBlock(id="c1", name="mcp__calc__multiply", input={"a": 17, "b": 23})],
+            model="claude-sonnet-4",
+            message_id="m1",
+            usage={"input_tokens": 5, "output_tokens": 2},
+        ),
+        UserMessage([ToolResultBlock(tool_use_id="c1", content="391")]),
+        ResultMessage(
+            result="391", usage={"input_tokens": 5, "output_tokens": 20}, total_cost_usd=0.01
+        ),
+    ]
+    await _run(provider, messages)
+
+    spans = exporter.get_finished_spans()
+    tool = next(s for s in spans if s.name == "mcp__calc__multiply")
+    llm = next(s for s in spans if s.name == "anthropic.messages.create")
+    query = next(s for s in spans if s.name == "ClaudeAgent.query")
+
+    assert tool.parent is not None
+    assert tool.parent.span_id == llm.context.span_id, (
+        "tool span must nest under its LLM span, not be a flat sibling under the query"
+    )
+    assert llm.parent is not None and llm.parent.span_id == query.context.span_id
+
+
+@pytest.mark.asyncio
 async def test_task_progress_only_creates_subagent_span():
     """A subagent that streams only TaskProgress (no TaskStarted) must still get a
     task span (named by role), parented under the Agent tool span."""
