@@ -114,6 +114,14 @@ def _try_json(value: Any) -> str | None:
         return str(value)
 
 
+def _has_tool_result(message: Any) -> bool:
+    """True if a UserMessage carries any tool_result block (a turn boundary)."""
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return False
+    return any(type(block).__name__ == "ToolResultBlock" for block in content)
+
+
 def _msg_type(message: Any) -> str:
     """Get message type from class name."""
     name = type(message).__name__
@@ -173,14 +181,21 @@ class _QueryState:
         self.query_ctx = query_ctx
         self.prompt = prompt
 
-        # LLM span state
-        self.current_message_id: str | None = None
-        self.pending_messages: list[Any] = []
-        self.pending_start_time: float | None = None
-        # One open LLM span per agent context, keyed by the spawning tool's id
-        # (the root/top-level turn uses the None key); held open so the final
+        # LLM span state. One open LLM span per agent context, keyed by the
+        # spawning tool's id (the root/top-level turn uses the None key). Each
+        # turn's span is created eagerly on its first AssistantMessage and held
+        # open so (a) the tools it requests nest under it and (b) the final
         # ResultMessage usage can be recorded on the root turn's span.
         self.open_llm_spans: dict[str | None, trace.Span] = {}
+        self.open_llm_ctx: dict[str | None, otel_context.Context] = {}
+        # Per-context id of the in-progress turn, to detect turn boundaries.
+        self.current_message_ids: dict[str | None, str | None] = {}
+        # Contexts whose next AssistantMessage must begin a fresh turn because a
+        # tool_result just closed the prior one. This makes message_id (an
+        # optional SDK field) an optimization, not the sole boundary signal.
+        self.pending_turn_boundary: set[str | None] = set()
+        # Accumulated assistant output blocks for the in-progress turn per context.
+        self.llm_output_parts: dict[str | None, list[Any]] = {}
 
         # Tool spans: tool_use_id → _ToolSpan
         self.active_tools: dict[str, _ToolSpan] = {}
@@ -212,62 +227,64 @@ class _QueryState:
 
     # -- LLM span management --
 
-    def flush_pending_llm(self) -> None:
-        if not self.pending_messages:
-            return
+    def _open_or_continue_llm_span(self, message: Any) -> tuple[trace.Span, otel_context.Context]:
+        """Return the LLM span for this message's turn, creating it eagerly on the
+        first AssistantMessage of the turn so the tools it requests can nest under
+        it. Consecutive messages sharing a message_id extend the same span.
+        """
+        key = getattr(message, "parent_tool_use_id", None)
+        message_id = getattr(message, "message_id", None)
 
-        first = self.pending_messages[0]
-        last = self.pending_messages[-1]
+        forced = key in self.pending_turn_boundary
+        self.pending_turn_boundary.discard(key)
 
-        parent_tool_use_id = getattr(first, "parent_tool_use_id", None)
-        parent_ctx = self._get_task_parent_ctx(parent_tool_use_id)
-
-        start = self.pending_start_time or time.time()
-        start_ns = int(start * 1e9)
-
-        # Tile: close this context's previous open span at the new turn's start.
-        prev = self.open_llm_spans.pop(parent_tool_use_id, None)
-        if prev is not None:
-            prev.end(end_time=start_ns)
-
-        span = self.tracer.start_span(
-            LLM_SPAN_NAME,
-            attributes={OI_SPAN_KIND: "LLM"},
-            context=parent_ctx,
-            start_time=start_ns,
+        is_new_turn = (
+            key not in self.open_llm_spans
+            or forced
+            or (message_id is not None and self.current_message_ids.get(key) != message_id)
         )
 
-        model = getattr(last, "model", None)
-        if not model:
-            for msg in reversed(self.pending_messages):
-                model = getattr(msg, "model", None)
-                if model:
-                    break
-        _set_model(span, model)
-        # No per-turn usage: streamed counts are unreliable. The ResultMessage total
-        # is attached to the orchestrator span in process_message().
+        if is_new_turn:
+            start_ns = int(time.time() * 1e9)
+            # Tile: close this context's previous open span at the new turn's start.
+            prev = self.open_llm_spans.pop(key, None)
+            if prev is not None:
+                prev.end(end_time=start_ns)
 
-        if not parent_tool_use_id and self.prompt:
-            val = _try_json([{"role": "user", "content": self.prompt}])
-            if val:
-                span.set_attribute(OI_INPUT_VALUE, val)
+            parent_ctx = self._get_task_parent_ctx(key)
+            span = self.tracer.start_span(
+                LLM_SPAN_NAME,
+                attributes={OI_SPAN_KIND: "LLM"},
+                context=parent_ctx,
+                start_time=start_ns,
+            )
+            span.set_status(StatusCode.OK)
+            # No per-turn usage: streamed counts are unreliable. The ResultMessage
+            # total is attached to the orchestrator span in process_message().
+            if key is None and self.prompt:
+                val = _try_json([{"role": "user", "content": self.prompt}])
+                if val:
+                    span.set_attribute(OI_INPUT_VALUE, val)
 
-        output_parts = []
-        for msg in self.pending_messages:
-            content = getattr(msg, "content", None)
-            if content is not None:
-                output_parts.append({"role": "assistant", "content": content})
-        if output_parts:
-            val = _try_json(output_parts)
+            self.open_llm_spans[key] = span
+            self.open_llm_ctx[key] = trace.set_span_in_context(span, parent_ctx)
+            self.current_message_ids[key] = message_id
+            self.llm_output_parts[key] = []
+
+        span = self.open_llm_spans[key]
+
+        model = getattr(message, "model", None)
+        if model:
+            _set_model(span, model)
+
+        content = getattr(message, "content", None)
+        if content is not None:
+            self.llm_output_parts[key].append({"role": "assistant", "content": content})
+            val = _try_json(self.llm_output_parts[key])
             if val:
                 span.set_attribute(OI_OUTPUT_VALUE, val)
 
-        span.set_status(StatusCode.OK)
-        # Keep open; closed on the next flush of this context or in end_all().
-        self.open_llm_spans[parent_tool_use_id] = span
-
-        self.pending_messages = []
-        self.pending_start_time = None
+        return span, self.open_llm_ctx[key]
 
     def _start_tool_spans_from_message(self, message: Any, llm_ctx: otel_context.Context) -> None:
         """Create tool spans from tool_use blocks in an AssistantMessage."""
@@ -415,25 +432,22 @@ class _QueryState:
         msg_type = _msg_type(message)
 
         if msg_type == "assistant":
-            message_id = getattr(message, "message_id", None)
-            if message_id and message_id != self.current_message_id:
-                self.flush_pending_llm()
-                self.current_message_id = message_id
-            if not self.pending_messages:
-                self.pending_start_time = time.time()
-            self.pending_messages.append(message)
-            # Create tool spans immediately (not waiting for flush) so that
-            # TaskStartedMessage can find the Agent tool span as parent.
-            parent_tool_use_id = getattr(message, "parent_tool_use_id", None)
-            tool_parent_ctx = self._get_task_parent_ctx(parent_tool_use_id)
-            self._start_tool_spans_from_message(message, tool_parent_ctx)
+            # Open (or extend) this turn's LLM span first, then nest the tools it
+            # requests under it: query -> LLM turn -> tool. The Agent tool span is
+            # created here so a later TaskStartedMessage can find it as parent.
+            _span, llm_ctx = self._open_or_continue_llm_span(message)
+            self._start_tool_spans_from_message(message, llm_ctx)
 
         elif msg_type == "user":
-            self.flush_pending_llm()
             self._finish_tool_spans_from_message(message)
+            # A tool_result closes the current turn for its context: the next
+            # AssistantMessage there starts a fresh LLM turn even if message_id
+            # is absent. Key by the user message's parent_tool_use_id (the same
+            # context the answering AssistantMessage will carry).
+            if _has_tool_result(message):
+                self.pending_turn_boundary.add(getattr(message, "parent_tool_use_id", None))
 
         elif msg_type == "result":
-            self.flush_pending_llm()
             # Attach the ResultMessage usage to the orchestrator (None) span only;
             # subagent turns stay empty (sparse).
             result_usage = getattr(message, "usage", None)
@@ -459,7 +473,6 @@ class _QueryState:
     # -- Cleanup --
 
     def end_all(self, status: StatusCode = StatusCode.OK, error: str | None = None) -> None:
-        self.flush_pending_llm()
         for span in self.open_llm_spans.values():
             if error is not None:
                 span.set_status(status, error)
