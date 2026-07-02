@@ -47,6 +47,33 @@ def test_livekit_llm_request_maps_model_tokens_and_io():
     assert span.attributes.get("llm.token_count.completion") == 7
 
 
+def test_livekit_late_attributes_are_mirrored_while_span_is_writable():
+    provider, exporter = _provider_with_livekit_processor()
+    tracer = provider.get_tracer("livekit-agents")
+
+    with tracer.start_as_current_span("agent_session") as span:
+        span.set_attribute("lk.response.text", "assistant: ready")
+        assert span.attributes.get("output.value") == "assistant: ready"
+
+    [span] = exporter.get_finished_spans()
+    assert span.attributes.get("output.value") == "assistant: ready"
+
+
+def test_livekit_processor_ignores_immutable_readable_span_on_end():
+    class ImmutableAttributes(dict):
+        def __setitem__(self, key, value):
+            raise TypeError
+
+    class ReadableSpanLike:
+        def __init__(self):
+            self.name = "agent_session"
+            self.attributes = {"lk.response.text": "assistant: ready"}
+            self._attributes = ImmutableAttributes(self.attributes)
+
+    processor = LiveKitToOpenInferenceProcessor()
+    processor.on_end(ReadableSpanLike())
+
+
 def test_livekit_function_tool_maps_tool_kind_name_and_output():
     provider, exporter = _provider_with_livekit_processor()
     tracer = provider.get_tracer("livekit-agents")

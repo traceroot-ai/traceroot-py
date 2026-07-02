@@ -23,6 +23,18 @@ GEN_AI_TOOL_NAME = "gen_ai.tool.name"
 _AGENT_SPANS = {"agent_session", "start_agent_activity", "agent_turn", "resume_agent_activity"}
 _LLM_SPANS = {"llm_request", "llm_request_run", "llm_node"}
 _TOOL_SPANS = {"function_tool"}
+_INPUT_KEYS = (
+    "lk.input_text",
+    "lk.user_transcript",
+    "lk.chat_ctx",
+    "lk.user_input",
+    "lk.function_tool.arguments",
+)
+_OUTPUT_KEYS = (
+    "lk.function_tool.output",
+    "lk.response.text",
+)
+_MIRROR_INSTALLED_ATTR = "_traceroot_livekit_attribute_mirror_installed"
 
 
 def _attrs(span: Any) -> dict[str, Any]:
@@ -64,23 +76,8 @@ def _normalize_livekit_span(span: Any) -> None:
 
     _set_attr(span, OI_SPAN_KIND, _span_kind(span_name, attrs))
 
-    input_value = _first(
-        attrs,
-        (
-            "lk.input_text",
-            "lk.user_transcript",
-            "lk.chat_ctx",
-            "lk.user_input",
-            "lk.function_tool.arguments",
-        ),
-    )
-    output_value = _first(
-        attrs,
-        (
-            "lk.function_tool.output",
-            "lk.response.text",
-        ),
-    )
+    input_value = _first(attrs, _INPUT_KEYS)
+    output_value = _first(attrs, _OUTPUT_KEYS)
     _set_attr(span, INPUT_VALUE, input_value)
     _set_attr(span, OUTPUT_VALUE, output_value)
     _set_attr(span, LLM_MODEL_NAME, attrs.get("gen_ai.request.model"))
@@ -89,14 +86,49 @@ def _normalize_livekit_span(span: Any) -> None:
     _set_attr(span, GEN_AI_TOOL_NAME, attrs.get("lk.function_tool.name"))
 
 
+def _mirror_livekit_attribute(key: str, value: Any, set_attribute: Any) -> None:
+    if key in _INPUT_KEYS:
+        set_attribute(INPUT_VALUE, value)
+    elif key in _OUTPUT_KEYS:
+        set_attribute(OUTPUT_VALUE, value)
+    elif key == "gen_ai.request.model":
+        set_attribute(LLM_MODEL_NAME, value)
+    elif key == "gen_ai.usage.input_tokens":
+        set_attribute(LLM_TOKEN_COUNT_PROMPT, value)
+    elif key == "gen_ai.usage.output_tokens":
+        set_attribute(LLM_TOKEN_COUNT_COMPLETION, value)
+    elif key == "lk.function_tool.name":
+        set_attribute(GEN_AI_TOOL_NAME, value)
+
+
+def _install_attribute_mirror(span: Any) -> None:
+    if getattr(span, _MIRROR_INSTALLED_ATTR, False):
+        return
+    original_set_attribute = getattr(span, "set_attribute", None)
+    if original_set_attribute is None:
+        return
+
+    def set_attribute(key: str, value: Any) -> Any:
+        result = original_set_attribute(key, value)
+        _mirror_livekit_attribute(key, value, original_set_attribute)
+        return result
+
+    span.set_attribute = set_attribute
+    setattr(span, _MIRROR_INSTALLED_ATTR, True)
+
+
 class LiveKitToOpenInferenceProcessor(SpanProcessor):
     """Reshape LiveKit native OTel spans into OpenInference attributes."""
 
     def on_start(self, span: Any, parent_context: Any | None = None) -> None:
         _normalize_livekit_span(span)
+        _install_attribute_mirror(span)
 
     def on_end(self, span: Any) -> None:
-        _normalize_livekit_span(span)
+        try:
+            _normalize_livekit_span(span)
+        except TypeError:
+            logger.debug("LiveKit span attributes are immutable on end; skipping remap")
 
     def shutdown(self) -> None:
         return None
