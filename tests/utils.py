@@ -20,3 +20,7 @@ def reset_traceroot() -> None:
     AutogenInstrumentor._instrumented = False
     PydanticAIInstrumentor._instrumented = False
     LiveKitInstrumentor._instrumented = False
+    import traceroot.instrumentation.livekit as livekit_instrumentation
+
+    livekit_instrumentation._LIVEKIT_PROVIDER = None
+    livekit_instrumentation._HIJACK_WARNING_EMITTED = False

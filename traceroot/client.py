@@ -199,13 +199,25 @@ class TracerootClient:
         """Get the span processor for OTel integration."""
         return self._span_processor
 
+    def _warn_if_livekit_provider_hijacked(self) -> None:
+        if self._provider is None:
+            return
+        try:
+            from traceroot.instrumentation.livekit import warn_if_livekit_provider_hijacked
+
+            warn_if_livekit_provider_hijacked(self._provider)
+        except Exception:
+            logger.debug("TraceRoot: failed to check LiveKit tracer provider", exc_info=True)
+
     def flush(self) -> None:
         """Flush all pending traces."""
+        self._warn_if_livekit_provider_hijacked()
         if self._span_processor:
             self._span_processor.force_flush()
 
     def shutdown(self) -> None:
         """Shutdown the client gracefully."""
+        self._warn_if_livekit_provider_hijacked()
         if self._span_processor:
             self._span_processor.shutdown()
             self._span_processor = None

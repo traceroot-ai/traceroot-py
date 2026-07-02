@@ -72,3 +72,68 @@ def test_livekit_lifecycle_span_maps_to_chain_kind():
 
     [span] = exporter.get_finished_spans()
     assert span.attributes.get("openinference.span.kind") == "CHAIN"
+
+
+def test_livekit_cloud_guard_warns_once_when_provider_is_rebound(monkeypatch, caplog):
+    import logging
+    import sys
+    import types
+
+    from traceroot.instrumentation import livekit as livekit_instrumentation
+
+    livekit_instrumentation._HIJACK_WARNING_EMITTED = False
+
+    expected_provider = object()
+    cloud_provider = object()
+
+    telemetry_module = types.ModuleType("livekit.agents.telemetry")
+    telemetry_module.tracer = types.SimpleNamespace(_tracer_provider=cloud_provider)
+
+    agents_module = types.ModuleType("livekit.agents")
+    agents_module.telemetry = telemetry_module
+
+    livekit_module = types.ModuleType("livekit")
+    livekit_module.agents = agents_module
+
+    monkeypatch.setitem(sys.modules, "livekit", livekit_module)
+    monkeypatch.setitem(sys.modules, "livekit.agents", agents_module)
+    monkeypatch.setitem(sys.modules, "livekit.agents.telemetry", telemetry_module)
+
+    with caplog.at_level(logging.WARNING, logger="traceroot.instrumentation.livekit"):
+        first = livekit_instrumentation.warn_if_livekit_provider_hijacked(expected_provider)
+        second = livekit_instrumentation.warn_if_livekit_provider_hijacked(expected_provider)
+
+    assert first is True
+    assert second is True
+    assert caplog.text.count('record={"traces": False}') == 1
+
+
+def test_livekit_cloud_guard_is_silent_when_provider_matches(monkeypatch, caplog):
+    import logging
+    import sys
+    import types
+
+    from traceroot.instrumentation import livekit as livekit_instrumentation
+
+    livekit_instrumentation._HIJACK_WARNING_EMITTED = False
+
+    expected_provider = object()
+
+    telemetry_module = types.ModuleType("livekit.agents.telemetry")
+    telemetry_module.tracer = types.SimpleNamespace(_tracer_provider=expected_provider)
+
+    agents_module = types.ModuleType("livekit.agents")
+    agents_module.telemetry = telemetry_module
+
+    livekit_module = types.ModuleType("livekit")
+    livekit_module.agents = agents_module
+
+    monkeypatch.setitem(sys.modules, "livekit", livekit_module)
+    monkeypatch.setitem(sys.modules, "livekit.agents", agents_module)
+    monkeypatch.setitem(sys.modules, "livekit.agents.telemetry", telemetry_module)
+
+    with caplog.at_level(logging.WARNING, logger="traceroot.instrumentation.livekit"):
+        result = livekit_instrumentation.warn_if_livekit_provider_hijacked(expected_provider)
+
+    assert result is False
+    assert caplog.text == ""
