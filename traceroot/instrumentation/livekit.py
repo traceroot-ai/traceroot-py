@@ -103,3 +103,24 @@ class LiveKitToOpenInferenceProcessor(SpanProcessor):
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         return True
+
+
+class LiveKitInstrumentor:
+    """Routes LiveKit Agents telemetry spans through TraceRoot's TracerProvider."""
+
+    _instrumented: bool = False
+
+    def instrument(self, tracer_provider: TracerProvider | None = None, **_kwargs: object) -> None:
+        if LiveKitInstrumentor._instrumented:
+            return
+        if tracer_provider is None:
+            return
+
+        from livekit.agents.telemetry import set_tracer_provider
+
+        tracer_provider.add_span_processor(LiveKitToOpenInferenceProcessor())
+        set_tracer_provider(tracer_provider)
+        LiveKitInstrumentor._instrumented = True
+
+    def uninstrument(self, **_kwargs: object) -> None:
+        LiveKitInstrumentor._instrumented = False
