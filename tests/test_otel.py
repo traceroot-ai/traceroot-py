@@ -444,14 +444,19 @@ def test_using_attributes_propagates_to_children(memory_exporter):
     assert spans["parent"].attributes.get("session.id") is None
 
 
-def test_using_attributes_applies_to_native_otel_spans():
+def test_using_attributes_applies_to_native_otel_spans(monkeypatch):
     """using_attributes must apply to spans not created by @observe."""
     from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
     from traceroot import using_attributes
     from traceroot.transport.span_processor import TracerootSpanProcessor
+
+    monkeypatch.setattr(
+        "traceroot.transport.span_processor.OTLPSpanExporter.export",
+        lambda _self, _spans: SpanExportResult.SUCCESS,
+    )
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
@@ -466,15 +471,18 @@ def test_using_attributes_applies_to_native_otel_spans():
 
     tracer = provider.get_tracer("native-integration-test")
 
-    with using_attributes(session_id="room-123", user_id="user-456"):
-        with tracer.start_as_current_span("livekit-native-span"):
-            pass
+    with (
+        using_attributes(session_id="room-123", user_id="user-456"),
+        tracer.start_as_current_span("livekit-native-span"),
+    ):
+        pass
 
     spans = exporter.get_finished_spans()
     assert len(spans) == 1
     assert spans[0].name == "livekit-native-span"
     assert spans[0].attributes.get("session.id") == "room-123"
     assert spans[0].attributes.get("user.id") == "user-456"
+    provider.shutdown()
 
 
 def test_auto_initialization_without_explicit_initialize(memory_exporter):

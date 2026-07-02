@@ -134,12 +134,26 @@ def warn_if_livekit_provider_hijacked(expected_provider: object | None = None) -
 
     if not _HIJACK_WARNING_EMITTED:
         logger.warning(
-            'TraceRoot: LiveKit appears to have re-bound the tracer provider. '
-            'No LiveKit spans may reach TraceRoot. If running on LiveKit Cloud, '
+            "TraceRoot: LiveKit appears to have re-bound the tracer provider. "
+            "No LiveKit spans may reach TraceRoot. If running on LiveKit Cloud, "
             'pass record={"traces": False} to session.start().'
         )
         _HIJACK_WARNING_EMITTED = True
     return True
+
+
+def _add_livekit_processor(tracer_provider: TracerProvider) -> None:
+    processor = LiveKitToOpenInferenceProcessor()
+    active_processor = getattr(tracer_provider, "_active_span_processor", None)
+    span_processors = getattr(active_processor, "_span_processors", None)
+    lock = getattr(active_processor, "_lock", None)
+
+    if isinstance(span_processors, tuple) and lock is not None:
+        with lock:
+            active_processor._span_processors = (processor,) + active_processor._span_processors
+        return
+
+    tracer_provider.add_span_processor(processor)
 
 
 class LiveKitInstrumentor:
@@ -155,7 +169,7 @@ class LiveKitInstrumentor:
 
         from livekit.agents.telemetry import set_tracer_provider
 
-        tracer_provider.add_span_processor(LiveKitToOpenInferenceProcessor())
+        _add_livekit_processor(tracer_provider)
         set_tracer_provider(tracer_provider)
         _remember_livekit_provider(tracer_provider)
         LiveKitInstrumentor._instrumented = True
