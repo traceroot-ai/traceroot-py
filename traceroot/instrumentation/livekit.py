@@ -23,6 +23,14 @@ GEN_AI_TOOL_NAME = "gen_ai.tool.name"
 _AGENT_SPANS = {"agent_turn"}
 _LLM_SPANS = {"llm_request"}
 _TOOL_SPANS = {"function_tool"}
+_LIVEKIT_SCOPE_NAME = "livekit-agents"
+_KNOWN_LIVEKIT_SPANS = _AGENT_SPANS | _LLM_SPANS | _TOOL_SPANS | {
+    "agent_session",
+    "llm_node",
+    "tts_node",
+    "tts_request",
+    "user_turn",
+}
 _INPUT_KEYS = (
     "lk.input_text",
     "lk.user_transcript",
@@ -60,21 +68,39 @@ def _first(attrs: dict[str, Any], keys: tuple[str, ...]) -> Any:
     return None
 
 
-def _span_kind(span_name: str, attrs: dict[str, Any]) -> str:
+def _scope_name(span: Any) -> str | None:
+    scope = getattr(span, "instrumentation_scope", None)
+    if scope is None:
+        scope = getattr(span, "instrumentation_info", None)
+    return getattr(scope, "name", None)
+
+
+def _is_livekit_span(span: Any, span_name: str, attrs: dict[str, Any]) -> bool:
+    if _scope_name(span) == _LIVEKIT_SCOPE_NAME:
+        return True
+    if span_name in _KNOWN_LIVEKIT_SPANS:
+        return True
+    return any(key.startswith("lk.") for key in attrs)
+
+
+def _span_kind(span_name: str) -> str | None:
     if span_name in _AGENT_SPANS:
         return "AGENT"
     if span_name in _TOOL_SPANS:
         return "TOOL"
     if span_name in _LLM_SPANS:
         return "LLM"
-    return "SPAN"
+    return None
 
 
 def _normalize_livekit_span(span: Any) -> None:
     attrs = _attrs(span)
     span_name = getattr(span, "name", "") or ""
 
-    _set_attr(span, OI_SPAN_KIND, _span_kind(span_name, attrs))
+    if not _is_livekit_span(span, span_name, attrs):
+        return
+
+    _set_attr(span, OI_SPAN_KIND, _span_kind(span_name))
     _set_attr(span, INPUT_VALUE, _first(attrs, _INPUT_KEYS))
     _set_attr(span, OUTPUT_VALUE, _first(attrs, _OUTPUT_KEYS))
     if span_name in _LLM_SPANS:
@@ -121,7 +147,8 @@ class LiveKitSpanProcessor(SpanProcessor):
 
     def on_start(self, span: Any, parent_context: Any | None = None) -> None:
         _normalize_livekit_span(span)
-        _install_attribute_mirror(span)
+        if _is_livekit_span(span, getattr(span, "name", "") or "", _attrs(span)):
+            _install_attribute_mirror(span)
 
     def on_end(self, span: Any) -> None:
         try:
