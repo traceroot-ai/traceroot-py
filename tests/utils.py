@@ -13,9 +13,9 @@ def reset_traceroot() -> None:
     import traceroot
     from traceroot.instrumentation._instrumentors import (
         AutogenInstrumentor,
-        LiveKitInstrumentor,
         PydanticAIInstrumentor,
     )
+    from traceroot.instrumentation.livekit import LiveKitInstrumentor
 
     if traceroot.get_client():
         traceroot.shutdown()

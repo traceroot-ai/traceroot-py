@@ -2,7 +2,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from traceroot.instrumentation._instrumentors import LiveKitToOpenInferenceProcessor
+from traceroot.instrumentation.livekit import LiveKitToOpenInferenceProcessor
 
 
 def _provider_with_livekit_processor():
@@ -99,4 +99,3 @@ def test_livekit_lifecycle_span_maps_to_chain_kind():
 
     [span] = exporter.get_finished_spans()
     assert span.attributes.get("openinference.span.kind") == "CHAIN"
-
