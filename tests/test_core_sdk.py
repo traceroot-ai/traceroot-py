@@ -1,5 +1,7 @@
 """Core SDK tests - initialization, singleton, shutdown."""
 
+import pytest
+
 import traceroot
 from tests.utils import reset_traceroot
 
@@ -40,3 +42,34 @@ def test_shutdown():
     traceroot.shutdown()
 
     assert traceroot.get_client()._initialized is False
+
+
+@pytest.mark.asyncio
+async def test_flush_async_calls_global_client_flush():
+    """Test async flush wrapper works for async shutdown callbacks."""
+    reset_traceroot()
+
+    class Client:
+        def __init__(self):
+            self.flush_count = 0
+
+        def flush(self):
+            self.flush_count += 1
+
+        def shutdown(self):
+            pass
+
+    client = Client()
+    traceroot._client = client
+
+    await traceroot.flush_async()
+
+    assert client.flush_count == 1
+
+
+@pytest.mark.asyncio
+async def test_flush_async_without_client_is_noop():
+    """Test async flush wrapper is safe before initialization."""
+    reset_traceroot()
+
+    await traceroot.flush_async()
