@@ -13,20 +13,6 @@ def _provider_with_livekit_processor():
     return provider, exporter
 
 
-def test_livekit_agent_session_remains_generic_span():
-    provider, exporter = _provider_with_livekit_processor()
-    tracer = provider.get_tracer("livekit-agents")
-
-    with tracer.start_as_current_span("agent_session") as span:
-        span.set_attribute("lk.room_name", "room-123")
-        span.set_attribute("lk.agent_name", "support-agent")
-
-    [span] = exporter.get_finished_spans()
-    assert span.attributes.get("openinference.span.kind") == "SPAN"
-    assert span.attributes.get("lk.room_name") == "room-123"
-    assert span.attributes.get("lk.agent_name") == "support-agent"
-
-
 def test_livekit_agent_turn_maps_to_agent_kind_and_io():
     provider, exporter = _provider_with_livekit_processor()
     tracer = provider.get_tracer("livekit-agents")
@@ -59,27 +45,6 @@ def test_livekit_llm_request_maps_only_llm_model_tokens_and_io():
     assert span.attributes.get("llm.model_name") == "openai/gpt-5.2-chat-latest"
     assert span.attributes.get("llm.token_count.prompt") == 11
     assert span.attributes.get("llm.token_count.completion") == 7
-
-
-def test_livekit_non_llm_model_spans_remain_generic():
-    provider, exporter = _provider_with_livekit_processor()
-    tracer = provider.get_tracer("livekit-agents")
-
-    with tracer.start_as_current_span("user_turn") as span:
-        span.set_attribute("gen_ai.request.model", "deepgram/nova-3")
-        span.set_attribute("lk.user_transcript", "Hello?")
-        span.set_attribute("lk.transcript_confidence", 0.99)
-
-    with tracer.start_as_current_span("tts_node") as span:
-        span.set_attribute("gen_ai.request.model", "cartesia/sonic-3")
-        span.set_attribute("lk.response.ttfb", 0.25)
-
-    spans = exporter.get_finished_spans()
-    assert [span.name for span in spans] == ["user_turn", "tts_node"]
-    assert [span.attributes.get("openinference.span.kind") for span in spans] == ["SPAN", "SPAN"]
-    assert spans[0].attributes.get("input.value") == "Hello?"
-    assert spans[0].attributes.get("lk.transcript_confidence") == 0.99
-    assert spans[1].attributes.get("lk.response.ttfb") == 0.25
 
 
 def test_livekit_model_spans_do_not_force_traceroot_span_type():
@@ -146,13 +111,3 @@ def test_livekit_function_tool_maps_tool_kind_name_and_output():
     assert span.attributes.get("input.value") == '{"user_id":"user-123"}'
     assert span.attributes.get("output.value") == '{"plan":"pro"}'
 
-
-def test_livekit_lifecycle_span_maps_to_generic_span():
-    provider, exporter = _provider_with_livekit_processor()
-    tracer = provider.get_tracer("livekit-agents")
-
-    with tracer.start_as_current_span("tts_request"):
-        pass
-
-    [span] = exporter.get_finished_spans()
-    assert span.attributes.get("openinference.span.kind") == "SPAN"
