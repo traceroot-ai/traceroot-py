@@ -11,8 +11,11 @@ def create_uuid() -> str:
 def reset_traceroot() -> None:
     """Reset Traceroot global state between tests."""
     import traceroot
-    from traceroot.instrumentation._instrumentors import AutogenInstrumentor, PydanticAIInstrumentor
-    from traceroot.instrumentation.livekit import LiveKitInstrumentor
+    from traceroot.instrumentation._instrumentors import (
+        AutogenInstrumentor,
+        LiveKitInstrumentor,
+        PydanticAIInstrumentor,
+    )
 
     if traceroot.get_client():
         traceroot.shutdown()
@@ -20,7 +23,3 @@ def reset_traceroot() -> None:
     AutogenInstrumentor._instrumented = False
     PydanticAIInstrumentor._instrumented = False
     LiveKitInstrumentor._instrumented = False
-    import traceroot.instrumentation.livekit as livekit_instrumentation
-
-    livekit_instrumentation._LIVEKIT_PROVIDER = None
-    livekit_instrumentation._HIJACK_WARNING_EMITTED = False

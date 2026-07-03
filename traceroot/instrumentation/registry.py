@@ -144,7 +144,7 @@ _BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
     ),
     Integration.LIVEKIT: InstrumentorEntry(
         package="livekit-agents",
-        module_path="traceroot.instrumentation.livekit",
+        module_path="traceroot.instrumentation._instrumentors",
         class_name="LiveKitInstrumentor",
     ),
 }

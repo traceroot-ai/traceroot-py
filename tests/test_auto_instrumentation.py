@@ -10,9 +10,10 @@ from tests.utils import reset_traceroot
 from traceroot.instrumentation._instrumentors import (
     AgentFrameworkInstrumentor,
     AutogenInstrumentor,
+    LiveKitInstrumentor,
+    LiveKitToOpenInferenceProcessor,
     PydanticAIInstrumentor,
 )
-from traceroot.instrumentation.livekit import LiveKitInstrumentor, LiveKitToOpenInferenceProcessor
 from traceroot.instrumentation.registry import (
     Integration,
     _is_package_installed,
