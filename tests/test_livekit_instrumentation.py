@@ -2,18 +2,18 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from traceroot.instrumentation.livekit import LiveKitToOpenInferenceProcessor
+from traceroot.instrumentation.livekit import LiveKitSpanProcessor
 
 
 def _provider_with_livekit_processor():
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
-    provider.add_span_processor(LiveKitToOpenInferenceProcessor())
+    provider.add_span_processor(LiveKitSpanProcessor())
     provider.add_span_processor(SimpleSpanProcessor(exporter))
     return provider, exporter
 
 
-def test_livekit_agent_session_maps_to_agent_kind():
+def test_livekit_agent_session_remains_generic_span():
     provider, exporter = _provider_with_livekit_processor()
     tracer = provider.get_tracer("livekit-agents")
 
@@ -22,12 +22,26 @@ def test_livekit_agent_session_maps_to_agent_kind():
         span.set_attribute("lk.agent_name", "support-agent")
 
     [span] = exporter.get_finished_spans()
-    assert span.attributes.get("openinference.span.kind") == "AGENT"
+    assert span.attributes.get("openinference.span.kind") == "SPAN"
     assert span.attributes.get("lk.room_name") == "room-123"
     assert span.attributes.get("lk.agent_name") == "support-agent"
 
 
-def test_livekit_llm_request_maps_model_tokens_and_io():
+def test_livekit_agent_turn_maps_to_agent_kind_and_io():
+    provider, exporter = _provider_with_livekit_processor()
+    tracer = provider.get_tracer("livekit-agents")
+
+    with tracer.start_as_current_span("agent_turn") as span:
+        span.set_attribute("lk.user_input", "Tell me a joke.")
+        span.set_attribute("lk.response.text", "Why did the test pass?")
+
+    [span] = exporter.get_finished_spans()
+    assert span.attributes.get("openinference.span.kind") == "AGENT"
+    assert span.attributes.get("input.value") == "Tell me a joke."
+    assert span.attributes.get("output.value") == "Why did the test pass?"
+
+
+def test_livekit_llm_request_maps_only_llm_model_tokens_and_io():
     provider, exporter = _provider_with_livekit_processor()
     tracer = provider.get_tracer("livekit-agents")
 
@@ -47,11 +61,32 @@ def test_livekit_llm_request_maps_model_tokens_and_io():
     assert span.attributes.get("llm.token_count.completion") == 7
 
 
+def test_livekit_non_llm_model_spans_remain_generic():
+    provider, exporter = _provider_with_livekit_processor()
+    tracer = provider.get_tracer("livekit-agents")
+
+    with tracer.start_as_current_span("user_turn") as span:
+        span.set_attribute("gen_ai.request.model", "deepgram/nova-3")
+        span.set_attribute("lk.user_transcript", "Hello?")
+        span.set_attribute("lk.transcript_confidence", 0.99)
+
+    with tracer.start_as_current_span("tts_node") as span:
+        span.set_attribute("gen_ai.request.model", "cartesia/sonic-3")
+        span.set_attribute("lk.response.ttfb", 0.25)
+
+    spans = exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["user_turn", "tts_node"]
+    assert [span.attributes.get("openinference.span.kind") for span in spans] == ["SPAN", "SPAN"]
+    assert spans[0].attributes.get("input.value") == "Hello?"
+    assert spans[0].attributes.get("lk.transcript_confidence") == 0.99
+    assert spans[1].attributes.get("lk.response.ttfb") == 0.25
+
+
 def test_livekit_late_attributes_are_mirrored_while_span_is_writable():
     provider, exporter = _provider_with_livekit_processor()
     tracer = provider.get_tracer("livekit-agents")
 
-    with tracer.start_as_current_span("agent_session") as span:
+    with tracer.start_as_current_span("agent_turn") as span:
         span.set_attribute("lk.response.text", "assistant: ready")
         assert span.attributes.get("output.value") == "assistant: ready"
 
@@ -70,7 +105,7 @@ def test_livekit_processor_ignores_immutable_readable_span_on_end():
             self.attributes = {"lk.response.text": "assistant: ready"}
             self._attributes = ImmutableAttributes(self.attributes)
 
-    processor = LiveKitToOpenInferenceProcessor()
+    processor = LiveKitSpanProcessor()
     processor.on_end(ReadableSpanLike())
 
 
@@ -90,7 +125,7 @@ def test_livekit_function_tool_maps_tool_kind_name_and_output():
     assert span.attributes.get("output.value") == '{"plan":"pro"}'
 
 
-def test_livekit_lifecycle_span_maps_to_chain_kind():
+def test_livekit_lifecycle_span_maps_to_generic_span():
     provider, exporter = _provider_with_livekit_processor()
     tracer = provider.get_tracer("livekit-agents")
 
@@ -98,4 +133,4 @@ def test_livekit_lifecycle_span_maps_to_chain_kind():
         pass
 
     [span] = exporter.get_finished_spans()
-    assert span.attributes.get("openinference.span.kind") == "CHAIN"
+    assert span.attributes.get("openinference.span.kind") == "SPAN"

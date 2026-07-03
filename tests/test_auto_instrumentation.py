@@ -12,7 +12,7 @@ from traceroot.instrumentation._instrumentors import (
     AutogenInstrumentor,
     PydanticAIInstrumentor,
 )
-from traceroot.instrumentation.livekit import LiveKitInstrumentor, LiveKitToOpenInferenceProcessor
+from traceroot.instrumentation.livekit import LiveKitInstrumentor, LiveKitSpanProcessor
 from traceroot.instrumentation.registry import (
     Integration,
     _is_package_installed,
@@ -918,13 +918,13 @@ def test_livekit_contract_uses_existing_trace_context(mock_installed, monkeypatc
     assert provider_calls == [provider]
     assert isinstance(
         provider._active_span_processor._span_processors[0],
-        LiveKitToOpenInferenceProcessor,
+        LiveKitSpanProcessor,
     )
 
     tracer = provider.get_tracer("fake-livekit")
     with (
         using_attributes(session_id="room-contract"),
-        tracer.start_as_current_span("agent_session") as span,
+        tracer.start_as_current_span("agent_turn") as span,
     ):
         span.set_attribute("lk.response.text", "ready")
 
