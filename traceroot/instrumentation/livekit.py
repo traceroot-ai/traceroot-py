@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 OI_SPAN_KIND = "openinference.span.kind"
+TRACEROOT_SPAN_TYPE = "traceroot.span.type"
 INPUT_VALUE = "input.value"
 OUTPUT_VALUE = "output.value"
 LLM_MODEL_NAME = "llm.model_name"
@@ -74,7 +75,9 @@ def _normalize_livekit_span(span: Any) -> None:
     attrs = _attrs(span)
     span_name = getattr(span, "name", "") or ""
 
-    _set_attr(span, OI_SPAN_KIND, _span_kind(span_name, attrs))
+    span_kind = _span_kind(span_name, attrs)
+    _set_attr(span, OI_SPAN_KIND, span_kind)
+    _set_attr(span, TRACEROOT_SPAN_TYPE, span_kind.lower())
     _set_attr(span, INPUT_VALUE, _first(attrs, _INPUT_KEYS))
     _set_attr(span, OUTPUT_VALUE, _first(attrs, _OUTPUT_KEYS))
     if span_name in _LLM_SPANS:
