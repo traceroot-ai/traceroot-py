@@ -1453,7 +1453,7 @@ wheels = [
 
 [[package]]
 name = "openinference-instrumentation-google-genai"
-version = "0.1.14"
+version = "1.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "openinference-instrumentation" },
@@ -1463,9 +1463,9 @@ dependencies = [
     { name = "opentelemetry-semantic-conventions" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/34/bd/3c16e84de1c59758b4295a93d927bfe1c57b0c50f0a86601ea49bf1d453e/openinference_instrumentation_google_genai-0.1.14.tar.gz", hash = "sha256:bcd58f80b669db01f82b83165ce73b3e9ef3a806a2f8f7145806ddbb3766bbc1", size = 128669, upload-time = "2026-03-24T18:23:26.695Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/25/c5/e1b68c34131163a4a44cb110ae9762dd8f9b6819ce53e553c1f89f36da09/openinference_instrumentation_google_genai-1.1.1.tar.gz", hash = "sha256:ce2f333a8f88ad278e78f3fd6add8c06dce239260a280f74f31f375b8bfb4e25", size = 148615, upload-time = "2026-06-24T19:17:11.801Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/d3/27ed875f043ae94216ea74fa729408daa9102f2ecd053af0b74d61cc03a6/openinference_instrumentation_google_genai-0.1.14-py3-none-any.whl", hash = "sha256:8459131f1817611d3186e245744c031297bd72618dda2d85358f4ecaa1d88442", size = 30884, upload-time = "2026-03-24T18:23:25.808Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/e0/68915f4c98ee4ca09b1efc6bb3e9638d954af2dd6f76baa0e65996fac666/openinference_instrumentation_google_genai-1.1.1-py3-none-any.whl", hash = "sha256:0a2122e6a4823164d66148a8c6928251bdf0486fa0f1139fdbc65c4aca524312", size = 35401, upload-time = "2026-06-24T19:17:10.695Z" },
 ]
 
 [[package]]
@@ -2664,7 +2664,7 @@ requires-dist = [
     { name = "openinference-instrumentation-crewai", specifier = ">=1.1.1,<2.0" },
     { name = "openinference-instrumentation-dspy", marker = "extra == 'dspy'", specifier = ">=0.1.34,<1.0" },
     { name = "openinference-instrumentation-google-adk", specifier = ">=0.1.10,<1.0" },
-    { name = "openinference-instrumentation-google-genai", specifier = ">=0.1.14,<1.0" },
+    { name = "openinference-instrumentation-google-genai", specifier = ">=1.1.1,<2.0" },
     { name = "openinference-instrumentation-groq", specifier = ">=0.1.13,<1.0" },
     { name = "openinference-instrumentation-langchain", specifier = ">=0.1.50,<1.0" },
     { name = "openinference-instrumentation-llama-index", specifier = ">=4.0.0,<5.0" },
