@@ -224,10 +224,10 @@ def _wrap_sync_generator(
     correctly nest under this generator's span, while the caller's code
     between yields does not inherit this context.
     """
-    span_ctx = trace.set_span_in_context(span)
     collected: list[Any] = []
     try:
         while True:
+            span_ctx = trace.set_span_in_context(span, context.get_current())
             token = context.attach(span_ctx)
             try:
                 item = next(gen)
@@ -263,11 +263,11 @@ async def _wrap_async_generator(
     correctly nest under this generator's span, while the caller's code
     between yields does not inherit this context.
     """
-    span_ctx = trace.set_span_in_context(span)
     agen = gen.__aiter__()
     collected: list[Any] = []
     try:
         while True:
+            span_ctx = trace.set_span_in_context(span, context.get_current())
             token = context.attach(span_ctx)
             try:
                 item = await agen.__anext__()
