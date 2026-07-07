@@ -7,7 +7,7 @@ from collections.abc import Callable
 from typing import Any, TypeVar
 
 from openinference.instrumentation import get_attributes_from_context
-from opentelemetry import trace
+from opentelemetry import context, trace
 from opentelemetry.trace import Status, StatusCode
 
 from traceroot.constants import SDK_VERSION, TRACEROOT_TRACER_NAME, SpanKind
@@ -215,10 +215,26 @@ def _wrap_sync_generator(
     span: trace.Span,
     capture_output: bool,
 ) -> Any:
-    """Yield items from a sync generator, keeping the span open until exhausted."""
+    """Yield items from a sync generator, keeping the span open until exhausted.
+
+    The span's context is attached only while the generator body is actively
+    executing (between resumptions), and detached again before control
+    returns to the caller at each yield. This ensures spans created inside
+    the generator body (nested @observe calls, auto-instrumented LLM calls)
+    correctly nest under this generator's span, while the caller's code
+    between yields does not inherit this context.
+    """
+    span_ctx = trace.set_span_in_context(span)
     collected: list[Any] = []
     try:
-        for item in gen:
+        while True:
+            token = context.attach(span_ctx)
+            try:
+                item = next(gen)
+            except StopIteration:
+                break
+            finally:
+                context.detach(token)
             collected.append(item)
             yield item
         if capture_output and collected:
@@ -238,10 +254,27 @@ async def _wrap_async_generator(
     span: trace.Span,
     capture_output: bool,
 ) -> Any:
-    """Yield items from an async generator, keeping the span open until exhausted."""
+    """Yield items from an async generator, keeping the span open until exhausted.
+
+    The span's context is attached only while the generator body is actively
+    executing (between resumptions), and detached again before control
+    returns to the caller at each yield. This ensures spans created inside
+    the generator body (nested @observe calls, auto-instrumented LLM calls)
+    correctly nest under this generator's span, while the caller's code
+    between yields does not inherit this context.
+    """
+    span_ctx = trace.set_span_in_context(span)
+    agen = gen.__aiter__()
     collected: list[Any] = []
     try:
-        async for item in gen:
+        while True:
+            token = context.attach(span_ctx)
+            try:
+                item = await agen.__anext__()
+            except StopAsyncIteration:
+                break
+            finally:
+                context.detach(token)
             collected.append(item)
             yield item
         if capture_output and collected:
