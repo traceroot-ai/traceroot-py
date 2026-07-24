@@ -58,6 +58,7 @@ class SpanAttributes:
     EVAL_NAME = "traceroot.eval.name"  # stable evaluation identity/purpose
     EVAL_RUN_NAME = "traceroot.eval.run_name"  # retained: run label (== name today)
     EVAL_RUN_ID = "traceroot.eval.run_id"  # platform run id when reported
+    EVAL_LOCAL_RUN_ID = "traceroot.eval.local_run_id"  # client-side run id (always present)
     EVAL_DATASET_NAME = "traceroot.eval.dataset_name"
     EVAL_DATASET_ID = "traceroot.eval.dataset_id"
     EVAL_DATASET_VERSION_ID = "traceroot.eval.dataset_version_id"
