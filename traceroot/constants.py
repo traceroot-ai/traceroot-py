@@ -62,3 +62,7 @@ class SpanKind(enum.StrEnum):
     AGENT = "agent"
     TOOL = "tool"
     LLM = "llm"
+    # Offline-evaluation span kinds (additive; emitted the same way as the others).
+    EVALUATION = "evaluation"
+    TASK = "task"
+    SCORER = "scorer"

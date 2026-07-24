@@ -46,3 +46,19 @@ class SpanAttributes:
     # System Attributes
     # =========================================================================
     ENVIRONMENT = "traceroot.environment"
+
+    # =========================================================================
+    # Offline-evaluation Attributes
+    # =========================================================================
+    EVAL_RUN_NAME = "traceroot.eval.run_name"
+    EVAL_DATASET_NAME = "traceroot.eval.dataset_name"
+    EVAL_CASE_ID = "traceroot.eval.case_id"
+    EVAL_HAS_EXPECTED = "traceroot.eval.has_expected"
+    EVAL_SOURCE_TRACE_ID = "traceroot.eval.source_trace_id"
+    EVAL_SOURCE_SPAN_ID = "traceroot.eval.source_span_id"
+    EVAL_SCORE_TARGET_SPAN_ID = "traceroot.eval.score_target_span_id"
+    EVAL_TASK_NAME = "traceroot.eval.task_name"
+    EVAL_ERROR = "traceroot.eval.error"
+    EVAL_SCORER_NAME = "traceroot.eval.scorer_name"
+    EVAL_SCORE_VALUE = "traceroot.eval.score_value"
+    EVAL_SCORE_COMMENT = "traceroot.eval.score_comment"
