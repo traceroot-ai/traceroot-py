@@ -162,6 +162,7 @@ class _RunIdentity:
     candidate_version: str | None
     environment: str
     run_id: str | None
+    local_run_id: str
 
 
 # Version of the evaluation trace attribute contract emitted on the root span.
@@ -185,6 +186,7 @@ def _set_root_attrs(span, identity: _RunIdentity, case: EvalCase) -> None:
     set_span_attribute(span, attr.EVAL_DATASET_VERSION_ID, identity.dataset_version_id)
     set_span_attribute(span, attr.EVAL_CANDIDATE_VERSION, identity.candidate_version)
     set_span_attribute(span, attr.EVAL_RUN_ID, identity.run_id)
+    set_span_attribute(span, attr.EVAL_LOCAL_RUN_ID, identity.local_run_id)
     set_span_attribute(span, attr.EVAL_SOURCE_TRACE_ID, case.source_trace_id)
     set_span_attribute(span, attr.EVAL_SOURCE_SPAN_ID, case.source_span_id)
     set_span_attribute(span, attr.EVAL_SCORE_TARGET_SPAN_ID, case.score_target_span_id)
@@ -238,6 +240,7 @@ async def _run_case(
             with tracer.start_as_current_span("task") as task_span:
                 task_span.set_attribute(SpanAttributes.SPAN_TYPE, SpanKind.TASK)
                 task_span.set_attribute(SpanAttributes.EVAL_RUN_NAME, identity.name)
+                task_span.set_attribute(SpanAttributes.EVAL_CASE_ID, case.id)  # type: ignore[arg-type]
                 task_span.set_attribute(
                     SpanAttributes.EVAL_TASK_NAME,
                     getattr(task, "__name__", task.__class__.__name__),
@@ -408,8 +411,12 @@ async def _run_async(
     # Trace-privacy boundary: only a reported run exports its per-case eval traces.
     reporting = getattr(active_transport, "reports_traces", False)
 
-    # One immutable identity stamped on every per-case evaluation trace (Phase 4
-    # attribute contract). run_id is available now (post create_run) when reported.
+    # Client-side run id generated up front so it can be stamped on the per-case trace
+    # identity AND carried on the result (the platform run_id is separate, when reported).
+    local_run_id = new_run_id()
+
+    # One immutable identity stamped on every per-case evaluation trace (attribute
+    # contract). run_id is available now (post create_run) when reported.
     identity = _RunIdentity(
         name=name,
         dataset_name=dataset_name,
@@ -418,6 +425,7 @@ async def _run_async(
         candidate_version=candidate_version,
         environment=environment,
         run_id=getattr(active_transport, "run_id", None),
+        local_run_id=local_run_id,
     )
 
     semaphore = asyncio.Semaphore(max_concurrency)
@@ -450,7 +458,7 @@ async def _run_async(
         item_results=results_list,
         score_summary=summary,
         upload_state=upload,
-        local_run_id=new_run_id(),
+        local_run_id=local_run_id,
         candidate_version=candidate_version,
         dataset=dataset_ref,
         run_id=getattr(active_transport, "run_id", None),
