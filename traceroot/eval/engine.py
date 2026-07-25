@@ -228,8 +228,12 @@ def _auto_transport(
     effective_id = dataset_id
     version_id: str | None = None
     if isinstance(data, Dataset):
-        effective_id = effective_id or data.dataset_id
         version_id = data.dataset_version_id
+        # A locally-created ds_ id is NOT a signal to upload; only a remote-pinned
+        # dataset (version_id set, i.e. pulled/pushed) auto-reports. An explicit
+        # dataset_id= argument always opts in.
+        if effective_id is None and version_id is not None:
+            effective_id = data.dataset_id
     if effective_id is None:
         return None
     # Lazy import so the engine stays light and avoids any import cycle.
