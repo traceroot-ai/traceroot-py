@@ -364,7 +364,7 @@ async def _run_async(
         name=name,
         item_results=list(item_results),
         score_summary=aggregate_scores(list(item_results)),
-        upload=upload,
+        upload_state=upload,
         local_run_id=new_run_id(),
         candidate_version=candidate_version,
         dataset=dataset_ref,
