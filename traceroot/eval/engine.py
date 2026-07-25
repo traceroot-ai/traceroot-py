@@ -29,7 +29,8 @@ from traceroot.eval.results import (
     RunDatasetRef,
     aggregate_scores,
 )
-from traceroot.eval.transport import EvalTransport, LocalTransport, RunHandle
+from traceroot.eval.session import RunSession
+from traceroot.eval.transport import EvalTransport, LocalTransport
 from traceroot.eval.types import (
     Dataset,
     DatasetSnapshot,
@@ -143,8 +144,7 @@ async def _run_case(
     semaphore: asyncio.Semaphore,
     run_name: str,
     dataset_name: str,
-    transport: EvalTransport,
-    run: RunHandle,
+    session: RunSession,
 ) -> EvalItemResult:
     tracer = trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
     async with semaphore:
@@ -154,7 +154,7 @@ async def _run_case(
         scorer_errors: dict[str, str] = {}
 
         # Pre-register the item (before execution) so a future live UI can show it.
-        transport.register_item(run, case)
+        session.register(case)
 
         # Root span opened INSIDE this per-case coroutine (its own asyncio Task via
         # gather), so concurrent cases never share a current-span and never tangle.
@@ -222,8 +222,7 @@ async def _run_case(
             error=error,
             trace_id=trace_id,
         )
-        transport.record_item_result(run, item_result)
-        transport.record_scores(run, item_result.case_id, scores)
+        session.record(item_result)
         return item_result
 
 
@@ -343,17 +342,24 @@ async def _run_async(
             _auto_transport(data, scorers, dataset_id, candidate_version, environment)
             or LocalTransport()
         )
-    run = active_transport.create_run(name=name, dataset_name=dataset_name, metadata=None)
+
+    # The high-level runner drives the SAME low-level RunSession that custom
+    # harnesses use -- one code path.
+    session = RunSession(
+        active_transport,
+        name=name,
+        dataset_name=dataset_name,
+        dataset_ref=dataset_ref,
+        candidate_version=candidate_version,
+        environment=environment,
+    ).start()
 
     semaphore = asyncio.Semaphore(max_concurrency)
     item_results = await asyncio.gather(
-        *[
-            _run_case(c, task, scorers, semaphore, name, dataset_name, active_transport, run)
-            for c in cases
-        ]
+        *[_run_case(c, task, scorers, semaphore, name, dataset_name, session) for c in cases]
     )
 
-    upload = active_transport.finish_run(run)
+    upload = session.complete()
     return EvalRunResult(
         name=name,
         item_results=list(item_results),
