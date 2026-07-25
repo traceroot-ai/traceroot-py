@@ -118,11 +118,19 @@ class PlatformDatasetSync:
                 "description": snapshot.description,
             },
         )
+        from traceroot.eval.platform import _encode_field
+
         changes: list[dict[str, Any]] = []
         for c in snapshot.cases:
-            change: dict[str, Any] = {"op": "upsert", "test_case_id": c.id, "input": c.input}
+            # input/expected are sent as canonical JSON text so their type survives
+            # the backend's TEXT column; metadata is a native JSONB column (sent raw).
+            change: dict[str, Any] = {
+                "op": "upsert",
+                "test_case_id": c.id,
+                "input": _encode_field(c.input),
+            }
             if c.expected is not None:
-                change["expected"] = c.expected
+                change["expected"] = _encode_field(c.expected)
             if c.metadata is not None:
                 change["metadata"] = c.metadata
             if c.source_trace_id is not None:
