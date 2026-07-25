@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import inspect
+import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -152,14 +153,20 @@ async def _run_case(
     run_name: str,
     dataset_name: str,
     session: RunSession,
+    timeout: float | None = None,
+    on_case_start: Callable[[EvalCase], None] | None = None,
+    on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
 ) -> EvalItemResult:
     tracer = trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
     async with semaphore:
+        started = time.perf_counter()
         output: Any = None
         error: str | None = None
         scores: list[Score] = []
         scorer_errors: dict[str, str] = {}
 
+        if on_case_start is not None:
+            on_case_start(case)
         # Pre-register the item (before execution) so a future live UI can show it.
         session.register(case)
 
@@ -182,11 +189,14 @@ async def _run_case(
                     task_span, SpanAttributes.SPAN_INPUT, serialize_value(case.input)
                 )
                 try:
-                    output = await _await_or_run(task, case.input)
+                    if timeout is not None:
+                        output = await asyncio.wait_for(_await_or_run(task, case.input), timeout)
+                    else:
+                        output = await _await_or_run(task, case.input)
                     set_span_attribute(
                         task_span, SpanAttributes.SPAN_OUTPUT, serialize_value(output)
                     )
-                except Exception as exc:  # per-case isolation
+                except Exception as exc:  # per-case isolation (incl. asyncio.TimeoutError)
                     error = _fmt_error(exc)
                     task_span.set_status(Status(StatusCode.ERROR, str(exc)))
                     task_span.record_exception(exc)
@@ -228,8 +238,11 @@ async def _run_case(
             scorer_errors=scorer_errors,
             error=error,
             trace_id=trace_id,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
         )
         session.record(item_result)
+        if on_case_complete is not None:
+            on_case_complete(item_result, item_result.duration_ms)
         return item_result
 
 
@@ -323,8 +336,16 @@ async def _run_async(
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
     run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
+    timeout: float | None = None,
+    on_case_start: Callable[[EvalCase], None] | None = None,
+    on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
 ) -> EvalRunResult:
-    """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py)."""
+    """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py).
+
+    ``timeout`` bounds each task (seconds; a timeout is an isolated per-case error).
+    ``on_case_start``/``on_case_complete`` are internal hooks the CLI runner uses to
+    stream per-case events; ``on_case_complete(item, duration_ms)``.
+    """
     _validate_config(name, task, scorers, max_concurrency)
     cases = _normalize_data(data)
     if select is not None:
@@ -364,7 +385,21 @@ async def _run_async(
 
     semaphore = asyncio.Semaphore(max_concurrency)
     item_results = await asyncio.gather(
-        *[_run_case(c, task, scorers, semaphore, name, dataset_name, session) for c in cases]
+        *[
+            _run_case(
+                c,
+                task,
+                scorers,
+                semaphore,
+                name,
+                dataset_name,
+                session,
+                timeout=timeout,
+                on_case_start=on_case_start,
+                on_case_complete=on_case_complete,
+            )
+            for c in cases
+        ]
     )
 
     upload = session.complete()
