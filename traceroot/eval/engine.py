@@ -192,6 +192,20 @@ def _set_root_attrs(span, identity: _RunIdentity, case: EvalCase) -> None:
     set_span_attribute(span, attr.EVAL_SCORE_TARGET_SPAN_ID, case.score_target_span_id)
 
 
+def _stamp_scorer_version(scores: list[Score], scorer: Any) -> list[Score]:
+    """Apply a scorer's EXPLICITLY declared version (a ``version`` attribute on the
+    scorer) to produced scores that did not set their own. Absent a declaration the
+    version stays None -- V1 never invents a version. A score that already carries an
+    explicit version (e.g. returned as ``Score(..., version="2")``) is left untouched.
+    """
+    declared = getattr(scorer, "version", None)
+    if declared is None:
+        return scores
+    return [
+        s if s.version is not None else dataclasses.replace(s, version=declared) for s in scores
+    ]
+
+
 def _record_scorer_span(span, scores: list[Score]) -> None:
     """Stamp the produced score(s) onto the scorer span (first score for convenience)."""
     if not scores:
@@ -278,7 +292,9 @@ async def _run_case(
                         scorer_span.set_attribute(SpanAttributes.EVAL_SCORER_NAME, name)
                         try:
                             raw = await _await_or_run(scorer, ctx)
-                            produced = _normalize_score_like(raw, name)
+                            produced = _stamp_scorer_version(
+                                _normalize_score_like(raw, name), scorer
+                            )
                             scores.extend(produced)
                             _record_scorer_span(scorer_span, produced)
                         except Exception as exc:  # per-scorer isolation
@@ -487,7 +503,7 @@ async def _run_run_scorers(
             raw = rs(view)
             if inspect.iscoroutine(raw):
                 raw = await raw
-            run_scores.extend(_normalize_score_like(raw, rname))
+            run_scores.extend(_stamp_scorer_version(_normalize_score_like(raw, rname), rs))
         except Exception as exc:  # per-run-scorer isolation
             run_scorer_errors[rname] = _fmt_error(exc)
     return run_scores, run_scorer_errors
