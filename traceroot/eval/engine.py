@@ -246,43 +246,6 @@ async def _run_case(
         return item_result
 
 
-def _auto_transport(
-    data: Dataset | Sequence[EvalCase | dict],
-    scorers: Sequence[Callable[[ScorerContext], Any]],
-    dataset_id: str | None,
-    candidate_version: str | None,
-    environment: str,
-) -> EvalTransport | None:
-    """Build a PlatformTransport when a platform dataset id is available, else None.
-
-    The dataset id comes from the explicit ``dataset_id`` argument or from a
-    Dataset produced by ``pull_dataset`` (which stamps ``dataset_id`` /
-    ``dataset_version_id``).
-    """
-    effective_id = dataset_id
-    version_id: str | None = None
-    if isinstance(data, Dataset):
-        version_id = data.dataset_version_id
-        # A locally-created ds_ id is NOT a signal to upload; only a remote-pinned
-        # dataset (version_id set, i.e. pulled/pushed) auto-reports. An explicit
-        # dataset_id= argument always opts in.
-        if effective_id is None and version_id is not None:
-            effective_id = data.dataset_id
-    if effective_id is None:
-        return None
-    # Lazy import so the engine stays light and avoids any import cycle.
-    from traceroot.eval.platform import PlatformTransport
-
-    names = [getattr(s, "__name__", s.__class__.__name__) for s in scorers]
-    return PlatformTransport(
-        effective_id,
-        scorer_names=names,
-        candidate_version=candidate_version,
-        environment=environment,
-        dataset_version_id=version_id,
-    )
-
-
 def _validate_config(name, task, scorers, max_concurrency) -> None:
     if not name or not str(name).strip():
         raise ValueError("evaluate() requires a non-empty 'name'")
@@ -355,7 +318,9 @@ async def _run_async(
 
     snapshot = _to_snapshot(data, cases)
     dataset_ref = RunDatasetRef(
-        dataset_id=snapshot.dataset_id,
+        # dataset_id is identity only: an explicit dataset_id= associates this run
+        # with a platform dataset without authorizing any upload.
+        dataset_id=dataset_id or snapshot.dataset_id,
         revision=snapshot.revision,
         dataset_version_id=data.dataset_version_id
         if isinstance(data, Dataset)
@@ -364,13 +329,10 @@ async def _run_async(
     )
 
     dataset_name = snapshot.name
-    if transport is not None:
-        active_transport: EvalTransport = transport
-    else:
-        active_transport = (
-            _auto_transport(data, scorers, dataset_id, candidate_version, environment)
-            or LocalTransport()
-        )
+    # Publication boundary (product direction 10.5): local unless the caller EXPLICITLY
+    # opts in via report_to/transport. A pulled/remote-pinned dataset, a bare dataset_id,
+    # and ambient credentials are NOT consent -- there is no implicit platform transport.
+    active_transport: EvalTransport = transport if transport is not None else LocalTransport()
 
     # The high-level runner drives the SAME low-level RunSession that custom
     # harnesses use -- one code path.
