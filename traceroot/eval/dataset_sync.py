@@ -136,7 +136,15 @@ class PlatformDatasetSync:
             )
         except RuntimeError as exc:
             if " HTTP 409:" in str(exc):
-                raise DatasetConflictError(base_version_id, None) from exc
+                current = None
+                try:
+                    import json
+
+                    detail = str(exc).split(" HTTP 409:", 1)[1].strip()
+                    current = json.loads(detail).get("current_version_id")
+                except (ValueError, IndexError):
+                    pass
+                raise DatasetConflictError(base_version_id, current) from exc
             raise
         return PushResult(
             status="uploaded",
