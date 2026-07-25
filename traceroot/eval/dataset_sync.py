@@ -6,7 +6,7 @@ never create versions; they accumulate until an explicit push.
 
 The default is a no-op ``LocalDatasetSync`` (local-only); ``FakeDatasetSync`` drives
 tests; ``PlatformDatasetSync`` publishes to the live backend endpoints
-(``POST /api/public/datasets`` + ``.../{id}/versions``), verified against the
+(``POST /api/v1/public/datasets`` + ``.../{id}/versions``), verified against the
 implemented contract (see ``offline-eval/BACKEND-REQUIREMENTS.md`` A2/A4).
 """
 
@@ -87,7 +87,7 @@ class FakeDatasetSync:
 class PlatformDatasetSync:
     """Real dataset publish against the live backend (A2/A4).
 
-    Upserts the dataset (``POST /api/public/datasets``), then publishes the active
+    Upserts the dataset (``POST /api/v1/public/datasets``), then publishes the active
     cases as one immutable version (``POST .../{id}/versions``) with a
     ``base_version_id`` for optimistic concurrency. Raises ``DatasetConflictError`` on
     a 409 stale base and a clear ``ValueError`` on the 413 batch cap. Note: only
@@ -111,7 +111,7 @@ class PlatformDatasetSync:
     def push_dataset(self, snapshot: DatasetSnapshot, base_version_id: str | None) -> PushResult:
         self._request(
             "POST",
-            "/api/public/datasets",
+            "/api/v1/public/datasets",
             {
                 "dataset_id": snapshot.dataset_id,
                 "name": snapshot.name,
@@ -136,7 +136,7 @@ class PlatformDatasetSync:
         try:
             resp = self._request(
                 "POST",
-                f"/api/public/datasets/{snapshot.dataset_id}/versions",
+                f"/api/v1/public/datasets/{snapshot.dataset_id}/versions",
                 {"base_version_id": base_version_id, "changes": changes},
             )
         except RuntimeError as exc:
