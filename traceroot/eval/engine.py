@@ -1,10 +1,12 @@
-"""Local evaluation engine (OE-3).
+"""Core evaluation runner.
 
-Runs a task over every case, scores each result, isolates failures, aggregates.
-Sync and async tasks and scorers are unified; concurrency is bounded; results
-are returned in dataset input order. Each case emits a trace-native span tree
-(evaluation-item -> task -> scorer, OE-4). Remote transport is wired in OE-5.
-See design spec sections 2.4, 3, 4, 5, 8.
+Runs a task over every case, scores each result, isolates failures, aggregates,
+and emits a trace-native span tree (evaluation-item -> task -> scorer). Sync and
+async tasks/scorers are unified; concurrency is bounded; results are returned in
+input order; the executed cases are snapshotted for an immutable run record.
+
+This module is the internal engine (``_run`` / ``_run_async``); the public API is
+``Evaluation`` and ``evaluate`` / ``evaluate_async`` in ``evaluation.py``.
 """
 
 from __future__ import annotations
@@ -20,9 +22,22 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from traceroot.constants import SDK_VERSION, TRACEROOT_TRACER_NAME, SpanKind
-from traceroot.eval.results import EvalItemResult, EvalRunResult, aggregate_scores
+from traceroot.eval.ids import new_run_id
+from traceroot.eval.results import (
+    EvalItemResult,
+    EvalRunResult,
+    RunDatasetRef,
+    aggregate_scores,
+)
 from traceroot.eval.transport import EvalTransport, LocalTransport, RunHandle
-from traceroot.eval.types import Dataset, EvalCase, Score, ScorerContext
+from traceroot.eval.types import (
+    Dataset,
+    DatasetSnapshot,
+    EvalCase,
+    Score,
+    ScorerContext,
+    _content_revision,
+)
 from traceroot.span_attributes import SpanAttributes
 from traceroot.utils import serialize_value, set_span_attribute
 
@@ -263,10 +278,36 @@ def _validate_config(name, task, scorers, max_concurrency) -> None:
         raise ValueError("'max_concurrency' must be >= 1")
 
 
-async def evaluate_async(
+def _to_snapshot(
+    data: Dataset | DatasetSnapshot | Sequence[EvalCase | dict],
+    cases: list[EvalCase],
+) -> DatasetSnapshot:
+    """The immutable description of exactly which cases ran (post-select)."""
+    if isinstance(data, DatasetSnapshot) and len(data.cases) == len(cases):
+        return data
+    if isinstance(data, Dataset):
+        name, description, dataset_id = data.name, data.description, data.dataset_id
+        base_version_id = data.dataset_version_id
+    elif isinstance(data, DatasetSnapshot):
+        name, description, dataset_id = data.name, data.description, data.dataset_id
+        base_version_id = data.base_version_id
+    else:
+        name, description, dataset_id, base_version_id = _INLINE_DATASET, None, "ds_inline", None
+    cases_t = tuple(cases)
+    return DatasetSnapshot(
+        dataset_id=dataset_id,
+        name=name,
+        description=description,
+        revision=_content_revision(cases_t),
+        cases=cases_t,
+        base_version_id=base_version_id,
+    )
+
+
+async def _run_async(
     *,
     name: str,
-    data: Dataset | Sequence[EvalCase | dict],
+    data: Dataset | DatasetSnapshot | Sequence[EvalCase | dict],
     task: Callable[[Any], Any],
     scorers: Sequence[Callable[[ScorerContext], Any]],
     max_concurrency: int = 10,
@@ -274,20 +315,27 @@ async def evaluate_async(
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     environment: str = "evaluation",
+    select: Callable[[EvalCase], bool] | None = None,
 ) -> EvalRunResult:
-    """Run an evaluation. The async engine; ``evaluate`` wraps this for sync callers.
-
-    When ``dataset_id`` is given (or ``data`` is a Dataset from ``pull_dataset``)
-    and no explicit ``transport`` is passed, results are reported to the TraceRoot
-    backend via ``PlatformTransport`` (``upload.status == "uploaded"``). Otherwise
-    the run is local-only.
-    """
+    """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py)."""
     _validate_config(name, task, scorers, max_concurrency)
     cases = _normalize_data(data)
+    if select is not None:
+        cases = [c for c in cases if select(c)]
     if not cases:
-        raise ValueError("evaluate() requires non-empty 'data'")
+        raise ValueError("evaluate() requires at least one case to run")
 
-    dataset_name = data.name if isinstance(data, Dataset) else _INLINE_DATASET
+    snapshot = _to_snapshot(data, cases)
+    dataset_ref = RunDatasetRef(
+        dataset_id=snapshot.dataset_id,
+        revision=snapshot.revision,
+        dataset_version_id=data.dataset_version_id
+        if isinstance(data, Dataset)
+        else snapshot.base_version_id,
+        case_count=len(cases),
+    )
+
+    dataset_name = snapshot.name
     if transport is not None:
         active_transport: EvalTransport = transport
     else:
@@ -311,42 +359,19 @@ async def evaluate_async(
         item_results=list(item_results),
         score_summary=aggregate_scores(list(item_results)),
         upload=upload,
-    )
-
-
-def evaluate(
-    *,
-    name: str,
-    data: Dataset | Sequence[EvalCase | dict],
-    task: Callable[[Any], Any],
-    scorers: Sequence[Callable[[ScorerContext], Any]],
-    max_concurrency: int = 10,
-    transport: EvalTransport | None = None,
-    dataset_id: str | None = None,
-    candidate_version: str | None = None,
-    environment: str = "evaluation",
-) -> EvalRunResult:
-    """Synchronous entry point. Always returns a completed EvalRunResult.
-
-    Prefer ``evaluate_async`` inside an existing event loop: the fresh-loop path
-    below runs in a worker thread and can break tasks/scorers holding resources
-    bound to the outer loop.
-    """
-    kwargs = dict(
-        name=name,
-        data=data,
-        task=task,
-        scorers=scorers,
-        max_concurrency=max_concurrency,
-        transport=transport,
-        dataset_id=dataset_id,
+        local_run_id=new_run_id(),
         candidate_version=candidate_version,
-        environment=environment,
+        dataset=dataset_ref,
+        run_id=getattr(active_transport, "run_id", None),
     )
+
+
+def _run(**kwargs: Any) -> EvalRunResult:
+    """Synchronous core runner. Always returns a completed EvalRunResult."""
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(evaluate_async(**kwargs))
+        return asyncio.run(_run_async(**kwargs))
     # A loop is already running in this thread: run to completion in a worker thread.
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(lambda: asyncio.run(evaluate_async(**kwargs))).result()
+        return pool.submit(lambda: asyncio.run(_run_async(**kwargs))).result()
