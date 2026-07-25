@@ -4,10 +4,10 @@ One explicit ``Dataset.push()`` = one immutable server dataset version, with
 optimistic-concurrency conflict detection (``base_version_id``). Local mutations
 never create versions; they accumulate until an explicit push.
 
-The remote endpoints do NOT exist yet (see
-``offline-eval/contract-delta-dataset-and-lifecycle.md`` A2/A4). The default is a
-no-op ``LocalDatasetSync``; ``FakeDatasetSync`` drives the tests; ``PlatformDatasetSync``
-is coded to the contract and ready to switch on once the server ships it.
+The default is a no-op ``LocalDatasetSync`` (local-only); ``FakeDatasetSync`` drives
+tests; ``PlatformDatasetSync`` publishes to the live backend endpoints
+(``POST /api/public/datasets`` + ``.../{id}/versions``), verified against the
+implemented contract (see ``offline-eval/BACKEND-REQUIREMENTS.md`` A2/A4).
 """
 
 from __future__ import annotations
@@ -85,12 +85,14 @@ class FakeDatasetSync:
 
 
 class PlatformDatasetSync:
-    """Real dataset publish against the backend (PENDING server endpoints A2/A4).
+    """Real dataset publish against the live backend (A2/A4).
 
-    Coded to ``offline-eval/contract-delta-dataset-and-lifecycle.md``: upsert the
-    dataset, then publish the active cases as one immutable version with a
-    ``base_version_id`` for optimistic concurrency. Will 404 until the server ships
-    those routes; kept so switching on is a construction-time choice, not new code.
+    Upserts the dataset (``POST /api/public/datasets``), then publishes the active
+    cases as one immutable version (``POST .../{id}/versions``) with a
+    ``base_version_id`` for optimistic concurrency. Raises ``DatasetConflictError`` on
+    a 409 stale base and a clear ``ValueError`` on the 413 batch cap. Note: only
+    active cases are sent as upserts; archive/delete of cases removed since the base
+    version is not yet emitted (documented limitation).
     """
 
     def __init__(self, *, api_key: str | None = None, host_url: str | None = None) -> None:
@@ -128,6 +130,9 @@ class PlatformDatasetSync:
             if c.source_span_id is not None:
                 change["source_span_id"] = c.source_span_id
             changes.append(change)
+        if not changes:
+            # The backend requires >= 1 change; an all-archived/empty snapshot has none.
+            raise ValueError("cannot publish a dataset version with no active cases")
         try:
             resp = self._request(
                 "POST",
@@ -135,6 +140,11 @@ class PlatformDatasetSync:
                 {"base_version_id": base_version_id, "changes": changes},
             )
         except RuntimeError as exc:
+            if " HTTP 413:" in str(exc):
+                raise ValueError(
+                    f"too many changes in one push ({len(changes)}); the backend caps a "
+                    "version at ~1000 changes. Split the dataset or publish in stages."
+                ) from exc
             if " HTTP 409:" in str(exc):
                 current = None
                 try:
