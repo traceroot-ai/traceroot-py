@@ -49,6 +49,33 @@ _INLINE_DATASET = "<inline>"
 
 _CASE_FIELDS = {f.name for f in dataclasses.fields(EvalCase)}
 
+# A private, non-exporting provider for LOCAL evaluation spans. See _eval_tracer.
+_LOCAL_EVAL_PROVIDER: Any = None
+
+
+def _eval_tracer(reporting: bool):
+    """Return the tracer for evaluation spans, honoring the trace-privacy boundary.
+
+    Reported run -> the global production tracer, so per-case eval spans export and
+    can be linked to reported results.
+
+    Local run -> a private provider with an ALWAYS_OFF sampler. Its spans have a
+    valid context (so nested application/LLM/@observe spans still parent to the eval
+    tree) but are NOT sampled, so neither the eval spans nor any nested spans created
+    via the global production tracer are exported -- the default ParentBased sampler
+    drops the children of an unsampled parent. The global production TracerProvider is
+    never modified, so normal tracing OUTSIDE the evaluation keeps exporting. A local
+    run therefore honestly has no platform trace id (see _run_case)."""
+    if reporting:
+        return trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
+    global _LOCAL_EVAL_PROVIDER
+    if _LOCAL_EVAL_PROVIDER is None:
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
+
+        _LOCAL_EVAL_PROVIDER = TracerProvider(sampler=ALWAYS_OFF)
+    return _LOCAL_EVAL_PROVIDER.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
+
 
 def _fmt_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
@@ -153,11 +180,12 @@ async def _run_case(
     run_name: str,
     dataset_name: str,
     session: RunSession,
+    reporting: bool = False,
     timeout: float | None = None,
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
 ) -> EvalItemResult:
-    tracer = trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
+    tracer = _eval_tracer(reporting)
     async with semaphore:
         started = time.perf_counter()
         output: Any = None
@@ -175,7 +203,9 @@ async def _run_case(
         with tracer.start_as_current_span("evaluation-item") as root:
             _set_root_attrs(root, run_name, dataset_name, case)
             sc = root.get_span_context()
-            trace_id = format(sc.trace_id, "032x") if sc.is_valid else None
+            # Local runs export nothing, so their results honestly carry no platform
+            # trace id (the ALWAYS_OFF span has a valid context but is never exported).
+            trace_id = format(sc.trace_id, "032x") if (reporting and sc.is_valid) else None
 
             # Task span current while the user's task runs -> user @observe spans nest here.
             with tracer.start_as_current_span("task") as task_span:
@@ -345,6 +375,9 @@ async def _run_async(
         environment=environment,
     ).start()
 
+    # Trace-privacy boundary: only a reported run exports its per-case eval traces.
+    reporting = getattr(active_transport, "reports_traces", False)
+
     semaphore = asyncio.Semaphore(max_concurrency)
     item_results = await asyncio.gather(
         *[
@@ -356,6 +389,7 @@ async def _run_async(
                 name,
                 dataset_name,
                 session,
+                reporting=reporting,
                 timeout=timeout,
                 on_case_start=on_case_start,
                 on_case_complete=on_case_complete,
