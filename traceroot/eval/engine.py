@@ -357,6 +357,8 @@ async def _run_async(
     select: Callable[[EvalCase], bool] | None = None,
     run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
     timeout: float | None = None,
+    metadata: dict[str, Any] | None = None,
+    baseline: EvalRunResult | None = None,
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
 ) -> EvalRunResult:
@@ -400,6 +402,7 @@ async def _run_async(
         dataset_ref=dataset_ref,
         candidate_version=candidate_version,
         environment=environment,
+        metadata=metadata,
     ).start()
 
     # Trace-privacy boundary: only a reported run exports its per-case eval traces.
@@ -453,6 +456,8 @@ async def _run_async(
         run_id=getattr(active_transport, "run_id", None),
         run_scores=run_scores,
         run_scorer_errors=run_scorer_errors,
+        metadata=metadata,
+        baseline=baseline,
     )
 
 
