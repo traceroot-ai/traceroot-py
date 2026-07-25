@@ -150,16 +150,44 @@ async def _await_or_run(fn: Callable[[Any], Any], arg: Any) -> Any:
     return await asyncio.to_thread(fn, arg)
 
 
-def _set_root_attrs(span, run_name: str, dataset_name: str, case: EvalCase) -> None:
-    span.set_attribute(SpanAttributes.SPAN_TYPE, SpanKind.EVALUATION)
-    span.set_attribute(SpanAttributes.EVAL_RUN_NAME, run_name)
-    span.set_attribute(SpanAttributes.EVAL_DATASET_NAME, dataset_name)
-    span.set_attribute(SpanAttributes.EVAL_CASE_ID, case.id)  # type: ignore[arg-type]
-    span.set_attribute(SpanAttributes.EVAL_HAS_EXPECTED, case.expected is not None)
-    # set_span_attribute no-ops on None, so provenance is only stamped when present.
-    set_span_attribute(span, SpanAttributes.EVAL_SOURCE_TRACE_ID, case.source_trace_id)
-    set_span_attribute(span, SpanAttributes.EVAL_SOURCE_SPAN_ID, case.source_span_id)
-    set_span_attribute(span, SpanAttributes.EVAL_SCORE_TARGET_SPAN_ID, case.score_target_span_id)
+@dataclasses.dataclass(frozen=True)
+class _RunIdentity:
+    """Immutable identity stamped on every evaluation trace (see the attribute
+    contract note). Built once per run; the same values mark each per-case root."""
+
+    name: str
+    dataset_name: str
+    dataset_id: str
+    dataset_version_id: str | None
+    candidate_version: str | None
+    environment: str
+    run_id: str | None
+
+
+# Version of the evaluation trace attribute contract emitted on the root span.
+_EVAL_ATTR_CONTRACT_VERSION = "1"
+
+
+def _set_root_attrs(span, identity: _RunIdentity, case: EvalCase) -> None:
+    attr = SpanAttributes
+    span.set_attribute(attr.SPAN_TYPE, SpanKind.EVALUATION)  # eval-trace marker
+    span.set_attribute(attr.EVAL_CONTRACT_VERSION, _EVAL_ATTR_CONTRACT_VERSION)
+    span.set_attribute(attr.ENVIRONMENT, identity.environment)
+    span.set_attribute(attr.EVAL_ENVIRONMENT, identity.environment)
+    span.set_attribute(attr.EVAL_NAME, identity.name)
+    span.set_attribute(attr.EVAL_RUN_NAME, identity.name)  # retained alias
+    span.set_attribute(attr.EVAL_DATASET_NAME, identity.dataset_name)
+    span.set_attribute(attr.EVAL_CASE_ID, case.id)  # type: ignore[arg-type]
+    span.set_attribute(attr.EVAL_HAS_EXPECTED, case.expected is not None)
+    # set_span_attribute no-ops on None, so optional identity/provenance is only
+    # stamped when present (dataset_version_id/candidate_version/run_id, source ids).
+    set_span_attribute(span, attr.EVAL_DATASET_ID, identity.dataset_id)
+    set_span_attribute(span, attr.EVAL_DATASET_VERSION_ID, identity.dataset_version_id)
+    set_span_attribute(span, attr.EVAL_CANDIDATE_VERSION, identity.candidate_version)
+    set_span_attribute(span, attr.EVAL_RUN_ID, identity.run_id)
+    set_span_attribute(span, attr.EVAL_SOURCE_TRACE_ID, case.source_trace_id)
+    set_span_attribute(span, attr.EVAL_SOURCE_SPAN_ID, case.source_span_id)
+    set_span_attribute(span, attr.EVAL_SCORE_TARGET_SPAN_ID, case.score_target_span_id)
 
 
 def _record_scorer_span(span, scores: list[Score]) -> None:
@@ -177,8 +205,7 @@ async def _run_case(
     task: Callable[[Any], Any],
     scorers: Sequence[Callable[[ScorerContext], Any]],
     semaphore: asyncio.Semaphore,
-    run_name: str,
-    dataset_name: str,
+    identity: _RunIdentity,
     session: RunSession,
     reporting: bool = False,
     timeout: float | None = None,
@@ -201,7 +228,7 @@ async def _run_case(
         # Root span opened INSIDE this per-case coroutine (its own asyncio Task via
         # gather), so concurrent cases never share a current-span and never tangle.
         with tracer.start_as_current_span("evaluation-item") as root:
-            _set_root_attrs(root, run_name, dataset_name, case)
+            _set_root_attrs(root, identity, case)
             sc = root.get_span_context()
             # Local runs export nothing, so their results honestly carry no platform
             # trace id (the ALWAYS_OFF span has a valid context but is never exported).
@@ -210,7 +237,7 @@ async def _run_case(
             # Task span current while the user's task runs -> user @observe spans nest here.
             with tracer.start_as_current_span("task") as task_span:
                 task_span.set_attribute(SpanAttributes.SPAN_TYPE, SpanKind.TASK)
-                task_span.set_attribute(SpanAttributes.EVAL_RUN_NAME, run_name)
+                task_span.set_attribute(SpanAttributes.EVAL_RUN_NAME, identity.name)
                 task_span.set_attribute(
                     SpanAttributes.EVAL_TASK_NAME,
                     getattr(task, "__name__", task.__class__.__name__),
@@ -244,7 +271,7 @@ async def _run_case(
                     name = getattr(scorer, "__name__", scorer.__class__.__name__)
                     with tracer.start_as_current_span(name) as scorer_span:
                         scorer_span.set_attribute(SpanAttributes.SPAN_TYPE, SpanKind.SCORER)
-                        scorer_span.set_attribute(SpanAttributes.EVAL_RUN_NAME, run_name)
+                        scorer_span.set_attribute(SpanAttributes.EVAL_RUN_NAME, identity.name)
                         scorer_span.set_attribute(SpanAttributes.EVAL_SCORER_NAME, name)
                         try:
                             raw = await _await_or_run(scorer, ctx)
@@ -378,6 +405,18 @@ async def _run_async(
     # Trace-privacy boundary: only a reported run exports its per-case eval traces.
     reporting = getattr(active_transport, "reports_traces", False)
 
+    # One immutable identity stamped on every per-case evaluation trace (Phase 4
+    # attribute contract). run_id is available now (post create_run) when reported.
+    identity = _RunIdentity(
+        name=name,
+        dataset_name=dataset_name,
+        dataset_id=dataset_ref.dataset_id,
+        dataset_version_id=dataset_ref.dataset_version_id,
+        candidate_version=candidate_version,
+        environment=environment,
+        run_id=getattr(active_transport, "run_id", None),
+    )
+
     semaphore = asyncio.Semaphore(max_concurrency)
     item_results = await asyncio.gather(
         *[
@@ -386,8 +425,7 @@ async def _run_async(
                 task,
                 scorers,
                 semaphore,
-                name,
-                dataset_name,
+                identity,
                 session,
                 reporting=reporting,
                 timeout=timeout,
