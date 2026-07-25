@@ -27,6 +27,7 @@ from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
     RunDatasetRef,
+    RunView,
     aggregate_scores,
 )
 from traceroot.eval.session import RunSession
@@ -34,6 +35,7 @@ from traceroot.eval.transport import EvalTransport, LocalTransport
 from traceroot.eval.types import (
     Dataset,
     DatasetSnapshot,
+    DeferredScore,
     EvalCase,
     Score,
     ScorerContext,
@@ -80,6 +82,11 @@ def _normalize_score_like(raw: Any, default_name: str) -> list[Score]:
     """Normalize a scorer's return value into a list of Score."""
     if raw is None:
         return []
+    if isinstance(raw, DeferredScore):
+        # A deferred/human score is pending, never a numeric zero.
+        return [
+            Score(name=raw.name, value="pending", comment=raw.reason, metadata={"deferred": True})
+        ]
     if isinstance(raw, Score):
         return [raw]
     if isinstance(raw, (list, tuple)):
@@ -315,6 +322,7 @@ async def _run_async(
     candidate_version: str | None = None,
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
+    run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
 ) -> EvalRunResult:
     """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py)."""
     _validate_config(name, task, scorers, max_concurrency)
@@ -360,16 +368,47 @@ async def _run_async(
     )
 
     upload = session.complete()
+
+    results_list = list(item_results)
+    summary = aggregate_scores(results_list)
+    run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
+
     return EvalRunResult(
         name=name,
-        item_results=list(item_results),
-        score_summary=aggregate_scores(list(item_results)),
+        item_results=results_list,
+        score_summary=summary,
         upload_state=upload,
         local_run_id=new_run_id(),
         candidate_version=candidate_version,
         dataset=dataset_ref,
         run_id=getattr(active_transport, "run_id", None),
+        run_scores=run_scores,
+        run_scorer_errors=run_scorer_errors,
     )
+
+
+async def _run_run_scorers(
+    run_scorers: Sequence[Callable[[RunView], Any]] | None,
+    name: str,
+    item_results: list[EvalItemResult],
+    summary: Any,
+) -> tuple[list[Score], dict[str, str]]:
+    """Run whole-run scorers over the completed items. Errors are isolated per scorer."""
+    run_scores: list[Score] = []
+    run_scorer_errors: dict[str, str] = {}
+    if not run_scorers:
+        return run_scores, run_scorer_errors
+    view = RunView(name=name, item_results=item_results, score_summary=summary)
+    for rs in run_scorers:
+        rname = getattr(rs, "__name__", rs.__class__.__name__)
+        try:
+            raw = rs(view)
+            if inspect.iscoroutine(raw):
+                raw = await raw
+            run_scores.extend(_normalize_score_like(raw, rname))
+        except Exception as exc:  # per-run-scorer isolation
+            run_scorer_errors[rname] = _fmt_error(exc)
+    return run_scores, run_scorer_errors
 
 
 def _run(**kwargs: Any) -> EvalRunResult:
