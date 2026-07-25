@@ -16,6 +16,7 @@ import dataclasses
 from typing import Any, Protocol, runtime_checkable
 
 from traceroot.eval.types import DatasetSnapshot
+from traceroot.utils import serialize_value
 
 
 class DatasetConflictError(Exception):
@@ -118,21 +119,23 @@ class PlatformDatasetSync:
                 "description": snapshot.description,
             },
         )
-        from traceroot.eval.platform import _encode_field
-
         changes: list[dict[str, Any]] = []
         for c in snapshot.cases:
-            # input/expected are sent as canonical JSON text so their type survives
-            # the backend's TEXT column; metadata is a native JSONB column (sent raw).
+            # Native JSON at the HTTP boundary: input/expected/metadata are sent as
+            # their real Python values. The backend owns the single JSON-encode into
+            # its storage column (input/expected schema is z.unknown()); the SDK does
+            # NOT pre-encode -- doing so would double-encode. serialize_value only
+            # normalizes non-JSON-native objects (datetime, dataclasses, ...) to
+            # JSON-safe values; a dict stays a dict, "42" stays the string "42".
             change: dict[str, Any] = {
                 "op": "upsert",
                 "test_case_id": c.id,
-                "input": _encode_field(c.input),
+                "input": serialize_value(c.input),
             }
             if c.expected is not None:
-                change["expected"] = _encode_field(c.expected)
+                change["expected"] = serialize_value(c.expected)
             if c.metadata is not None:
-                change["metadata"] = c.metadata
+                change["metadata"] = serialize_value(c.metadata)
             if c.source_trace_id is not None:
                 change["source_trace_id"] = c.source_trace_id
             if c.source_span_id is not None:
