@@ -422,6 +422,14 @@ async def _run_async(
     # and ambient credentials are NOT consent -- there is no implicit platform transport.
     active_transport: EvalTransport = transport if transport is not None else LocalTransport()
 
+    # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
+    # scorer callables when the transport accepts specs and the caller did not pre-set them.
+    # Must happen BEFORE create_run (session.start) so the descriptors reach registration.
+    if getattr(active_transport, "scorer_specs", "unset") is None:
+        from traceroot.eval.scorers import describe_scorers
+
+        active_transport.scorer_specs = describe_scorers(scorers)
+
     # The high-level runner drives the SAME low-level RunSession that custom
     # harnesses use -- one code path.
     session = RunSession(
@@ -438,13 +446,6 @@ async def _run_async(
 
     # Trace-privacy boundary: only a reported run exports its per-case eval traces.
     reporting = getattr(active_transport, "reports_traces", False)
-
-    # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
-    # scorer callables when the transport accepts specs and the caller did not pre-set them.
-    if getattr(active_transport, "scorer_specs", "unset") is None:
-        from traceroot.eval.scorers import describe_scorers
-
-        active_transport.scorer_specs = describe_scorers(scorers)
 
     # Client-side run id generated up front so it can be stamped on the per-case trace
     # identity AND carried on the result (the platform run_id is separate, when reported).
