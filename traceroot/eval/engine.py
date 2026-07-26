@@ -208,6 +208,11 @@ def _stamp_scorer_version(scores: list[Score], scorer: Any) -> list[Score]:
     ]
 
 
+def _scorer_output_repr(scores: list[Score]) -> list[dict[str, Any]]:
+    """The scorer span's span.output: each produced score's value + explanation."""
+    return [{"name": s.name, "value": s.value, "explanation": s.comment} for s in scores]
+
+
 def _record_scorer_span(span, scores: list[Score]) -> None:
     """Stamp the produced score(s) onto the scorer span (first score for convenience)."""
     if not scores:
@@ -247,6 +252,10 @@ async def _run_case(
         # gather), so concurrent cases never share a current-span and never tangle.
         with tracer.start_as_current_span("evaluation-item") as root:
             _set_root_attrs(root, identity, case)
+            # Standard span I/O on the root so the trace viewer renders trace-level and
+            # root-span Input/Output (output is set below, once the candidate output/error
+            # is known). See offline-eval/contract-notes/eval-span-io.md.
+            set_span_attribute(root, SpanAttributes.SPAN_INPUT, serialize_value(case.input))
             sc = root.get_span_context()
             # Local runs export nothing, so their results honestly carry no platform
             # trace id (the ALWAYS_OFF span has a valid context but is never exported).
@@ -281,7 +290,10 @@ async def _run_case(
             if error is not None:
                 root.set_status(Status(StatusCode.ERROR, error))
                 root.set_attribute(SpanAttributes.EVAL_ERROR, error)
+                set_span_attribute(root, SpanAttributes.SPAN_OUTPUT, error)  # task error as output
             else:
+                # Root output = the candidate output (mirrors the task span's output).
+                set_span_attribute(root, SpanAttributes.SPAN_OUTPUT, serialize_value(output))
                 # Scorer spans opened from the root (task 'with' has exited) -> siblings of task.
                 ctx = ScorerContext(
                     input=case.input, output=output, expected=case.expected, metadata=case.metadata
@@ -292,6 +304,17 @@ async def _run_case(
                         scorer_span.set_attribute(SpanAttributes.SPAN_TYPE, SpanKind.SCORER)
                         scorer_span.set_attribute(SpanAttributes.EVAL_RUN_NAME, identity.name)
                         scorer_span.set_attribute(SpanAttributes.EVAL_SCORER_NAME, name)
+                        # span.input = what the scorer compared (candidate + expected,
+                        # plus the scored span target when present).
+                        scorer_input: dict[str, Any] = {
+                            "candidate": output,
+                            "expected": case.expected,
+                        }
+                        if case.score_target_span_id is not None:
+                            scorer_input["target_span_id"] = case.score_target_span_id
+                        set_span_attribute(
+                            scorer_span, SpanAttributes.SPAN_INPUT, serialize_value(scorer_input)
+                        )
                         try:
                             raw = await _await_or_run(scorer, ctx)
                             produced = _stamp_scorer_version(
@@ -299,12 +322,21 @@ async def _run_case(
                             )
                             scores.extend(produced)
                             _record_scorer_span(scorer_span, produced)
+                            if produced:  # span.output = the score value(s) + explanation
+                                set_span_attribute(
+                                    scorer_span,
+                                    SpanAttributes.SPAN_OUTPUT,
+                                    serialize_value(_scorer_output_repr(produced)),
+                                )
                         except Exception as exc:  # per-scorer isolation
                             scorer_errors[name] = _fmt_error(exc)
                             scorer_span.set_status(Status(StatusCode.ERROR, str(exc)))
                             scorer_span.record_exception(exc)
                             scorer_span.set_attribute(
                                 SpanAttributes.EVAL_ERROR, scorer_errors[name]
+                            )
+                            set_span_attribute(
+                                scorer_span, SpanAttributes.SPAN_OUTPUT, scorer_errors[name]
                             )
 
         item_result = EvalItemResult(
