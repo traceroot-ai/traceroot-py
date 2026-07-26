@@ -597,18 +597,11 @@ async def _run_async(
 
     upload = session.complete()
 
-    # When the bar was shown (interactive), surface a clickable run link if the
-    # backend returned one. Off-terminal callers read result.upload_state instead.
-    if reporter is not None and getattr(upload, "dashboard_url", None):
-        from traceroot.eval.progress import print_run_url
-
-        print_run_url(upload.dashboard_url)
-
     results_list = list(item_results)
     summary = aggregate_scores(results_list)
     run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
 
-    return EvalRunResult(
+    result = EvalRunResult(
         name=name,
         item_results=results_list,
         score_summary=summary,
@@ -622,6 +615,22 @@ async def _run_async(
         metadata=run_metadata,
         baseline=baseline,
     )
+
+    # When the bar was shown (interactive), print a closing block: the
+    # candidate-vs-baseline comparison when a baseline exists (it carries the run
+    # link), otherwise just the clickable run link. Off-terminal callers read the
+    # returned result instead.
+    if reporter is not None:
+        if baseline is not None:
+            import sys
+
+            print(result.comparison_report(baseline), file=sys.stderr)
+        elif getattr(upload, "dashboard_url", None):
+            from traceroot.eval.progress import print_run_url
+
+            print_run_url(upload.dashboard_url)
+
+    return result
 
 
 async def _run_run_scorers(
