@@ -31,8 +31,7 @@ from traceroot.eval.results import (
     RunView,
     aggregate_scores,
 )
-from traceroot.eval.session import RunSession
-from traceroot.eval.transport import EvalTransport, LocalTransport
+from traceroot.eval.transport import EvalTransport, RunHandle
 from traceroot.eval.types import (
     Dataset,
     DatasetSnapshot,
@@ -49,32 +48,11 @@ _INLINE_DATASET = "<inline>"
 
 _CASE_FIELDS = {f.name for f in dataclasses.fields(EvalCase)}
 
-# A private, non-exporting provider for LOCAL evaluation spans. See _eval_tracer.
-_LOCAL_EVAL_PROVIDER: Any = None
 
-
-def _eval_tracer(reporting: bool):
-    """Return the tracer for evaluation spans, honoring the trace-privacy boundary.
-
-    Reported run -> the global production tracer, so per-case eval spans export and
-    can be linked to reported results.
-
-    Local run -> a private provider with an ALWAYS_OFF sampler. Its spans have a
-    valid context (so nested application/LLM/@observe spans still parent to the eval
-    tree) but are NOT sampled, so neither the eval spans nor any nested spans created
-    via the global production tracer are exported -- the default ParentBased sampler
-    drops the children of an unsampled parent. The global production TracerProvider is
-    never modified, so normal tracing OUTSIDE the evaluation keeps exporting. A local
-    run therefore honestly has no platform trace id (see _run_case)."""
-    if reporting:
-        return trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
-    global _LOCAL_EVAL_PROVIDER
-    if _LOCAL_EVAL_PROVIDER is None:
-        from opentelemetry.sdk.trace import TracerProvider
-        from opentelemetry.sdk.trace.sampling import ALWAYS_OFF
-
-        _LOCAL_EVAL_PROVIDER = TracerProvider(sampler=ALWAYS_OFF)
-    return _LOCAL_EVAL_PROVIDER.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
+def _eval_tracer():
+    """The global production tracer for evaluation spans. Evaluation is cloud-only, so a
+    run always exports its per-case spans, which are then linked to the reported results."""
+    return trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
 
 
 def _fmt_error(exc: BaseException) -> str:
@@ -229,13 +207,13 @@ async def _run_case(
     scorers: Sequence[Callable[[ScorerContext], Any]],
     semaphore: asyncio.Semaphore,
     identity: _RunIdentity,
-    session: RunSession,
-    reporting: bool = False,
+    transport: EvalTransport,
+    run: RunHandle,
     timeout: float | None = None,
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
 ) -> EvalItemResult:
-    tracer = _eval_tracer(reporting)
+    tracer = _eval_tracer()
     async with semaphore:
         started = time.perf_counter()
         output: Any = None
@@ -246,7 +224,7 @@ async def _run_case(
         if on_case_start is not None:
             on_case_start(case)
         # Pre-register the item (before execution) so a future live UI can show it.
-        session.register(case)
+        transport.register_item(run, case)
 
         # Root span opened INSIDE this per-case coroutine (its own asyncio Task via
         # gather), so concurrent cases never share a current-span and never tangle.
@@ -257,9 +235,9 @@ async def _run_case(
             # is known). See offline-eval/contract-notes/eval-span-io.md.
             set_span_attribute(root, SpanAttributes.SPAN_INPUT, serialize_value(case.input))
             sc = root.get_span_context()
-            # Local runs export nothing, so their results honestly carry no platform
-            # trace id (the ALWAYS_OFF span has a valid context but is never exported).
-            trace_id = format(sc.trace_id, "032x") if (reporting and sc.is_valid) else None
+            # A reported run exports its per-case spans, so the result carries the platform
+            # trace id for the item->trace link.
+            trace_id = format(sc.trace_id, "032x") if sc.is_valid else None
 
             # Task span current while the user's task runs -> user @observe spans nest here.
             with tracer.start_as_current_span("task") as task_span:
@@ -350,7 +328,8 @@ async def _run_case(
             trace_id=trace_id,
             duration_ms=(time.perf_counter() - started) * 1000.0,
         )
-        session.record(item_result)
+        transport.record_item_result(run, item_result)
+        transport.record_scores(run, item_result.case_id, item_result.scores)
         if on_case_complete is not None:
             on_case_complete(item_result, item_result.duration_ms)
         return item_result
@@ -363,12 +342,11 @@ def _auto_transport(
     candidate_version: str | None,
     environment: str,
 ) -> EvalTransport | None:
-    """Default reporting (matches Braintrust/Langfuse/Laminar): upload when credentials +
-    a platform dataset exist. Returns None to stay local -- for a purely local dataset the
-    SDK cannot create server-side (no dataset_id/version), or when no credentials are set
-    (degrade gracefully, never raise on the default path). Opt out entirely with local=True.
+    """Build the reporting transport from credentials + a synced dataset. Returns None when
+    it cannot (no synced dataset, or no credentials); the caller turns that into a clear error
+    (evaluation is cloud-only).
 
-    A platform dataset means an explicit ``dataset_id`` OR a Dataset that was pulled/pushed
+    A synced dataset means an explicit ``dataset_id`` OR a Dataset that was pulled/pushed
     (``dataset_version_id`` stamped). A locally-created ``ds_`` id is not one.
     """
     effective_id = dataset_id
@@ -378,12 +356,12 @@ def _auto_transport(
         if effective_id is None and version_id is not None:
             effective_id = data.dataset_id
     if effective_id is None:
-        return None  # inline/local dataset -> nothing to report against
+        return None  # inline/unsynced dataset -> nothing to report against
 
     from traceroot.eval.platform import PlatformTransport, _resolve_credentials
 
     key, _host = _resolve_credentials(None, None)
-    if not key:  # no credentials -> stay local instead of raising
+    if not key:  # no credentials
         return None
     names = [getattr(s, "__name__", s.__class__.__name__) for s in scorers]
     return PlatformTransport(
@@ -450,7 +428,6 @@ async def _run_async(
     run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
     timeout: float | None = None,
     metadata: dict[str, Any] | None = None,
-    local: bool = False,
     progress: bool | None = None,
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
@@ -480,57 +457,50 @@ async def _run_async(
         case_count=len(cases),
     )
 
-    # Enrich run metadata with auto-discovered provenance (git/ci) for the local run
-    # record + artifact. Cheap path (no git-status subprocess); dirty is available via the
-    # public collect_run_provenance helper. NOTE: not uploaded -- the backend's strict
-    # run-registration schema has no metadata field (see report / backend dependency).
+    # Enrich run metadata with auto-discovered provenance (git/ci) for the run record.
+    # Cheap path (no git-status subprocess); dirty is available via the public
+    # collect_run_provenance helper. NOTE: not uploaded -- the backend's strict
+    # run-registration schema has no metadata field.
     from traceroot.eval.provenance import collect_run_provenance
 
     run_metadata = collect_run_provenance(metadata, detect_dirty=False)
 
     dataset_name = snapshot.name
-    # Reporting default (matches competitors): an explicit report_to/transport always wins;
-    # otherwise upload by default when credentials + a platform dataset exist, unless the
-    # caller opted out with local=True. _auto_transport returns None (-> local) when there
-    # are no credentials or the dataset is purely local.
+    # Cloud-only: an explicit transport wins; otherwise build a reporting transport from
+    # credentials + the synced dataset. Evaluation always reports -- there is no local run.
     if transport is not None:
         active_transport: EvalTransport = transport
-    elif local:
-        active_transport = LocalTransport()
     else:
-        active_transport = (
-            _auto_transport(data, scorers, dataset_id, candidate_version, environment)
-            or LocalTransport()
+        active_transport = _auto_transport(
+            data, scorers, dataset_id, candidate_version, environment
         )
+        if active_transport is None:
+            raise RuntimeError(
+                "evaluate() reports to the TraceRoot platform, but no credentials or synced "
+                "dataset were found. Set TRACEROOT_API_KEY and pass a pulled dataset "
+                "(traceroot.pull_dataset(...)), or pass an explicit transport=."
+            )
 
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
     # scorer callables when the transport accepts specs and the caller did not pre-set them.
-    # Must happen BEFORE create_run (session.start) so the descriptors reach registration.
+    # Must happen BEFORE create_run so the descriptors reach registration.
     if getattr(active_transport, "scorer_specs", "unset") is None:
         from traceroot.eval.scorers import describe_scorers
 
         active_transport.scorer_specs = describe_scorers(scorers)
 
-    # The high-level runner drives the SAME low-level RunSession that custom
-    # harnesses use -- one code path.
-    session = RunSession(
-        active_transport,
+    # Client-side run id: the idempotency key for run registration AND the id carried on
+    # the result (the platform run_id is separate, assigned by the backend).
+    local_run_id = new_run_id()
+
+    # Register the run up front so scorer descriptors + the run_id are available before the
+    # per-case traces are stamped.
+    run_handle = active_transport.create_run(
         name=name,
         dataset_name=dataset_name,
-        dataset_ref=dataset_ref,
-        candidate_version=candidate_version,
-        environment=environment,
-        # The session/transport gets the caller's metadata as-is; auto provenance is a
-        # LOCAL enrichment attached to the result, not pushed at the reporting boundary.
         metadata=metadata,
-    ).start()
-
-    # Trace-privacy boundary: only a reported run exports its per-case eval traces.
-    reporting = getattr(active_transport, "reports_traces", False)
-
-    # Client-side run id generated up front so it can be stamped on the per-case trace
-    # identity AND carried on the result (the platform run_id is separate, when reported).
-    local_run_id = new_run_id()
+        client_run_id=local_run_id,
+    )
 
     # One immutable identity stamped on every per-case evaluation trace (attribute
     # contract). run_id is available now (post create_run) when reported.
@@ -574,8 +544,8 @@ async def _run_async(
                     scorers,
                     semaphore,
                     identity,
-                    session,
-                    reporting=reporting,
+                    active_transport,
+                    run_handle,
                     timeout=timeout,
                     on_case_start=case_start_hook,
                     on_case_complete=case_complete_hook,
@@ -587,7 +557,7 @@ async def _run_async(
         if reporter is not None:
             reporter.finish()
 
-    upload = session.complete()
+    upload = active_transport.finish_run(run_handle, status=None)
 
     results_list = list(item_results)
     summary = aggregate_scores(results_list)
