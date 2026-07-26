@@ -324,6 +324,45 @@ async def _run_case(
         return item_result
 
 
+def _auto_transport(
+    data: Dataset | Sequence[EvalCase | dict],
+    scorers: Sequence[Callable[[ScorerContext], Any]],
+    dataset_id: str | None,
+    candidate_version: str | None,
+    environment: str,
+) -> EvalTransport | None:
+    """Default reporting (matches Braintrust/Langfuse/Laminar): upload when credentials +
+    a platform dataset exist. Returns None to stay local -- for a purely local dataset the
+    SDK cannot create server-side (no dataset_id/version), or when no credentials are set
+    (degrade gracefully, never raise on the default path). Opt out entirely with local=True.
+
+    A platform dataset means an explicit ``dataset_id`` OR a Dataset that was pulled/pushed
+    (``dataset_version_id`` stamped). A locally-created ``ds_`` id is not one.
+    """
+    effective_id = dataset_id
+    version_id: str | None = None
+    if isinstance(data, Dataset):
+        version_id = data.dataset_version_id
+        if effective_id is None and version_id is not None:
+            effective_id = data.dataset_id
+    if effective_id is None:
+        return None  # inline/local dataset -> nothing to report against
+
+    from traceroot.eval.platform import PlatformTransport, _resolve_credentials
+
+    key, _host = _resolve_credentials(None, None)
+    if not key:  # no credentials -> stay local instead of raising
+        return None
+    names = [getattr(s, "__name__", s.__class__.__name__) for s in scorers]
+    return PlatformTransport(
+        effective_id,
+        scorer_names=names,
+        candidate_version=candidate_version,
+        environment=environment,
+        dataset_version_id=version_id,
+    )
+
+
 def _validate_config(name, task, scorers, max_concurrency) -> None:
     if not name or not str(name).strip():
         raise ValueError("evaluate() requires a non-empty 'name'")
@@ -380,6 +419,7 @@ async def _run_async(
     timeout: float | None = None,
     metadata: dict[str, Any] | None = None,
     baseline: EvalRunResult | None = None,
+    local: bool = False,
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
 ) -> EvalRunResult:
@@ -417,10 +457,19 @@ async def _run_async(
     run_metadata = collect_run_provenance(metadata, detect_dirty=False)
 
     dataset_name = snapshot.name
-    # Publication boundary (product direction 10.5): local unless the caller EXPLICITLY
-    # opts in via report_to/transport. A pulled/remote-pinned dataset, a bare dataset_id,
-    # and ambient credentials are NOT consent -- there is no implicit platform transport.
-    active_transport: EvalTransport = transport if transport is not None else LocalTransport()
+    # Reporting default (matches competitors): an explicit report_to/transport always wins;
+    # otherwise upload by default when credentials + a platform dataset exist, unless the
+    # caller opted out with local=True. _auto_transport returns None (-> local) when there
+    # are no credentials or the dataset is purely local.
+    if transport is not None:
+        active_transport: EvalTransport = transport
+    elif local:
+        active_transport = LocalTransport()
+    else:
+        active_transport = (
+            _auto_transport(data, scorers, dataset_id, candidate_version, environment)
+            or LocalTransport()
+        )
 
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
     # scorer callables when the transport accepts specs and the caller did not pre-set them.
