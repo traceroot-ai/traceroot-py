@@ -198,7 +198,9 @@ def _stamp_scorer_version(scores: list[Score], scorer: Any) -> list[Score]:
     version stays None -- V1 never invents a version. A score that already carries an
     explicit version (e.g. returned as ``Score(..., version="2")``) is left untouched.
     """
-    declared = getattr(scorer, "version", None)
+    from traceroot.eval.scorers import declared_version
+
+    declared = declared_version(scorer)
     if declared is None:
         return scores
     return [
@@ -426,6 +428,13 @@ async def _run_async(
 
     # Trace-privacy boundary: only a reported run exports its per-case eval traces.
     reporting = getattr(active_transport, "reports_traces", False)
+
+    # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
+    # scorer callables when the transport accepts specs and the caller did not pre-set them.
+    if getattr(active_transport, "scorer_specs", "unset") is None:
+        from traceroot.eval.scorers import describe_scorers
+
+        active_transport.scorer_specs = describe_scorers(scorers)
 
     # Client-side run id generated up front so it can be stamped on the per-case trace
     # identity AND carried on the result (the platform run_id is separate, when reported).
