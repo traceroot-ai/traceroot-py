@@ -597,6 +597,13 @@ async def _run_async(
 
     upload = session.complete()
 
+    # When the bar was shown (interactive), surface a clickable run link if the
+    # backend returned one. Off-terminal callers read result.upload_state instead.
+    if reporter is not None and getattr(upload, "dashboard_url", None):
+        from traceroot.eval.progress import print_run_url
+
+        print_run_url(upload.dashboard_url)
+
     results_list = list(item_results)
     summary = aggregate_scores(results_list)
     run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
