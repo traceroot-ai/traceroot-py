@@ -330,6 +330,7 @@ def _auto_transport(
     dataset_id: str | None,
     candidate_version: str | None,
     environment: str,
+    baseline_run_id: str | None = None,
 ) -> EvalTransport | None:
     """Default reporting (matches Braintrust/Langfuse/Laminar): upload when credentials +
     a platform dataset exist. Returns None to stay local -- for a purely local dataset the
@@ -360,6 +361,7 @@ def _auto_transport(
         candidate_version=candidate_version,
         environment=environment,
         dataset_version_id=version_id,
+        baseline_run_id=baseline_run_id,
     )
 
 
@@ -466,8 +468,13 @@ async def _run_async(
     elif local:
         active_transport = LocalTransport()
     else:
+        # An attached baseline run auto-links the comparison on the default path, so the
+        # UI shows Change/regressions without hand-building a transport.
+        baseline_run_id = getattr(baseline, "run_id", None) if baseline is not None else None
         active_transport = (
-            _auto_transport(data, scorers, dataset_id, candidate_version, environment)
+            _auto_transport(
+                data, scorers, dataset_id, candidate_version, environment, baseline_run_id
+            )
             or LocalTransport()
         )
 
