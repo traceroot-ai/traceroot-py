@@ -454,6 +454,7 @@ async def _run_async(
     metadata: dict[str, Any] | None = None,
     baseline: EvalRunResult | None = None,
     local: bool = False,
+    progress: bool | None = None,
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
 ) -> EvalRunResult:
@@ -552,24 +553,47 @@ async def _run_async(
         local_run_id=local_run_id,
     )
 
+    # Live console progress bar (local presentation only; auto-on for an
+    # interactive terminal, off when piped/CI). It composes with any caller
+    # hooks rather than replacing them.
+    reporter = None
+    case_start_hook = on_case_start
+    case_complete_hook = on_case_complete
+    from traceroot.eval.progress import should_show_progress
+
+    if should_show_progress(progress):
+        from traceroot.eval.progress import ConsoleProgress
+
+        reporter = ConsoleProgress(len(cases), name)
+        reporter.start()
+
+        def case_complete_hook(item, duration_ms, _next=on_case_complete):
+            reporter.on_case_complete(item, duration_ms)
+            if _next is not None:
+                _next(item, duration_ms)
+
     semaphore = asyncio.Semaphore(max_concurrency)
-    item_results = await asyncio.gather(
-        *[
-            _run_case(
-                c,
-                task,
-                scorers,
-                semaphore,
-                identity,
-                session,
-                reporting=reporting,
-                timeout=timeout,
-                on_case_start=on_case_start,
-                on_case_complete=on_case_complete,
-            )
-            for c in cases
-        ]
-    )
+    try:
+        item_results = await asyncio.gather(
+            *[
+                _run_case(
+                    c,
+                    task,
+                    scorers,
+                    semaphore,
+                    identity,
+                    session,
+                    reporting=reporting,
+                    timeout=timeout,
+                    on_case_start=case_start_hook,
+                    on_case_complete=case_complete_hook,
+                )
+                for c in cases
+            ]
+        )
+    finally:
+        if reporter is not None:
+            reporter.finish()
 
     upload = session.complete()
 
