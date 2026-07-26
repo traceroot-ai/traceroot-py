@@ -408,6 +408,14 @@ async def _run_async(
         case_count=len(cases),
     )
 
+    # Enrich run metadata with auto-discovered provenance (git/ci) for the local run
+    # record + artifact. Cheap path (no git-status subprocess); dirty is available via the
+    # public collect_run_provenance helper. NOTE: not uploaded -- the backend's strict
+    # run-registration schema has no metadata field (see report / backend dependency).
+    from traceroot.eval.provenance import collect_run_provenance
+
+    run_metadata = collect_run_provenance(metadata, detect_dirty=False)
+
     dataset_name = snapshot.name
     # Publication boundary (product direction 10.5): local unless the caller EXPLICITLY
     # opts in via report_to/transport. A pulled/remote-pinned dataset, a bare dataset_id,
@@ -423,6 +431,8 @@ async def _run_async(
         dataset_ref=dataset_ref,
         candidate_version=candidate_version,
         environment=environment,
+        # The session/transport gets the caller's metadata as-is; auto provenance is a
+        # LOCAL enrichment attached to the result, not pushed at the reporting boundary.
         metadata=metadata,
     ).start()
 
@@ -489,7 +499,7 @@ async def _run_async(
         run_id=getattr(active_transport, "run_id", None),
         run_scores=run_scores,
         run_scorer_errors=run_scorer_errors,
-        metadata=metadata,
+        metadata=run_metadata,
         baseline=baseline,
     )
 
