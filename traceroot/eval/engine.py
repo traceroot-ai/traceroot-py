@@ -362,7 +362,6 @@ def _auto_transport(
     dataset_id: str | None,
     candidate_version: str | None,
     environment: str,
-    baseline_run_id: str | None = None,
 ) -> EvalTransport | None:
     """Default reporting (matches Braintrust/Langfuse/Laminar): upload when credentials +
     a platform dataset exist. Returns None to stay local -- for a purely local dataset the
@@ -393,7 +392,6 @@ def _auto_transport(
         candidate_version=candidate_version,
         environment=environment,
         dataset_version_id=version_id,
-        baseline_run_id=baseline_run_id,
     )
 
 
@@ -452,7 +450,6 @@ async def _run_async(
     run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
     timeout: float | None = None,
     metadata: dict[str, Any] | None = None,
-    baseline: EvalRunResult | None = None,
     local: bool = False,
     progress: bool | None = None,
     on_case_start: Callable[[EvalCase], None] | None = None,
@@ -501,13 +498,8 @@ async def _run_async(
     elif local:
         active_transport = LocalTransport()
     else:
-        # An attached baseline run auto-links the comparison on the default path, so the
-        # UI shows Change/regressions without hand-building a transport.
-        baseline_run_id = getattr(baseline, "run_id", None) if baseline is not None else None
         active_transport = (
-            _auto_transport(
-                data, scorers, dataset_id, candidate_version, environment, baseline_run_id
-            )
+            _auto_transport(data, scorers, dataset_id, candidate_version, environment)
             or LocalTransport()
         )
 
@@ -613,22 +605,15 @@ async def _run_async(
         run_scores=run_scores,
         run_scorer_errors=run_scorer_errors,
         metadata=run_metadata,
-        baseline=baseline,
     )
 
-    # When the bar was shown (interactive), print a closing block: the
-    # candidate-vs-baseline comparison when a baseline exists (it carries the run
-    # link), otherwise just the clickable run link. Off-terminal callers read the
-    # returned result instead.
-    if reporter is not None:
-        if baseline is not None:
-            import sys
+    # When the bar was shown (interactive), surface the clickable run link if the
+    # backend returned one. Off-terminal callers read result.upload_state instead.
+    # (Candidate-vs-baseline comparison is the backend's job, not the SDK's.)
+    if reporter is not None and getattr(upload, "dashboard_url", None):
+        from traceroot.eval.progress import print_run_url
 
-            print(result.comparison_report(baseline), file=sys.stderr)
-        elif getattr(upload, "dashboard_url", None):
-            from traceroot.eval.progress import print_run_url
-
-            print_run_url(upload.dashboard_url)
+        print_run_url(upload.dashboard_url)
 
     return result
 
