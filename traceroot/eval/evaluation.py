@@ -25,8 +25,10 @@ class Evaluation:
 
     Mutable in user code; changing it affects the next ``run()``. ``report_to``
     is the publication boundary: ``None`` = local-only (no network), a transport
-    = report to the backend. ``run_scorers``/``baseline``/``timeout``/``retry``
-    are accepted now and wired in later phases.
+    = report to the backend. ``timeout`` bounds each case; ``metadata`` is attached
+    to the run record; ``baseline`` is attached so ``run.compare()`` needs no argument;
+    ``run_scorers`` run whole-run scorers. ``retry`` is not implemented and is rejected
+    rather than silently ignored (per product direction: retry semantics are deferred).
     """
 
     def __init__(
@@ -48,6 +50,13 @@ class Evaluation:
         dataset_id: str | None = None,
         environment: str = "evaluation",
     ) -> None:
+        if retry is not None:
+            # Deferred by design: automatic retry can bias nondeterministic results and
+            # hide flaky apps. Reject explicitly so it is never a silent no-op.
+            raise NotImplementedError(
+                "retry is not implemented in V1 (its semantics are deliberately deferred). "
+                "Handle retries inside the task, or omit retry."
+            )
         self.name = name
         self.dataset = dataset
         self.task = task
@@ -77,6 +86,9 @@ class Evaluation:
             environment=self.environment,
             select=self.select,
             run_scorers=self.run_scorers,
+            timeout=self.timeout,
+            metadata=self.metadata,
+            baseline=self.baseline,
         )
         base.update(overrides)
         return base
@@ -112,6 +124,7 @@ def evaluate(
     run_scorers: Sequence[Callable[[Any], Any]] | None = None,
     baseline: EvalRunResult | None = None,
     metadata: dict[str, Any] | None = None,
+    timeout: float | None = None,
 ) -> EvalRunResult:
     """Construct-and-run an :class:`Evaluation`. ``dataset=`` is primary; ``data=`` is an alias."""
     return Evaluation(
@@ -128,6 +141,7 @@ def evaluate(
         run_scorers=run_scorers,
         baseline=baseline,
         metadata=metadata,
+        timeout=timeout,
     ).run()
 
 
@@ -148,6 +162,7 @@ async def evaluate_async(
     run_scorers: Sequence[Callable[[Any], Any]] | None = None,
     baseline: EvalRunResult | None = None,
     metadata: dict[str, Any] | None = None,
+    timeout: float | None = None,
 ) -> EvalRunResult:
     """Async form of :func:`evaluate`."""
     return await Evaluation(
@@ -164,4 +179,5 @@ async def evaluate_async(
         run_scorers=run_scorers,
         baseline=baseline,
         metadata=metadata,
+        timeout=timeout,
     ).run_async()
