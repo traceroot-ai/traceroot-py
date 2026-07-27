@@ -108,9 +108,7 @@ class RunSession:
         return self.transport.finish_run(self._require_run(), status="failed")
 
     def cancel(self) -> UploadState:
-        # 'cancelled' is not a backend run status yet (see contract delta B1);
-        # map to 'incomplete' until the server adds it.
-        return self.transport.finish_run(self._require_run(), status="incomplete")
+        return self.transport.finish_run(self._require_run(), status="cancelled")
 
     # --- access ---
     def item(self, case_id: str) -> EvalItemResult | None:

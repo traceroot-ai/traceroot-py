@@ -76,11 +76,11 @@ class TestTerminalStatuses:
         finish = next(c for c in fake.calls if c[0] == "finish_run")
         assert finish[1] == "failed"
 
-    def test_cancel_sends_incomplete_until_backend_supports_cancelled(self):
+    def test_cancel_sends_cancelled(self):
         fake = FakeTransport()
         RunSession(fake, name="r", dataset_name="d").start().cancel()
         finish = next(c for c in fake.calls if c[0] == "finish_run")
-        assert finish[1] == "incomplete"
+        assert finish[1] == "cancelled"
 
     def test_complete_default_status(self):
         fake = FakeTransport()
