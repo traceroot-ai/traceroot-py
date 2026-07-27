@@ -98,3 +98,67 @@ def compare_runs(candidate: EvalRunResult, baseline: EvalRunResult) -> Compariso
     unpaired = sorted(cand_cases ^ base_cases)
 
     return Comparison(compatible, improvements, regressions, unchanged, unpaired)
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _pct(value: float | None) -> str:
+    # Zero-padded to 5 chars so columns align (e.g. "05.20%", "85.00%").
+    return f"{value * 100:05.2f}%" if value is not None else "  n/a "
+
+
+def _delta(diff: float | None) -> str:
+    if diff is None:
+        return "  —   "
+    if diff == 0:
+        return "  —   "
+    sign = "+" if diff > 0 else "-"
+    return f"{sign}{abs(diff) * 100:05.2f}%"
+
+
+def format_comparison_report(
+    candidate: EvalRunResult,
+    baseline: EvalRunResult,
+    *,
+    comparison: Comparison | None = None,
+    url: str | None = None,
+) -> str:
+    """Render a Braintrust-style per-scorer candidate-vs-baseline block.
+
+    One line per numeric scorer: candidate mean, the delta of means vs the baseline,
+    and the per-case improvement/regression cell counts. Local presentation only.
+    """
+    comp = comparison or compare_runs(candidate, baseline)
+
+    imp_by_name: dict[str, int] = {}
+    reg_by_name: dict[str, int] = {}
+    for d in comp.improvements:
+        imp_by_name[d.score_name] = imp_by_name.get(d.score_name, 0) + 1
+    for d in comp.regressions:
+        reg_by_name[d.score_name] = reg_by_name.get(d.score_name, 0) + 1
+
+    names = [n for n, s in candidate.score_summary.items() if s.mean is not None]
+    width = max((len(f"'{n}'") for n in names), default=0)
+
+    lines: list[str] = []
+    for name in names:
+        c_mean = candidate.score_summary[name].mean
+        b = baseline.score_summary.get(name)
+        b_mean = b.mean if b is not None else None
+        diff = (c_mean - b_mean) if (c_mean is not None and b_mean is not None) else None
+        label = f"'{name}'".ljust(width)
+        counts = f"({_plural(imp_by_name.get(name, 0), 'improvement')}, {_plural(reg_by_name.get(name, 0), 'regression')})"
+        lines.append(f"  {_pct(c_mean)} ({_delta(diff)}) {label}  {counts}")
+
+    header = "=" * 20 + " COMPARISON " + "=" * 20
+    title = f"{candidate.name}  vs  {baseline.name} [baseline]:"
+    flag = (
+        ""
+        if comp.compatible
+        else "\n  (INCOMPATIBLE: differing scorers/dataset revision — deltas may be unaligned)"
+    )
+    body = "\n".join(lines) if lines else "  (no numeric scorers to compare)"
+    tail = f"\n\n  → {url}" if url else ""
+    return f"{header}\n{title}{flag}\n{body}{tail}"
