@@ -1,8 +1,14 @@
 """Baseline comparison for offline evaluation (DS-5).
 
-Row-matched (by stable test_case_id) improvements / regressions / unchanged,
-with unpaired rows preserved explicitly. A clean aggregate delta requires a
-compatible identity: the same scorer set and the same dataset revision.
+Local convenience for offline/console use. Counts are SCORE-CELL counts: one cell per
+(test_case_id, scorer), matched by stable test_case_id -- improvements / regressions /
+unchanged cells, with unpaired cells preserved explicitly. These are NOT regressed
+test-CASE counts (a case with two scorers contributes two cells). A clean aggregate delta
+requires a compatible identity: the same scorer set and the same dataset revision.
+
+Ownership note: this comparison is computed locally and is never uploaded. The SDK reports
+only raw outcomes; the backend derives authoritative candidate-vs-baseline labels. The
+only comparison linkage the SDK sends is ``baseline_run_id``.
 """
 
 from __future__ import annotations
@@ -47,7 +53,7 @@ class Comparison:
     def summary(self) -> str:
         flag = "" if self.compatible else " (INCOMPATIBLE: differing scorers/dataset revision)"
         return (
-            f"Comparison{flag}: {len(self.improvements)} improved, "
+            f"Comparison{flag} (score cells): {len(self.improvements)} improved, "
             f"{len(self.regressions)} regressed, {len(self.unchanged)} unchanged, "
             f"{len(self.unpaired)} unpaired"
         )
