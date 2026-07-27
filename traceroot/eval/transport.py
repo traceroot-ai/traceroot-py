@@ -39,7 +39,11 @@ class EvalTransport(Protocol):
     """Persistence seam. Implementations must never fabricate remote URLs."""
 
     def create_run(
-        self, name: str, dataset_name: str, metadata: dict[str, Any] | None
+        self,
+        name: str,
+        dataset_name: str,
+        metadata: dict[str, Any] | None,
+        client_run_id: str | None = None,
     ) -> RunHandle: ...
 
     def register_item(self, run: RunHandle, case: EvalCase) -> None: ...
@@ -55,7 +59,11 @@ class LocalTransport:
     """Default no-op transport. Everything stays local; nothing is uploaded."""
 
     def create_run(
-        self, name: str, dataset_name: str, metadata: dict[str, Any] | None
+        self,
+        name: str,
+        dataset_name: str,
+        metadata: dict[str, Any] | None,
+        client_run_id: str | None = None,
     ) -> RunHandle:
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
@@ -82,9 +90,13 @@ class FakeTransport:
         self.calls: list[tuple] = []
 
     def create_run(
-        self, name: str, dataset_name: str, metadata: dict[str, Any] | None
+        self,
+        name: str,
+        dataset_name: str,
+        metadata: dict[str, Any] | None,
+        client_run_id: str | None = None,
     ) -> RunHandle:
-        self.calls.append(("create_run", name, dataset_name))
+        self.calls.append(("create_run", name, dataset_name, client_run_id))
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
     def register_item(self, run: RunHandle, case: EvalCase) -> None:

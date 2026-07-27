@@ -37,6 +37,13 @@ class TestLifecycle:
         assert s.client_run_id
         assert s.client_run_id == s.client_run_id  # stable across reads
 
+    def test_client_run_id_reaches_create_run(self):
+        fake = FakeTransport()
+        s = RunSession(fake, name="r", dataset_name="d", client_run_id="crun_fixed").start()
+        create = next(c for c in fake.calls if c[0] == "create_run")
+        assert create[3] == "crun_fixed"  # idempotency key threaded to the transport
+        assert s.client_run_id == "crun_fixed"
+
     def test_complete_returns_upload_state(self):
         s = RunSession(FakeTransport(), name="r", dataset_name="d").start()
         state = s.complete()

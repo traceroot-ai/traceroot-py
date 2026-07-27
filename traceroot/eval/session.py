@@ -51,7 +51,10 @@ class RunSession:
     # --- lifecycle ---
     def start(self) -> RunSession:
         self._run = self.transport.create_run(
-            name=self.name, dataset_name=self.dataset_name, metadata=self.metadata
+            name=self.name,
+            dataset_name=self.dataset_name,
+            metadata=self.metadata,
+            client_run_id=self.client_run_id,
         )
         return self
 
