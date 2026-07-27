@@ -76,6 +76,7 @@ class Evaluation:
             candidate_version=self.candidate_version,
             environment=self.environment,
             select=self.select,
+            run_scorers=self.run_scorers,
         )
         base.update(overrides)
         return base
