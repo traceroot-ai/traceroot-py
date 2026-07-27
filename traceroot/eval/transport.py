@@ -38,6 +38,12 @@ class PublishResult:
 class EvalTransport(Protocol):
     """Persistence seam. Implementations must never fabricate remote URLs."""
 
+    # Whether a run through this transport is being REPORTED to the platform. The
+    # engine reads this to decide the privacy boundary for evaluation traces: a
+    # reported run exports its per-case spans (and links their trace ids); a local
+    # run exports nothing, even when global credentials/tracing exist.
+    reports_traces: bool = False
+
     def create_run(
         self,
         name: str,
@@ -57,6 +63,8 @@ class EvalTransport(Protocol):
 
 class LocalTransport:
     """Default no-op transport. Everything stays local; nothing is uploaded."""
+
+    reports_traces = False  # local run: eval traces are not exported
 
     def create_run(
         self,
@@ -84,10 +92,15 @@ class LocalTransport:
 
 
 class FakeTransport:
-    """Records every call in order for deterministic tests. Local-only."""
+    """Records every call in order for deterministic tests. Local-only.
 
-    def __init__(self) -> None:
+    ``reports_traces`` can be set True to double as a reported transport in trace
+    tests (exercises the exporting-tracer path without real network).
+    """
+
+    def __init__(self, reports_traces: bool = False) -> None:
         self.calls: list[tuple] = []
+        self.reports_traces = reports_traces
 
     def create_run(
         self,
