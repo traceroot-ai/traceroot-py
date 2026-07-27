@@ -1,10 +1,9 @@
-"""Transport seam for offline evaluation (OE-5).
+"""Transport seam for offline evaluation.
 
-A narrow internal protocol for eventual platform persistence - STRUCTURE ONLY,
-no HTTP. Ships a no-op ``LocalTransport`` (the default) and a recording
-``FakeTransport`` for deterministic tests. No real network client exists until a
-backend OpenAPI contract lands; URLs are never fabricated. See design spec
-section 6.
+A narrow internal protocol for platform persistence. Evaluation is cloud-only: every
+run reports to the platform through a ``PlatformTransport``. This module defines the
+seam plus a recording ``FakeTransport`` for deterministic tests (a stand-in cloud
+transport that records calls instead of making HTTP requests).
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ class RunHandle:
 
 @dataclasses.dataclass
 class PublishResult:
-    """Result of ``Dataset.publish`` - explicit about local-only state."""
+    """Result of ``Dataset.publish``."""
 
     status: str
     dataset_name: str
@@ -37,12 +36,6 @@ class PublishResult:
 @runtime_checkable
 class EvalTransport(Protocol):
     """Persistence seam. Implementations must never fabricate remote URLs."""
-
-    # Whether a run through this transport is being REPORTED to the platform. The
-    # engine reads this to decide the privacy boundary for evaluation traces: a
-    # reported run exports its per-case spans (and links their trace ids); a local
-    # run exports nothing, even when global credentials/tracing exist.
-    reports_traces: bool = False
 
     def create_run(
         self,
@@ -61,46 +54,12 @@ class EvalTransport(Protocol):
     def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState: ...
 
 
-class LocalTransport:
-    """Default no-op transport. Everything stays local; nothing is uploaded."""
-
-    reports_traces = False  # local run: eval traces are not exported
-
-    def create_run(
-        self,
-        name: str,
-        dataset_name: str,
-        metadata: dict[str, Any] | None,
-        client_run_id: str | None = None,
-    ) -> RunHandle:
-        return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
-
-    def register_item(self, run: RunHandle, case: EvalCase) -> None:
-        return None
-
-    def record_item_result(self, run: RunHandle, item_result: EvalItemResult) -> None:
-        return None
-
-    def record_scores(self, run: RunHandle, case_id: str, scores: list[Score]) -> None:
-        return None
-
-    def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState:
-        return UploadState(status="local_only", dashboard_url=None)
-
-    def publish_dataset(self, dataset_name: str, item_count: int) -> PublishResult:
-        return PublishResult(status="local_only", dataset_name=dataset_name, item_count=item_count)
-
-
 class FakeTransport:
-    """Records every call in order for deterministic tests. Local-only.
+    """Records every call in order for deterministic tests -- a stand-in cloud transport
+    (spans export as on a reported run; no real HTTP)."""
 
-    ``reports_traces`` can be set True to double as a reported transport in trace
-    tests (exercises the exporting-tracer path without real network).
-    """
-
-    def __init__(self, reports_traces: bool = False) -> None:
+    def __init__(self) -> None:
         self.calls: list[tuple] = []
-        self.reports_traces = reports_traces
 
     def create_run(
         self,
@@ -123,8 +82,8 @@ class FakeTransport:
 
     def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState:
         self.calls.append(("finish_run", status))
-        return UploadState(status="local_only", dashboard_url=None)
+        return UploadState(status="uploaded", dashboard_url=None)
 
     def publish_dataset(self, dataset_name: str, item_count: int) -> PublishResult:
         self.calls.append(("publish_dataset", dataset_name))
-        return PublishResult(status="local_only", dataset_name=dataset_name, item_count=item_count)
+        return PublishResult(status="uploaded", dataset_name=dataset_name, item_count=item_count)
