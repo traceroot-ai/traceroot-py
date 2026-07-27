@@ -242,10 +242,23 @@ def _score_event(score: Any) -> dict[str, Any]:
 
 
 def _scorer_error_events(item: EvalItemResult) -> list[dict[str, Any]]:
+    # scorer_version is unknown at the error site (no Score was produced) -> null,
+    # never an invented "1".
     return [
-        {"scorer_name": name, "scorer_version": "1", "message": msg}
+        {"scorer_name": name, "scorer_version": None, "message": msg}
         for name, msg in item.scorer_errors.items()
     ]
+
+
+def _scorer_versions(result: EvalRunResult) -> dict[str, str | None]:
+    """Map scorer name -> its declared version (from produced scores), else None."""
+    versions: dict[str, str | None] = {}
+    for item in result.item_results:
+        for s in item.scores:
+            versions.setdefault(s.name, s.version)
+            if s.version is not None:
+                versions[s.name] = s.version
+    return versions
 
 
 def _case_metadata(item: EvalItemResult) -> dict[str, Any]:
@@ -363,7 +376,9 @@ def write_artifacts(
         "sample": {"count": sample_count, "seed": sample_seed},
         "provenance": provenance,
         "dataset": result.dataset.to_dict() if result.dataset else None,
-        "scorers": [{"name": n, "version": "1"} for n in result.score_summary],
+        "scorers": [
+            {"name": n, "version": _scorer_versions(result).get(n)} for n in result.score_summary
+        ],
         "counts": _counts(result),
         "scores": {k: v.to_dict() for k, v in result.score_summary.items()},
         "upload": result.upload_state.to_dict(),
