@@ -52,6 +52,7 @@ class Evaluation:
         dataset_id: str | None = None,
         environment: str = "evaluation",
         local: bool = False,
+        progress: bool | None = None,
     ) -> None:
         if retry is not None:
             # Deferred by design: automatic retry can bias nondeterministic results and
@@ -76,6 +77,7 @@ class Evaluation:
         self.dataset_id = dataset_id
         self.environment = environment
         self.local = local
+        self.progress = progress
 
     def _kwargs(self, overrides: dict[str, Any]) -> dict[str, Any]:
         base = dict(
@@ -94,6 +96,7 @@ class Evaluation:
             metadata=self.metadata,
             baseline=self.baseline,
             local=self.local,
+            progress=self.progress,
         )
         base.update(overrides)
         return base
@@ -131,6 +134,7 @@ def evaluate(
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
     local: bool = False,
+    progress: bool | None = None,
 ) -> EvalRunResult:
     """Construct-and-run an :class:`Evaluation`. ``dataset=`` is primary; ``data=`` is an alias."""
     return Evaluation(
@@ -149,6 +153,7 @@ def evaluate(
         metadata=metadata,
         timeout=timeout,
         local=local,
+        progress=progress,
     ).run()
 
 
@@ -171,6 +176,7 @@ async def evaluate_async(
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
     local: bool = False,
+    progress: bool | None = None,
 ) -> EvalRunResult:
     """Async form of :func:`evaluate`."""
     return await Evaluation(
@@ -189,4 +195,5 @@ async def evaluate_async(
         metadata=metadata,
         timeout=timeout,
         local=local,
+        progress=progress,
     ).run_async()

@@ -522,6 +522,8 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
         "select": select,
         "on_case_start": on_start,
         "on_case_complete": on_complete,
+        # The runner speaks NDJSON on its own channel; never draw a progress bar.
+        "progress": False,
     }
     if options.get("max_concurrency"):
         run_kwargs["max_concurrency"] = int(options["max_concurrency"])
