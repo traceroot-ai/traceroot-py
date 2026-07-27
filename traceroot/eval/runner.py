@@ -293,12 +293,28 @@ def _counts(result: EvalRunResult) -> dict[str, int]:
     }
 
 
+def _ensure_gitignore(directory: Path) -> None:
+    """Drop a '*' .gitignore in the artifact dir so local eval payloads (which may hold
+    PII/secrets in case input/output) can't be accidentally committed. Never clobbers a
+    user's existing file."""
+    gi = directory / ".gitignore"
+    if gi.exists():
+        return
+    try:
+        gi.write_text(
+            "# TraceRoot local evaluation artifacts -- may contain payloads. Do not commit.\n*\n"
+        )
+    except OSError:
+        pass
+
+
 def _atomic_write(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(path.parent, 0o700)
     except OSError:
         pass
+    _ensure_gitignore(path.parent)
     tmp = path.with_suffix(path.suffix + ".tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(text)
