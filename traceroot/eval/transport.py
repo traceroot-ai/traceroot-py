@@ -48,7 +48,7 @@ class EvalTransport(Protocol):
 
     def record_scores(self, run: RunHandle, case_id: str, scores: list[Score]) -> None: ...
 
-    def finish_run(self, run: RunHandle) -> UploadState: ...
+    def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState: ...
 
 
 class LocalTransport:
@@ -68,7 +68,7 @@ class LocalTransport:
     def record_scores(self, run: RunHandle, case_id: str, scores: list[Score]) -> None:
         return None
 
-    def finish_run(self, run: RunHandle) -> UploadState:
+    def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState:
         return UploadState(status="local_only", dashboard_url=None)
 
     def publish_dataset(self, dataset_name: str, item_count: int) -> PublishResult:
@@ -96,8 +96,8 @@ class FakeTransport:
     def record_scores(self, run: RunHandle, case_id: str, scores: list[Score]) -> None:
         self.calls.append(("record_scores", case_id))
 
-    def finish_run(self, run: RunHandle) -> UploadState:
-        self.calls.append(("finish_run",))
+    def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState:
+        self.calls.append(("finish_run", status))
         return UploadState(status="local_only", dashboard_url=None)
 
     def publish_dataset(self, dataset_name: str, item_count: int) -> PublishResult:
