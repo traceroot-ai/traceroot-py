@@ -168,14 +168,15 @@ class PlatformTransport:
         # Already sent inside record_item_result (which carries the full item).
         return None
 
-    def finish_run(self, run: RunHandle) -> UploadState:
+    def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState:
+        effective = status or (
+            "completed_with_errors" if (self._task_errors or self._scorer_errors) else "completed"
+        )
         self._request(
             "POST",
             f"/api/public/evaluation-runs/{self.run_id}/complete",
             {
-                "status": "completed_with_errors"
-                if (self._task_errors or self._scorer_errors)
-                else "completed",
+                "status": effective,
                 "scored_count": self._scored,
                 "task_error_count": self._task_errors,
                 "scorer_error_count": self._scorer_errors,
