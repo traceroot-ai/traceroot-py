@@ -41,11 +41,23 @@ import traceroot
 import traceroot.eval as ev
 from traceroot.constants import SDK_VERSION
 from traceroot.eval.evaluation import Evaluation
-from traceroot.eval.results import EvalItemResult, EvalRunResult, case_status
+from traceroot.eval.ids import new_run_id
+from traceroot.eval.results import (
+    EvalItemResult,
+    EvalRunResult,
+    RunDatasetRef,
+    UploadState,
+    aggregate_scores,
+    case_status,
+)
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase
 from traceroot.utils import serialize_value
 
 _DEFAULT_RUN_DIR = ".traceroot/eval/runs"
+
+
+class _CancelledError(Exception):
+    """Internal: an evaluation was interrupted (SIGINT) and finalized as incomplete."""
 
 
 # =============================================================================
@@ -351,7 +363,7 @@ def write_artifacts(
 # =============================================================================
 # Suite execution
 # =============================================================================
-def run_suite(paths: list[str], options: dict[str, Any], emitter: Emitter) -> None:
+def run_suite(paths: list[str], options: dict[str, Any], emitter: Emitter) -> bool:
     """Discover + (list or run) the evaluations, emitting the full event stream."""
     reporting = bool(options.get("reporting"))
     if not reporting:
@@ -377,7 +389,7 @@ def run_suite(paths: list[str], options: dict[str, Any], emitter: Emitter) -> No
                 "traceback": traceback.format_exc(),
             }
         )
-        return
+        return False
 
     filters = options.get("filter") or []
     if filters:
@@ -391,14 +403,21 @@ def run_suite(paths: list[str], options: dict[str, Any], emitter: Emitter) -> No
                 "evaluations": [{"name": e.name, "module": m} for (m, e) in discovered],
             }
         )
-        return
+        return False
 
     completed = 0
+    cancelled = False
     for _module_path, evaluation in discovered:
-        _run_one(evaluation, options, emitter)
-        completed += 1
+        try:
+            _run_one(evaluation, options, emitter)
+            completed += 1
+        except _CancelledError:  # SIGINT: this eval was finalized as incomplete; stop the suite
+            completed += 1
+            cancelled = True
+            break
 
-    emitter.emit({"type": "suite_completed", "evaluations": completed})
+    emitter.emit({"type": "suite_completed", "evaluations": completed, "cancelled": cancelled})
+    return cancelled
 
 
 def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) -> None:
@@ -435,22 +454,35 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
         }
     )
 
+    # Collect completed cases so a cancelled run can still be finalized partially.
+    collected: list[EvalItemResult] = []
+
     def on_start(case: EvalCase) -> None:
         emitter.emit({"type": "case_started", "case_id": case.id})
 
     def on_complete(item: EvalItemResult, _dur: float) -> None:
+        collected.append(item)
         emitter.emit({"type": "case_completed", **_case_metadata(item)})
 
-    result = evaluation.run(
-        candidate_version=candidate_version,
-        select=select,
-        max_concurrency=int(options["max_concurrency"]) if options.get("max_concurrency") else 10,
-        timeout=options.get("timeout"),
-        on_case_start=on_start,
-        on_case_complete=on_complete,
-    )
+    cancelled = False
+    try:
+        result = evaluation.run(
+            candidate_version=candidate_version,
+            select=select,
+            max_concurrency=int(options["max_concurrency"])
+            if options.get("max_concurrency")
+            else 10,
+            timeout=options.get("timeout"),
+            on_case_start=on_start,
+            on_case_complete=on_complete,
+        )
+    except KeyboardInterrupt:
+        # Finalize the in-flight run as incomplete from the cases that finished.
+        cancelled = True
+        is_final = False
+        result = _partial_result(evaluation, collected, candidate_version)
 
-    status = _run_status(result, cancelled=False)
+    status = _run_status(result, cancelled=cancelled)
     artifact = None
     if not options.get("no_artifact"):
         run_path, cases_path = _artifact_paths(options, result.local_run_id)
@@ -479,6 +511,36 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             "artifact": artifact,
         }
     )
+    if cancelled:
+        raise _CancelledError()
+
+
+def _partial_result(
+    evaluation: Evaluation, collected: list[EvalItemResult], candidate_version: str | None
+) -> EvalRunResult:
+    """Build an incomplete EvalRunResult from the cases that finished before cancel."""
+    data = evaluation.dataset
+    if isinstance(data, DatasetSnapshot):
+        dataset_id, revision, version_id = data.dataset_id, data.revision, data.base_version_id
+    elif isinstance(data, Dataset):
+        snap = data.snapshot()
+        dataset_id, revision, version_id = snap.dataset_id, snap.revision, data.dataset_version_id
+    else:
+        dataset_id, revision, version_id = "ds_inline", "rev_partial", None
+    return EvalRunResult(
+        name=evaluation.name,
+        item_results=list(collected),
+        score_summary=aggregate_scores(list(collected)),
+        upload_state=UploadState(),
+        local_run_id=new_run_id(),
+        candidate_version=candidate_version,
+        dataset=RunDatasetRef(
+            dataset_id=dataset_id,
+            revision=revision,
+            dataset_version_id=version_id,
+            case_count=len(collected),
+        ),
+    )
 
 
 def _artifact_paths(options: dict[str, Any], local_run_id: str) -> tuple[Path, Path]:
@@ -497,8 +559,10 @@ def main(argv: list[str] | None = None) -> int:
     emitter = Emitter(_open_channel())
     options = _load_options()
     try:
-        run_suite(paths, options, emitter)
-    except KeyboardInterrupt:  # handled explicitly in Phase 0-C; safety net here
+        cancelled = run_suite(paths, options, emitter)
+        if cancelled:
+            return 130  # SIGINT: run was finalized as incomplete; the CLI maps 130
+    except KeyboardInterrupt:  # safety net if SIGINT lands outside an in-flight case
         emitter.emit({"type": "fatal", "kind": "cancelled", "message": "interrupted"})
         return 130
     except Exception as exc:  # last-resort harness failure

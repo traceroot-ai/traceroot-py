@@ -196,3 +196,4 @@ cython_debug/
 set_env
 .env.local
 .DS_Store
+.traceroot/
