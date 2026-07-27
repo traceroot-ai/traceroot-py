@@ -34,6 +34,7 @@ import sys
 import threading
 import traceback
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -188,15 +189,35 @@ def _case_ids(data: Any) -> list[str]:
 def _subset(
     data: Any, first: int | None, sample: int | None, seed: int
 ) -> tuple[set[str] | None, str, bool]:
-    """Return (chosen_ids | None, run_mode, is_final)."""
+    """Return (chosen_ids | None, run_mode, is_final).
+
+    Seeded sampling selects by POSITION in the stable dataset order, not by case id,
+    so it is reproducible across repeated imports even when freshly constructed cases
+    receive new generated ULIDs each import (same seed + same dataset content order ->
+    same cases selected). ``first`` is already order-based.
+    """
     if first is None and sample is None:
         return None, "full", True
     ids = _case_ids(data)
     if first is not None:
         return set(ids[:first]), "first", False
     n = min(sample, len(ids)) if sample is not None else len(ids)
-    chosen = random.Random(seed).sample(ids, n) if ids else []
-    return set(chosen), "sample", False
+    positions = random.Random(seed).sample(range(len(ids)), n) if ids else []
+    return {ids[i] for i in positions}, "sample", False
+
+
+def _now_iso() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _dataset_identity(data: Any) -> dict[str, Any]:
+    """Best-effort dataset id / version id / name from the evaluation's data source."""
+    return {
+        "dataset_id": getattr(data, "dataset_id", None),
+        "dataset_version_id": getattr(data, "dataset_version_id", None)
+        or getattr(data, "base_version_id", None),
+        "name": getattr(data, "name", None),
+    }
 
 
 # =============================================================================
@@ -300,6 +321,7 @@ def write_artifacts(
     provenance: dict[str, Any] | None,
     baseline: Any = None,
     max_payload_bytes: int | None = None,
+    created_at: str | None = None,
 ) -> dict[str, Any]:
     """Write the two-file artifact. Returns the artifact descriptor."""
     truncated_any = False
@@ -332,6 +354,7 @@ def write_artifacts(
         "kind": "eval_run",
         "local_run_id": result.local_run_id,
         "run_id": result.run_id,
+        "created_at": created_at or _now_iso(),
         "evaluation_name": result.name,
         "status": status,
         "candidate_version": candidate_version,
@@ -424,8 +447,12 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     first = options.get("first")
     sample = options.get("sample")
     seed = int(options.get("sample_seed", 0) or 0)
-    candidate_version = options.get("candidate_version")
+    # An option is an OVERRIDE only when the CLI/user actually supplied it; otherwise
+    # the Evaluation's own value stands (never silently replaced with a runner default).
+    candidate_version = options.get("candidate_version") or evaluation.candidate_version
     provenance = options.get("provenance")
+    created_at = _now_iso()
+    identity = _dataset_identity(evaluation.dataset)
 
     chosen, run_mode, is_final = _subset(evaluation.dataset, first, sample, seed)
     base_select = evaluation.select
@@ -443,14 +470,23 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     if baseline_path:
         baseline = EvalRunResult.load(baseline_path)
 
+    # Full-run case count is known up front; a subset reports its chosen size.
+    full_count = len(_case_ids(evaluation.dataset))
+    case_count = len(chosen) if chosen is not None else full_count
     emitter.emit(
         {
             "type": "evaluation_started",
             "name": evaluation.name,
-            "dataset": {"case_count": len(chosen) if chosen is not None else None},
+            "created_at": created_at,
             "candidate_version": candidate_version,
             "run_mode": run_mode,
             "is_final": is_final,
+            "dataset": {
+                "case_count": case_count,
+                "dataset_id": identity["dataset_id"],
+                "dataset_version_id": identity["dataset_version_id"],
+                "name": identity["name"],
+            },
         }
     )
 
@@ -464,18 +500,22 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
         collected.append(item)
         emitter.emit({"type": "case_completed", **_case_metadata(item)})
 
+    # Only override the Evaluation's own concurrency/timeout when the option is present;
+    # an absent option must NOT replace the definition's value with a runner default.
+    run_kwargs: dict[str, Any] = {
+        "candidate_version": candidate_version,
+        "select": select,
+        "on_case_start": on_start,
+        "on_case_complete": on_complete,
+    }
+    if options.get("max_concurrency"):
+        run_kwargs["max_concurrency"] = int(options["max_concurrency"])
+    if options.get("timeout") is not None:
+        run_kwargs["timeout"] = options["timeout"]
+
     cancelled = False
     try:
-        result = evaluation.run(
-            candidate_version=candidate_version,
-            select=select,
-            max_concurrency=int(options["max_concurrency"])
-            if options.get("max_concurrency")
-            else 10,
-            timeout=options.get("timeout"),
-            on_case_start=on_start,
-            on_case_complete=on_complete,
-        )
+        result = evaluation.run(**run_kwargs)
     except KeyboardInterrupt:
         # Finalize the in-flight run as incomplete from the cases that finished.
         cancelled = True
@@ -499,6 +539,7 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             provenance=provenance,
             baseline=baseline,
             max_payload_bytes=options.get("max_payload_bytes"),
+            created_at=created_at,
         )
 
     emitter.emit(
@@ -506,6 +547,13 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             "type": "evaluation_completed",
             "name": evaluation.name,
             "status": status,
+            "created_at": created_at,
+            "local_run_id": result.local_run_id,
+            "run_id": result.run_id,
+            "dataset": {
+                "dataset_id": result.dataset.dataset_id if result.dataset else None,
+                "dataset_version_id": result.dataset.dataset_version_id if result.dataset else None,
+            },
             "counts": _counts(result),
             "score_summary": {k: v.to_dict() for k, v in result.score_summary.items()},
             "artifact": artifact,
@@ -555,6 +603,16 @@ def _fmt(exc: BaseException) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Runner entry point. Exit-code contract (coordinated with the CLI parser):
+
+    - Normal completion (even with task/scorer errors): exit 0. Quality/error outcomes
+      are conveyed by the EVENT STREAM, not the exit code.
+    - Unrecoverable harness failure: emit a structured ``fatal`` event and STILL exit 0.
+      The presence of the ``fatal`` event -- not a nonzero code -- is what marks a run a
+      harness failure, so the CLI reads the stream as authoritative.
+    - Cancellation (SIGINT): finalize a partial ``incomplete`` artifact and exit 130
+      (the one code that corroborates the ``fatal``/cancelled signal).
+    """
     paths = list(argv if argv is not None else sys.argv[1:])
     emitter = Emitter(_open_channel())
     options = _load_options()
