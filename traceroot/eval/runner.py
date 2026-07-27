@@ -348,7 +348,6 @@ def write_artifacts(
     sample_seed: int | None,
     candidate_version: str | None,
     provenance: dict[str, Any] | None,
-    baseline: Any = None,
     max_payload_bytes: int | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -401,15 +400,6 @@ def write_artifacts(
         "artifact": artifact,
         "cases": [_case_metadata(it) for it in result.item_results],
     }
-    if baseline is not None:
-        cmp = result.compare(baseline)
-        run_doc["baseline"] = {
-            "compatible": cmp.compatible,
-            "improvements": len(cmp.improvements),
-            "regressions": len(cmp.regressions),
-            "unchanged": len(cmp.unchanged),
-            "unpaired": len(cmp.unpaired),
-        }
     _atomic_write(run_path, json.dumps(serialize_value(run_doc), ensure_ascii=False, indent=2))
     return artifact
 
@@ -496,11 +486,6 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     else:
         select = base_select
 
-    baseline = None
-    baseline_path = options.get("baseline")
-    if baseline_path:
-        baseline = EvalRunResult.load(baseline_path)
-
     # Full-run case count is known up front; a subset reports its chosen size.
     full_count = len(_case_ids(evaluation.dataset))
     case_count = len(chosen) if chosen is not None else full_count
@@ -570,7 +555,6 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             sample_seed=seed if chosen is not None else None,
             candidate_version=candidate_version,
             provenance=provenance,
-            baseline=baseline,
             max_payload_bytes=options.get("max_payload_bytes"),
             created_at=created_at,
         )
