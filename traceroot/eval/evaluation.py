@@ -23,12 +23,14 @@ DataSource = Dataset | DatasetSnapshot | Sequence["EvalCase | dict"]
 class Evaluation:
     """A reusable, code-level evaluation definition.
 
-    Mutable in user code; changing it affects the next ``run()``. ``report_to``
-    is the publication boundary: ``None`` = local-only (no network), a transport
-    = report to the backend. ``timeout`` bounds each case; ``metadata`` is attached
-    to the run record; ``baseline`` is attached so ``run.compare()`` needs no argument;
-    ``run_scorers`` run whole-run scorers. ``retry`` is not implemented and is rejected
-    rather than silently ignored (per product direction: retry semantics are deferred).
+    Mutable in user code; changing it affects the next ``run()``. Reporting is
+    upload-by-default (like Braintrust/Langfuse/Laminar): with credentials and a platform
+    dataset (pulled/pushed, or an explicit ``dataset_id``) the run reports to the backend;
+    pass ``local=True`` to keep it local, or ``report_to=`` an explicit transport to control
+    it (e.g. baseline linking). No credentials or a purely local dataset stays local.
+    ``timeout`` bounds each case; ``metadata`` is attached to the run record; ``baseline``
+    is attached so ``run.compare()`` needs no argument; ``run_scorers`` run whole-run
+    scorers. ``retry`` is not implemented and is rejected rather than silently ignored.
     """
 
     def __init__(
@@ -49,6 +51,7 @@ class Evaluation:
         report_to: EvalTransport | None = None,
         dataset_id: str | None = None,
         environment: str = "evaluation",
+        local: bool = False,
     ) -> None:
         if retry is not None:
             # Deferred by design: automatic retry can bias nondeterministic results and
@@ -72,6 +75,7 @@ class Evaluation:
         self.report_to = report_to
         self.dataset_id = dataset_id
         self.environment = environment
+        self.local = local
 
     def _kwargs(self, overrides: dict[str, Any]) -> dict[str, Any]:
         base = dict(
@@ -89,6 +93,7 @@ class Evaluation:
             timeout=self.timeout,
             metadata=self.metadata,
             baseline=self.baseline,
+            local=self.local,
         )
         base.update(overrides)
         return base
@@ -125,6 +130,7 @@ def evaluate(
     baseline: EvalRunResult | None = None,
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
+    local: bool = False,
 ) -> EvalRunResult:
     """Construct-and-run an :class:`Evaluation`. ``dataset=`` is primary; ``data=`` is an alias."""
     return Evaluation(
@@ -142,6 +148,7 @@ def evaluate(
         baseline=baseline,
         metadata=metadata,
         timeout=timeout,
+        local=local,
     ).run()
 
 
@@ -163,6 +170,7 @@ async def evaluate_async(
     baseline: EvalRunResult | None = None,
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
+    local: bool = False,
 ) -> EvalRunResult:
     """Async form of :func:`evaluate`."""
     return await Evaluation(
@@ -180,4 +188,5 @@ async def evaluate_async(
         baseline=baseline,
         metadata=metadata,
         timeout=timeout,
+        local=local,
     ).run_async()
