@@ -128,12 +128,17 @@ class PlatformTransport:
         dataset_version_id: str | None = None,
         baseline_run_id: str | None = None,
         client_run_id: str | None = None,
-        pass_threshold: float = _DEFAULT_PASS_THRESHOLD,
+        pass_threshold: float | None = None,
+        scorer_specs: list[dict[str, Any]] | None = None,
         api_key: str | None = None,
         host_url: str | None = None,
     ) -> None:
         self.dataset_id = dataset_id
         self.scorer_names = scorer_names or []
+        # Rich scorer descriptors (name/version/value_type/direction/threshold). The engine
+        # fills this from the actual scorer callables when the caller leaves it None; an
+        # explicit value wins. Falls back to scorer_names when unset.
+        self.scorer_specs = scorer_specs
         self.candidate_version = candidate_version or "sdk"
         self.environment = environment
         self.main_score_name = main_score_name or (
@@ -176,9 +181,7 @@ class PlatformTransport:
             "dataset_id": self.dataset_id,
             "candidate_version": self.candidate_version,
             "environment": self.environment,
-            # The transport only knows scorer names, not declared versions. The backend
-            # requires a non-empty version string, so unversioned scorers use the sentinel.
-            "scorers": [{"name": n, "version": _UNVERSIONED_SCORER} for n in self.scorer_names],
+            "scorers": self._scorer_refs(),
         }
         if self.dataset_version_id is not None:
             body["dataset_version_id"] = self.dataset_version_id
@@ -193,6 +196,36 @@ class PlatformTransport:
         resp = self._request("POST", "/api/v1/public/evaluation-runs", body)
         self.run_id = resp["evaluation_run_id"]
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
+
+    def _scorer_refs(self) -> list[dict[str, Any]]:
+        """Scorer descriptors for run registration. Prefers rich specs (value_type/
+        direction/threshold, forward-compatible) and falls back to name/version. The
+        backend requires a non-empty version string, so unversioned scorers use the
+        sentinel; optional metadata fields are omitted when unknown."""
+        if self.scorer_specs:
+            refs = []
+            for spec in self.scorer_specs:
+                ref: dict[str, Any] = {
+                    "name": spec["name"],
+                    "version": spec.get("version") or _UNVERSIONED_SCORER,
+                }
+                for k in ("value_type", "direction", "threshold"):
+                    if spec.get(k) is not None:
+                        ref[k] = spec[k]
+                refs.append(ref)
+            return refs
+        return [{"name": n, "version": _UNVERSIONED_SCORER} for n in self.scorer_names]
+
+    def _effective_threshold(self) -> float:
+        """The pass threshold for status: an explicit pass_threshold wins; else the main
+        scorer's DECLARED threshold; else the default. Keeps cloud status in agreement
+        with a scorer's declared threshold (Phase 3)."""
+        if self.pass_threshold is not None:
+            return self.pass_threshold
+        for spec in self.scorer_specs or []:
+            if spec.get("name") == self.main_score_name and spec.get("threshold") is not None:
+                return float(spec["threshold"])
+        return _DEFAULT_PASS_THRESHOLD
 
     def register_item(self, run: RunHandle, case: EvalCase) -> None:
         # The item->trace link is folded into the result upsert (contract), so no-op.
@@ -304,7 +337,7 @@ class PlatformTransport:
                 break
         if main is None:
             return "not_scored", None
-        return ("passed" if main >= self.pass_threshold else "failed"), main
+        return ("passed" if main >= self._effective_threshold() else "failed"), main
 
 
 def _dataset_from_version(snapshot: dict, name: str) -> Dataset:
