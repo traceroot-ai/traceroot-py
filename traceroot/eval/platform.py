@@ -131,6 +131,8 @@ def _http_get_json(url: str, api_key: str) -> dict:
 class PlatformTransport:
     """Reports an evaluation run to the TraceRoot backend. One instance per run."""
 
+    reports_traces = True  # a reported run exports its per-case evaluation traces
+
     def __init__(
         self,
         dataset_id: str,
