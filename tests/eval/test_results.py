@@ -25,9 +25,9 @@ def _item(case_id, scores, scorer_errors=None, error=None):
 
 
 class TestUploadState:
-    def test_defaults_to_local_only(self):
+    def test_defaults_to_uploaded(self):
         u = UploadState()
-        assert u.status == "local_only"
+        assert u.status == "uploaded"
         assert u.dashboard_url is None
 
 
@@ -91,7 +91,7 @@ class TestEvalRunResult:
     def test_to_dict_json_serializable(self):
         d = self._run().to_dict()
         assert d["name"] == "routing-v2"
-        assert d["upload"]["status"] == "local_only"
+        assert d["upload"]["status"] == "uploaded"
         assert d["score_summary"]["acc"]["mean"] == 0.5
         assert len(d["item_results"]) == 2
         json.dumps(d)  # must not raise
@@ -103,7 +103,7 @@ class TestEvalRunResult:
         assert "acc" in s
 
     def test_upload_status_is_explicit(self):
-        assert self._run().upload_state.status == "local_only"
+        assert self._run().upload_state.status == "uploaded"
 
 
 class TestScoreSummary:
