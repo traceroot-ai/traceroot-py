@@ -161,8 +161,9 @@ class PlatformTransport:
                 "test_case_id": item_result.case_id,
                 "trace_id": item_result.trace_id,
                 # The backend validates these as strings (z.string()); serialize
-                # non-string values (dicts/numbers) to JSON text.
-                "input": _as_text(item_result.input),
+                # non-string values (dicts/numbers) to JSON text. `input` is a
+                # REQUIRED string (not nullable) -> coerce a missing input to "".
+                "input": _as_text(item_result.input) or "",
                 "expected_output": _as_text(item_result.expected),
                 "candidate_output": _as_text(item_result.output),
                 "status": status,
