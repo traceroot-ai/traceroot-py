@@ -42,6 +42,23 @@ def _as_text(value: Any) -> str | None:
     return json.dumps(serialize_value(value))
 
 
+def _decode_field(value: Any) -> Any:
+    """Inverse of the backend's JSON-text storage for a dataset case's input/expected.
+
+    The backend persists these as JSON text and returns them as strings, so a
+    pushed dict must be decoded back to a dict (otherwise a task doing
+    ``input["message"]`` subscripts a str). ``json.loads`` is the exact inverse of
+    the stored ``json.dumps``; a value that is already native, or a plain string
+    the backend did not JSON-encode, is returned unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (ValueError, TypeError):
+        return value
+
+
 def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str, str]:
     """Fill api_key/host_url from the global client when not explicitly given.
 
@@ -273,8 +290,8 @@ def pull_dataset(
         ds.upsert(
             EvalCase(
                 id=item["test_case_id"],
-                input=item["input"],
-                expected=item.get("expected"),
+                input=_decode_field(item["input"]),
+                expected=_decode_field(item.get("expected")),
                 metadata=item.get("metadata"),
                 source_trace_id=item.get("source_trace_id"),
                 source_span_id=item.get("source_span_id"),
