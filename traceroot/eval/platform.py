@@ -115,8 +115,6 @@ def _http_get_json(url: str, api_key: str) -> dict:
 class PlatformTransport:
     """Reports an evaluation run to the TraceRoot backend. One instance per run."""
 
-    reports_traces = True  # a reported run exports its per-case evaluation traces
-
     def __init__(
         self,
         dataset_id: str,
@@ -185,7 +183,7 @@ class PlatformTransport:
             body["dataset_version_id"] = self.dataset_version_id
         if self.main_score_name is not None:
             body["main_score_name"] = self.main_score_name
-        # Idempotency key: prefer the one the RunSession drives with, else our own.
+        # Idempotency key: prefer the one the caller drives with, else our own.
         effective_crun = client_run_id or self.client_run_id
         if effective_crun is not None:
             body["client_run_id"] = effective_crun
