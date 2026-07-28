@@ -280,10 +280,16 @@ class PlatformTransport:
             return "errored", None
         main = None
         for s in item_result.scores:
-            if isinstance(s.value, bool) or not isinstance(s.value, (int, float)):
+            if self.main_score_name is not None and s.name != self.main_score_name:
                 continue
-            if self.main_score_name is None or s.name == self.main_score_name:
+            if isinstance(s.value, bool):  # bool before int: True->1.0, False->0.0
+                main = 1.0 if s.value else 0.0
+                break
+            if isinstance(s.value, (int, float)):
                 main = float(s.value)
+                break
+            if self.main_score_name is not None:
+                # The named main scorer produced a categorical value -> no numeric main.
                 break
         if main is None:
             return "not_scored", None
