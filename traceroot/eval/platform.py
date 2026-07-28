@@ -42,14 +42,38 @@ def _as_text(value: Any) -> str | None:
     return json.dumps(serialize_value(value))
 
 
-def _decode_field(value: Any) -> Any:
-    """Inverse of the backend's JSON-text storage for a dataset case's input/expected.
+# --- canonical codec for a dataset case's ``input`` / ``expected`` -----------
+# The backend stores these in a TEXT column with no type marker and never parses
+# them on read (see offline-eval/contract-notes/dataset-json-roundtrip.md). Its
+# ``toText`` stores an SDK-sent STRING verbatim and JSON-stringifies anything else.
+# So the ONLY way to preserve the original value's type across a round trip is for
+# the SDK to own a canonical encoding on BOTH ends: always send JSON text on push
+# (``_encode_field``) and always JSON-decode on pull (``_decode_field``). This makes
+# a genuine string survive as a string even when it contains JSON-looking text
+# (it is stored as ``"{...}"`` with quotes), which a bare ``json.loads`` of the raw
+# column could not guarantee.
 
-    The backend persists these as JSON text and returns them as strings, so a
-    pushed dict must be decoded back to a dict (otherwise a task doing
-    ``input["message"]`` subscripts a str). ``json.loads`` is the exact inverse of
-    the stored ``json.dumps``; a value that is already native, or a plain string
-    the backend did not JSON-encode, is returned unchanged.
+
+def _encode_field(value: Any) -> str:
+    """Canonical push encoding for a case's ``input``/``expected``: JSON text.
+
+    Emitting JSON text (a string) means the backend's TEXT column stores it
+    verbatim, so ``_decode_field`` is an exact inverse for every JSON type -- dict,
+    list, number, bool, null, and genuine strings (including JSON-looking ones).
+    A dict still serializes to the same bytes the backend produced before, so
+    already-published dict data keeps round-tripping.
+    """
+    return json.dumps(serialize_value(value))
+
+
+def _decode_field(value: Any) -> Any:
+    """Pull decoding: the exact inverse of :func:`_encode_field`.
+
+    ``metadata`` (a native JSONB column) arrives already parsed and is passed
+    through untouched. For ``input``/``expected`` the backend returns the stored
+    text; ``json.loads`` reconstructs the original value. A value that is already
+    native, or legacy text a foreign writer stored without canonical encoding
+    (e.g. a bare non-JSON string), is returned unchanged.
     """
     if not isinstance(value, str):
         return value
