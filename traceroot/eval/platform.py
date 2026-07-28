@@ -148,6 +148,8 @@ class PlatformTransport:
         self._scored = 0
         self._task_errors = 0
         self._scorer_errors = 0
+        self._main_sum = 0.0  # aggregate of the main-score values for run.mainScore
+        self._main_count = 0
 
     # --- HTTP seam (overridable in tests) ---
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
@@ -194,6 +196,9 @@ class PlatformTransport:
             self._task_errors += 1
         elif status in ("passed", "failed"):
             self._scored += 1
+        if main_score is not None:
+            self._main_sum += main_score
+            self._main_count += 1
         self._scorer_errors += len(item_result.scorer_errors)
         self._request(
             "POST",
@@ -222,15 +227,20 @@ class PlatformTransport:
         effective = status or (
             "completed_with_errors" if (self._task_errors or self._scorer_errors) else "completed"
         )
+        body: dict[str, Any] = {
+            "status": effective,
+            "scored_count": self._scored,
+            "task_error_count": self._task_errors,
+            "scorer_error_count": self._scorer_errors,
+        }
+        # The run's aggregate main score -> run.mainScore. Without it the UI shows the
+        # main metric and the baseline delta as "-" (change = run.mainScore - baseline).
+        if self._main_count:
+            body["main_score"] = self._main_sum / self._main_count
         self._request(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
-            {
-                "status": effective,
-                "scored_count": self._scored,
-                "task_error_count": self._task_errors,
-                "scorer_error_count": self._scorer_errors,
-            },
+            body,
         )
         # The backend returns no dashboard URL; report uploaded with url unknown.
         return UploadState(status="uploaded", dashboard_url=None)
