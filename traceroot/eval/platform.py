@@ -49,6 +49,14 @@ def _as_text(value: Any) -> str | None:
     return json.dumps(serialize_value(value))
 
 
+def _duration_ms(value: float | None) -> int | None:
+    """Per-case wall-clock duration for the wire: a nonnegative INTEGer of milliseconds
+    (backend ``z.number().int().nonnegative()``). Unknown stays None -- never 0."""
+    if value is None:
+        return None
+    return max(0, round(value))
+
+
 # NOTE: dataset case ``input``/``expected``/``metadata`` cross the HTTP boundary as
 # NATIVE JSON values. The backend owns the single JSON encode/decode at its storage
 # column (dataset authoring schema is ``z.unknown()``; the pull route JSON-decodes
@@ -215,6 +223,9 @@ class PlatformTransport:
                 "status": status,
                 "main_score": main_score,
                 "task_error": item_result.error,
+                # Total wall-clock for this case (task + its scorers); nonneg int ms, null
+                # when unknown. Run duration is NOT summed from cases (they run concurrently).
+                "duration_ms": _duration_ms(item_result.duration_ms),
                 "scores": self._scores_payload(item_result),
             },
         )
