@@ -155,7 +155,9 @@ class PlatformTransport:
             "dataset_id": self.dataset_id,
             "candidate_version": self.candidate_version,
             "environment": self.environment,
-            "scorers": [{"name": n, "version": "1"} for n in self.scorer_names],
+            # The transport only knows scorer names, not declared versions -> null,
+            # never an invented "1".
+            "scorers": [{"name": n, "version": None} for n in self.scorer_names],
         }
         if self.dataset_version_id is not None:
             body["dataset_version_id"] = self.dataset_version_id
@@ -228,7 +230,8 @@ class PlatformTransport:
     def _scores_payload(self, item_result: EvalItemResult) -> list[dict]:
         payload: list[dict] = []
         for s in item_result.scores:
-            entry: dict[str, Any] = {"scorer_name": s.name, "scorer_version": "1"}
+            # Honest scorer version: the score's declared version (None if unversioned).
+            entry: dict[str, Any] = {"scorer_name": s.name, "scorer_version": s.version}
             v = s.value
             if isinstance(v, bool):
                 entry["bool_value"] = v
@@ -241,7 +244,7 @@ class PlatformTransport:
             payload.append(entry)
         # A failing scorer is a score with an error and null value (never 0).
         for name, msg in item_result.scorer_errors.items():
-            payload.append({"scorer_name": name, "scorer_version": "1", "error": msg})
+            payload.append({"scorer_name": name, "scorer_version": None, "error": msg})
         return payload
 
     def _status_and_main(self, item_result: EvalItemResult) -> tuple[str, float | None]:
