@@ -117,7 +117,13 @@ class PlatformTransport:
         return _http_json(method, f"{self.host_url}{path}", self.api_key, body)
 
     # --- EvalTransport protocol ---
-    def create_run(self, name: str, dataset_name: str, metadata: dict | None) -> RunHandle:
+    def create_run(
+        self,
+        name: str,
+        dataset_name: str,
+        metadata: dict | None,
+        client_run_id: str | None = None,
+    ) -> RunHandle:
         body: dict[str, Any] = {
             "evaluation_name": name,
             "dataset_id": self.dataset_id,
@@ -129,8 +135,10 @@ class PlatformTransport:
             body["dataset_version_id"] = self.dataset_version_id
         if self.main_score_name is not None:
             body["main_score_name"] = self.main_score_name
-        if self.client_run_id is not None:
-            body["client_run_id"] = self.client_run_id
+        # Idempotency key: prefer the one the RunSession drives with, else our own.
+        effective_crun = client_run_id or self.client_run_id
+        if effective_crun is not None:
+            body["client_run_id"] = effective_crun
         resp = self._request("POST", "/api/public/evaluation-runs", body)
         self.run_id = resp["evaluation_run_id"]
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
