@@ -85,7 +85,7 @@ class TestEvalRunResult:
             name="routing-v2",
             item_results=items,
             score_summary=aggregate_scores(items),
-            upload=UploadState(),
+            upload_state=UploadState(),
         )
 
     def test_to_dict_json_serializable(self):
@@ -103,7 +103,7 @@ class TestEvalRunResult:
         assert "acc" in s
 
     def test_upload_status_is_explicit(self):
-        assert self._run().upload.status == "local_only"
+        assert self._run().upload_state.status == "local_only"
 
 
 class TestScoreSummary:
