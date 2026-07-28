@@ -154,7 +154,8 @@ class PlatformTransport:
             )
         self.host_url = self.host_url.rstrip("/")
         self.run_id: str | None = None
-        self.run_path: str | None = None  # UI-relative run path, when the backend returns one
+        self.run_url: str | None = None  # absolute UI run link, when the backend returns one
+        self.run_path: str | None = None  # UI-relative run path (back-compat fallback)
         self._scored = 0
         self._task_errors = 0
         self._scorer_errors = 0
@@ -190,7 +191,10 @@ class PlatformTransport:
             body["client_run_id"] = effective_crun
         resp = self._request("POST", "/api/v1/public/evaluation-runs", body)
         self.run_id = resp["evaluation_run_id"]
-        # Optional: absent on older/self-hosted backends -> dashboard_url stays None.
+        # Optional, absent on older/self-hosted backends. Prefer the absolute run_url
+        # (resolved against the UI origin) so the link is correct even when the API and
+        # UI live on different origins; keep run_path as a same-origin fallback.
+        self.run_url = resp.get("run_url")
         self.run_path = resp.get("run_path")
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
@@ -299,7 +303,9 @@ class PlatformTransport:
         )
         # Join the backend's UI-relative run path with our host to form a clickable
         # link; None when the backend did not return one (older/self-hosted).
-        url = f"{self.host_url}{self.run_path}" if self.run_path else None
+        # Prefer the backend's absolute run_url; fall back to host_url + run_path for a
+        # control plane that predates run_url (keeps the same-origin behavior).
+        url = self.run_url or (f"{self.host_url}{self.run_path}" if self.run_path else None)
         return UploadState(status="uploaded", dashboard_url=url)
 
     def publish_dataset(self, dataset_name: str, item_count: int) -> PublishResult:
