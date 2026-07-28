@@ -126,7 +126,6 @@ class PlatformTransport:
         environment: str = "evaluation",
         main_score_name: str | None = None,
         dataset_version_id: str | None = None,
-        baseline_run_id: str | None = None,
         client_run_id: str | None = None,
         pass_threshold: float | None = None,
         scorer_specs: list[dict[str, Any]] | None = None,
@@ -145,9 +144,6 @@ class PlatformTransport:
             self.scorer_names[0] if self.scorer_names else None
         )
         self.dataset_version_id = dataset_version_id
-        # Links this run to a baseline run so the platform/UI can show the comparison
-        # (Change / regressions). Without it a reported run shows "No baseline".
-        self.baseline_run_id = baseline_run_id
         self.client_run_id = client_run_id
         self.pass_threshold = pass_threshold
         self.api_key, self.host_url = _resolve_credentials(api_key, host_url)
@@ -188,8 +184,6 @@ class PlatformTransport:
             body["dataset_version_id"] = self.dataset_version_id
         if self.main_score_name is not None:
             body["main_score_name"] = self.main_score_name
-        if self.baseline_run_id is not None:
-            body["baseline_run_id"] = self.baseline_run_id
         # Idempotency key: prefer the one the RunSession drives with, else our own.
         effective_crun = client_run_id or self.client_run_id
         if effective_crun is not None:
