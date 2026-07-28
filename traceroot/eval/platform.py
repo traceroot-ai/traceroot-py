@@ -3,11 +3,11 @@
 Implements the ``EvalTransport`` seam against the TraceRoot backend's offline-eval
 reporting endpoints (see the backend ``offline-eval-sdk-contract.md``):
 
-    POST /api/public/evaluation-runs                    (register/start a run)
-    POST /api/public/evaluation-runs/{id}/results       (upsert one result + scores)
-    POST /api/public/evaluation-runs/{id}/complete      (finish a run)
-    GET  /api/public/datasets/{id}                       (fetch dataset -> version id)
-    GET  /api/public/dataset-versions/{id}               (fetch immutable snapshot)
+    POST /api/v1/public/evaluation-runs                    (register/start a run)
+    POST /api/v1/public/evaluation-runs/{id}/results       (upsert one result + scores)
+    POST /api/v1/public/evaluation-runs/{id}/complete      (finish a run)
+    GET  /api/v1/public/datasets/{id}                       (fetch dataset -> version id)
+    GET  /api/v1/public/dataset-versions/{id}               (fetch immutable snapshot)
 
 Auth is ``Authorization: Bearer <api_key>`` (an existing project Access Key) - the
 same credential and host as trace ingestion. Uses only the standard library.
@@ -19,7 +19,6 @@ dataset_version_id, so datasets are FETCHED (``pull_dataset``), not created here
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from typing import Any
@@ -44,13 +43,11 @@ def _as_text(value: Any) -> str | None:
 
 
 def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str, str]:
-    """Resolve (api_key, eval_api_base) for the ``/api/public/*`` endpoints.
+    """Fill api_key/host_url from the global client when not explicitly given.
 
-    api_key/host_url fall back to the global client. The eval endpoints
-    (``/api/public/*``) live in the TraceRoot app; in production that is the same
-    origin as tracing, but in local dev the app (Next.js) and the trace-ingest
-    backend (Python) run on different ports. ``TRACEROOT_EVAL_API_URL`` overrides the
-    base for eval calls only (traces are unaffected); unset -> use host_url.
+    The eval endpoints are served by the Python backend under ``/api/v1/public/*``
+    (a proxy to the app) - the SAME host as trace ingestion - so a single
+    ``host_url`` reaches both traces and eval calls.
     """
     if api_key is None or host_url is None:
         from traceroot import get_client
@@ -59,8 +56,7 @@ def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str
         if client is not None:
             api_key = api_key if api_key is not None else client.api_key
             host_url = host_url if host_url is not None else client.host_url
-    eval_base = os.environ.get("TRACEROOT_EVAL_API_URL") or host_url
-    return api_key or "", eval_base or ""
+    return api_key or "", host_url or ""
 
 
 def _http_json(method: str, url: str, api_key: str, body: dict | None = None) -> dict:
@@ -148,7 +144,7 @@ class PlatformTransport:
         effective_crun = client_run_id or self.client_run_id
         if effective_crun is not None:
             body["client_run_id"] = effective_crun
-        resp = self._request("POST", "/api/public/evaluation-runs", body)
+        resp = self._request("POST", "/api/v1/public/evaluation-runs", body)
         self.run_id = resp["evaluation_run_id"]
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
@@ -165,7 +161,7 @@ class PlatformTransport:
         self._scorer_errors += len(item_result.scorer_errors)
         self._request(
             "POST",
-            f"/api/public/evaluation-runs/{self.run_id}/results",
+            f"/api/v1/public/evaluation-runs/{self.run_id}/results",
             {
                 "test_case_id": item_result.case_id,
                 "trace_id": item_result.trace_id,
@@ -192,7 +188,7 @@ class PlatformTransport:
         )
         self._request(
             "POST",
-            f"/api/public/evaluation-runs/{self.run_id}/complete",
+            f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
             {
                 "status": effective,
                 "scored_count": self._scored,
@@ -257,9 +253,9 @@ def pull_dataset(
         )
     host = host.rstrip("/")
 
-    meta = _http_get_json(f"{host}/api/public/datasets/{dataset_id}", key)
+    meta = _http_get_json(f"{host}/api/v1/public/datasets/{dataset_id}", key)
     version_id = meta["current_dataset_version_id"]
-    snapshot = _http_get_json(f"{host}/api/public/dataset-versions/{version_id}", key)
+    snapshot = _http_get_json(f"{host}/api/v1/public/dataset-versions/{version_id}", key)
 
     ds = Dataset(name=meta.get("name", dataset_id))
     ds.dataset_id = dataset_id
