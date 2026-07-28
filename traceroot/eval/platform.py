@@ -71,6 +71,15 @@ def _http_json(method: str, url: str, api_key: str, body: dict | None = None) ->
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")
+        location = exc.headers.get("Location", "") if exc.headers else ""
+        blob = f"{location} {detail}".lower()
+        if exc.code in (301, 302, 303, 307, 308) and ("sign-in" in blob or "/auth/" in blob):
+            raise RuntimeError(
+                f"{method} {url} -> HTTP {exc.code} redirect to sign-in. The API key was not "
+                "honored: the backend's /api/public route is behind the app's session gate. "
+                "The app auth middleware must exempt /api/public (server-side fix; not the SDK "
+                "or your key)."
+            ) from exc
         raise RuntimeError(f"{method} {url} -> HTTP {exc.code}: {detail}") from exc
 
 
