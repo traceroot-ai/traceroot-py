@@ -30,6 +30,13 @@ from traceroot.utils import serialize_value
 
 _DEFAULT_PASS_THRESHOLD = 1.0
 
+# The backend's public contract requires a NON-EMPTY scorer version string
+# (ScorerRefSchema/ScoreInputSchema: z.string().min(1)). The SDK data model and the
+# CLI event/artifact path stay honest with version=None for an unversioned scorer;
+# only at this reporting boundary do we map None -> an explicit "unversioned" sentinel
+# so the request validates. This is a clear marker, not an invented version number.
+_UNVERSIONED_SCORER = "unversioned"
+
 
 def _as_text(value: Any) -> str | None:
     """Coerce a value to a string for the backend's z.string() fields.
@@ -155,9 +162,9 @@ class PlatformTransport:
             "dataset_id": self.dataset_id,
             "candidate_version": self.candidate_version,
             "environment": self.environment,
-            # The transport only knows scorer names, not declared versions -> null,
-            # never an invented "1".
-            "scorers": [{"name": n, "version": None} for n in self.scorer_names],
+            # The transport only knows scorer names, not declared versions. The backend
+            # requires a non-empty version string, so unversioned scorers use the sentinel.
+            "scorers": [{"name": n, "version": _UNVERSIONED_SCORER} for n in self.scorer_names],
         }
         if self.dataset_version_id is not None:
             body["dataset_version_id"] = self.dataset_version_id
@@ -230,8 +237,11 @@ class PlatformTransport:
     def _scores_payload(self, item_result: EvalItemResult) -> list[dict]:
         payload: list[dict] = []
         for s in item_result.scores:
-            # Honest scorer version: the score's declared version (None if unversioned).
-            entry: dict[str, Any] = {"scorer_name": s.name, "scorer_version": s.version}
+            # Declared version when present; sentinel where the backend requires a string.
+            entry: dict[str, Any] = {
+                "scorer_name": s.name,
+                "scorer_version": s.version or _UNVERSIONED_SCORER,
+            }
             v = s.value
             if isinstance(v, bool):
                 entry["bool_value"] = v
@@ -244,7 +254,9 @@ class PlatformTransport:
             payload.append(entry)
         # A failing scorer is a score with an error and null value (never 0).
         for name, msg in item_result.scorer_errors.items():
-            payload.append({"scorer_name": name, "scorer_version": None, "error": msg})
+            payload.append(
+                {"scorer_name": name, "scorer_version": _UNVERSIONED_SCORER, "error": msg}
+            )
         return payload
 
     def _status_and_main(self, item_result: EvalItemResult) -> tuple[str, float | None]:
