@@ -158,6 +158,7 @@ class PlatformTransport:
             )
         self.host_url = self.host_url.rstrip("/")
         self.run_id: str | None = None
+        self.run_path: str | None = None  # UI-relative run path, when the backend returns one
         self._scored = 0
         self._task_errors = 0
         self._scorer_errors = 0
@@ -195,6 +196,8 @@ class PlatformTransport:
             body["client_run_id"] = effective_crun
         resp = self._request("POST", "/api/v1/public/evaluation-runs", body)
         self.run_id = resp["evaluation_run_id"]
+        # Optional: absent on older/self-hosted backends -> dashboard_url stays None.
+        self.run_path = resp.get("run_path")
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
     def _scorer_refs(self) -> list[dict[str, Any]]:
@@ -286,8 +289,10 @@ class PlatformTransport:
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
             body,
         )
-        # The backend returns no dashboard URL; report uploaded with url unknown.
-        return UploadState(status="uploaded", dashboard_url=None)
+        # Join the backend's UI-relative run path with our host to form a clickable
+        # link; None when the backend did not return one (older/self-hosted).
+        url = f"{self.host_url}{self.run_path}" if self.run_path else None
+        return UploadState(status="uploaded", dashboard_url=url)
 
     def publish_dataset(self, dataset_name: str, item_count: int) -> PublishResult:
         # Datasets are server/UI-owned; the SDK cannot create them. Stay local-only.
