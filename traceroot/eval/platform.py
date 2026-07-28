@@ -259,28 +259,11 @@ class PlatformTransport:
         return ("passed" if main >= self.pass_threshold else "failed"), main
 
 
-def pull_dataset(
-    dataset_id: str, *, api_key: str | None = None, host_url: str | None = None
-) -> Dataset:
-    """Fetch a platform dataset's current snapshot into a local :class:`Dataset`.
-
-    The returned Dataset carries ``dataset_id`` / ``dataset_version_id`` so that
-    ``evaluate(data=dataset, ...)`` reports back to the exact same dataset version.
-    """
-    key, host = _resolve_credentials(api_key, host_url)
-    if not key:
-        raise ValueError(
-            "pull_dataset needs an API key (initialize traceroot or pass api_key=...)."
-        )
-    host = host.rstrip("/")
-
-    meta = _http_get_json(f"{host}/api/v1/public/datasets/{dataset_id}", key)
-    version_id = meta["current_dataset_version_id"]
-    snapshot = _http_get_json(f"{host}/api/v1/public/dataset-versions/{version_id}", key)
-
-    ds = Dataset(name=meta.get("name", dataset_id))
-    ds.dataset_id = dataset_id
-    ds.dataset_version_id = version_id
+def _dataset_from_version(snapshot: dict, name: str) -> Dataset:
+    """Build a local Dataset pinned to the exact version described by ``snapshot``."""
+    ds = Dataset(name=name)
+    ds.dataset_id = snapshot.get("dataset_id")  # type: ignore[assignment]
+    ds.dataset_version_id = snapshot.get("dataset_version_id")
     for item in snapshot.get("items", []):
         # Native JSON at the HTTP boundary: the backend already JSON-decodes
         # input/expected before returning them, so the SDK takes the values as-is.
@@ -295,4 +278,75 @@ def pull_dataset(
                 source_span_id=item.get("source_span_id"),
             )
         )
+    return ds
+
+
+def pull_dataset(
+    dataset_id: str,
+    *,
+    version_id: str | None = None,
+    api_key: str | None = None,
+    host_url: str | None = None,
+) -> Dataset:
+    """Fetch a platform dataset into a local :class:`Dataset`.
+
+    Without ``version_id`` the dataset's CURRENT version is pulled. With ``version_id``
+    that EXACT immutable version is pulled and validated to belong to ``dataset_id`` --
+    the current version is never silently substituted, so a run can reproduce the precise
+    version it recorded. The returned Dataset carries ``dataset_id`` / ``dataset_version_id``.
+    """
+    key, host = _resolve_credentials(api_key, host_url)
+    if not key:
+        raise ValueError(
+            "pull_dataset needs an API key (initialize traceroot or pass api_key=...)."
+        )
+    host = host.rstrip("/")
+
+    meta = _http_get_json(f"{host}/api/v1/public/datasets/{dataset_id}", key)
+    name = meta.get("name", dataset_id)
+    if version_id is None:
+        version_id = meta["current_dataset_version_id"]
+    return pull_dataset_version(
+        version_id, dataset_id=dataset_id, name=name, api_key=key, host_url=host
+    )
+
+
+def pull_dataset_version(
+    version_id: str,
+    *,
+    dataset_id: str | None = None,
+    name: str | None = None,
+    api_key: str | None = None,
+    host_url: str | None = None,
+) -> Dataset:
+    """Fetch one EXACT immutable dataset version by its id.
+
+    When ``dataset_id`` is supplied, the returned version is validated to belong to it
+    (a mismatch raises ``ValueError`` rather than silently returning the wrong data).
+    A missing version surfaces the backend's 404 as a clear error.
+    """
+    key, host = _resolve_credentials(api_key, host_url)
+    if not key:
+        raise ValueError(
+            "pull_dataset_version needs an API key (initialize traceroot or pass api_key=...)."
+        )
+    host = host.rstrip("/")
+
+    try:
+        snapshot = _http_get_json(f"{host}/api/v1/public/dataset-versions/{version_id}", key)
+    except RuntimeError as exc:
+        if " HTTP 404:" in str(exc):
+            raise ValueError(f"dataset version {version_id!r} not found") from exc
+        raise
+
+    returned_dataset_id = snapshot.get("dataset_id")
+    if dataset_id is not None and returned_dataset_id not in (None, dataset_id):
+        raise ValueError(
+            f"dataset version {version_id!r} belongs to dataset {returned_dataset_id!r}, "
+            f"not {dataset_id!r}"
+        )
+    ds = _dataset_from_version(snapshot, name or returned_dataset_id or dataset_id or version_id)
+    # Pin ids even if the snapshot omitted them.
+    ds.dataset_version_id = ds.dataset_version_id or version_id
+    ds.dataset_id = ds.dataset_id or dataset_id  # type: ignore[assignment]
     return ds
