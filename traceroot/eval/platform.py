@@ -19,6 +19,7 @@ dataset_version_id, so datasets are FETCHED (``pull_dataset``), not created here
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from typing import Any
@@ -43,7 +44,14 @@ def _as_text(value: Any) -> str | None:
 
 
 def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str, str]:
-    """Fill api_key/host_url from the global client when not explicitly given."""
+    """Resolve (api_key, eval_api_base) for the ``/api/public/*`` endpoints.
+
+    api_key/host_url fall back to the global client. The eval endpoints
+    (``/api/public/*``) live in the TraceRoot app; in production that is the same
+    origin as tracing, but in local dev the app (Next.js) and the trace-ingest
+    backend (Python) run on different ports. ``TRACEROOT_EVAL_API_URL`` overrides the
+    base for eval calls only (traces are unaffected); unset -> use host_url.
+    """
     if api_key is None or host_url is None:
         from traceroot import get_client
 
@@ -51,7 +59,8 @@ def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str
         if client is not None:
             api_key = api_key if api_key is not None else client.api_key
             host_url = host_url if host_url is not None else client.host_url
-    return api_key or "", host_url or ""
+    eval_base = os.environ.get("TRACEROOT_EVAL_API_URL") or host_url
+    return api_key or "", eval_base or ""
 
 
 def _http_json(method: str, url: str, api_key: str, body: dict | None = None) -> dict:
