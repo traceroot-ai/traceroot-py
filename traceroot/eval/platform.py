@@ -206,7 +206,21 @@ class PlatformTransport:
                     "name": spec["name"],
                     "version": spec.get("version") or _UNVERSIONED_SCORER,
                 }
-                for k in ("value_type", "direction", "threshold"):
+                # Comparison metadata + the read-only definition (scorer_type + type-specific
+                # fields). Absent fields are omitted, never null-filled.
+                for k in (
+                    "scorer_type",
+                    "value_type",
+                    "direction",
+                    "threshold",
+                    "output_type",
+                    "description",
+                    "metadata",
+                    "language",
+                    "source",
+                    "model",
+                    "messages",
+                ):
                     if spec.get(k) is not None:
                         ref[k] = spec[k]
                 refs.append(ref)
