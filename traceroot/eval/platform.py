@@ -371,6 +371,9 @@ def pull_dataset(
 ) -> Dataset:
     """Fetch a platform dataset into a local :class:`Dataset`.
 
+    Pull data, not runs: reproduce a run by pulling its ``dataset_version_id`` (see
+    :func:`pull_dataset_version`) -- there is no ``pull_run``.
+
     Without ``version_id`` the dataset's CURRENT version is pulled. With ``version_id``
     that EXACT immutable version is pulled and validated to belong to ``dataset_id`` --
     the current version is never silently substituted, so a run can reproduce the precise
@@ -401,6 +404,11 @@ def pull_dataset_version(
     host_url: str | None = None,
 ) -> Dataset:
     """Fetch one EXACT immutable dataset version by its id.
+
+    Pull data, not runs: this is how you reproduce a run -- pass the run's
+    ``dataset_version_id`` to get the exact cases it scored, then supply your own task +
+    scorers. There is no ``pull_run`` (a run is task + scorers + data; only the data is
+    on the platform).
 
     When ``dataset_id`` is supplied, the returned version is validated to belong to it
     (a mismatch raises ``ValueError`` rather than silently returning the wrong data).
