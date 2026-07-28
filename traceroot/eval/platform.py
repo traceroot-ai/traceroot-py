@@ -42,45 +42,14 @@ def _as_text(value: Any) -> str | None:
     return json.dumps(serialize_value(value))
 
 
-# --- canonical codec for a dataset case's ``input`` / ``expected`` -----------
-# The backend stores these in a TEXT column with no type marker and never parses
-# them on read (see offline-eval/contract-notes/dataset-json-roundtrip.md). Its
-# ``toText`` stores an SDK-sent STRING verbatim and JSON-stringifies anything else.
-# So the ONLY way to preserve the original value's type across a round trip is for
-# the SDK to own a canonical encoding on BOTH ends: always send JSON text on push
-# (``_encode_field``) and always JSON-decode on pull (``_decode_field``). This makes
-# a genuine string survive as a string even when it contains JSON-looking text
-# (it is stored as ``"{...}"`` with quotes), which a bare ``json.loads`` of the raw
-# column could not guarantee.
-
-
-def _encode_field(value: Any) -> str:
-    """Canonical push encoding for a case's ``input``/``expected``: JSON text.
-
-    Emitting JSON text (a string) means the backend's TEXT column stores it
-    verbatim, so ``_decode_field`` is an exact inverse for every JSON type -- dict,
-    list, number, bool, null, and genuine strings (including JSON-looking ones).
-    A dict still serializes to the same bytes the backend produced before, so
-    already-published dict data keeps round-tripping.
-    """
-    return json.dumps(serialize_value(value))
-
-
-def _decode_field(value: Any) -> Any:
-    """Pull decoding: the exact inverse of :func:`_encode_field`.
-
-    ``metadata`` (a native JSONB column) arrives already parsed and is passed
-    through untouched. For ``input``/``expected`` the backend returns the stored
-    text; ``json.loads`` reconstructs the original value. A value that is already
-    native, or legacy text a foreign writer stored without canonical encoding
-    (e.g. a bare non-JSON string), is returned unchanged.
-    """
-    if not isinstance(value, str):
-        return value
-    try:
-        return json.loads(value)
-    except (ValueError, TypeError):
-        return value
+# NOTE: dataset case ``input``/``expected``/``metadata`` cross the HTTP boundary as
+# NATIVE JSON values. The backend owns the single JSON encode/decode at its storage
+# column (dataset authoring schema is ``z.unknown()``; the pull route JSON-decodes
+# before returning). The SDK must NOT add its own json.dumps/json.loads for these --
+# that would double-encode/decode and corrupt genuine JSON-looking strings. Explicit
+# JSON text is retained only where the wire genuinely requires a string: the
+# evaluation-RESULT reporting fields (``_as_text``) and local file persistence
+# (``Dataset.save``/``EvalRunResult.save``).
 
 
 def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str, str]:
@@ -313,11 +282,14 @@ def pull_dataset(
     ds.dataset_id = dataset_id
     ds.dataset_version_id = version_id
     for item in snapshot.get("items", []):
+        # Native JSON at the HTTP boundary: the backend already JSON-decodes
+        # input/expected before returning them, so the SDK takes the values as-is.
+        # Re-decoding here would double-decode a genuine JSON-looking string.
         ds.upsert(
             EvalCase(
                 id=item["test_case_id"],
-                input=_decode_field(item["input"]),
-                expected=_decode_field(item.get("expected")),
+                input=item["input"],
+                expected=item.get("expected"),
                 metadata=item.get("metadata"),
                 source_trace_id=item.get("source_trace_id"),
                 source_span_id=item.get("source_span_id"),
