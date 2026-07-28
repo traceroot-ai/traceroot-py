@@ -7,9 +7,12 @@ A completed run is an immutable execution record (see architecture v2).
 from __future__ import annotations
 
 import dataclasses
+import json
+from pathlib import Path
 from typing import Any, Literal
 
 from traceroot.eval.types import Score
+from traceroot.utils import serialize_value
 
 
 @dataclasses.dataclass
@@ -312,6 +315,50 @@ class EvalRunResult:
             run_id=d.get("run_id"),
             metadata=d.get("metadata"),
         )
+
+    def save(self, path: str) -> None:
+        Path(path).write_text(json.dumps(serialize_value(self.to_dict()), ensure_ascii=False))
+
+    @classmethod
+    def load(cls, path: str) -> EvalRunResult:
+        return cls.from_dict(json.loads(Path(path).read_text()))
+
+    def upload(self, transport: Any = None) -> EvalRunResult:
+        """Explicitly upload this retained run's results/scores (idempotent).
+
+        Replays the item results through the reporting layer, preserving the local
+        ``test_case_id``s; the ``local_run_id`` is the idempotency key so a retried
+        upload does not duplicate the run. If ``transport`` is omitted, a
+        ``PlatformTransport`` is built from this run's dataset ref + scorer names
+        (requires credentials). Documented limitation: trace SPANS are not
+        re-uploadable -- only ``trace_id`` links present from the original run are sent.
+        """
+        active = transport
+        if active is None:
+            from traceroot.eval.platform import PlatformTransport
+
+            if self.dataset is None:
+                raise ValueError("run.upload() needs a dataset ref or an explicit transport")
+            active = PlatformTransport(
+                self.dataset.dataset_id,
+                scorer_names=list(self.score_summary.keys()),
+                candidate_version=self.candidate_version,
+                dataset_version_id=self.dataset.dataset_version_id,
+                client_run_id=self.local_run_id,
+            )
+        dataset_name = self.dataset.dataset_id if self.dataset else "<inline>"
+        run = active.create_run(
+            name=self.name,
+            dataset_name=dataset_name,
+            metadata=None,
+            client_run_id=self.local_run_id,
+        )
+        for item in self.item_results:
+            active.record_item_result(run, item)
+            active.record_scores(run, item.case_id, item.scores)
+        self.upload_state = active.finish_run(run, status=None)
+        self.run_id = getattr(active, "run_id", None)
+        return self
 
     def summary(self) -> str:
         return str(self)
