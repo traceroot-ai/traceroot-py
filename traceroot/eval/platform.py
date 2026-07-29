@@ -22,6 +22,7 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import quote
 
 from traceroot.eval.results import EvalItemResult, UploadState
 from traceroot.eval.transport import PublishResult, RunHandle
@@ -403,7 +404,7 @@ def pull_dataset(
         )
     host = host.rstrip("/")
 
-    meta = _http_get_json(f"{host}/api/v1/public/datasets/{dataset_id}", key)
+    meta = _http_get_json(f"{host}/api/v1/public/datasets/{quote(dataset_id, safe='')}", key)
     name = meta.get("name", dataset_id)
     if version_id is None:
         version_id = meta["current_dataset_version_id"]
@@ -439,7 +440,9 @@ def pull_dataset_version(
     host = host.rstrip("/")
 
     try:
-        snapshot = _http_get_json(f"{host}/api/v1/public/dataset-versions/{version_id}", key)
+        snapshot = _http_get_json(
+            f"{host}/api/v1/public/dataset-versions/{quote(version_id, safe='')}", key
+        )
     except RuntimeError as exc:
         if " HTTP 404:" in str(exc):
             raise ValueError(f"dataset version {version_id!r} not found") from exc
