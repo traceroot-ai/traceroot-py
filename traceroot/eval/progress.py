@@ -50,8 +50,28 @@ def print_run_url(url: str, stream: TextIO | None = None) -> None:
     out.flush()
 
 
+def can_animate(stream: TextIO) -> bool:
+    """Whether ``stream`` supports an in-place (``\\r``/ANSI) redraw.
+
+    False for pipes, ``TERM=dumb``, and the VS Code Debug Console / Jupyter, which do
+    NOT honor carriage returns even though ``isatty()`` is often spoofed to True there
+    (so a ``\\r`` bar would stack). In those, the reporter falls back to plain newline
+    progress instead of an animated single line.
+    """
+    try:
+        if not stream.isatty():
+            return False
+    except Exception:
+        return False
+    if os.environ.get("TERM") == "dumb":
+        return False
+    # debugpy (VS Code "Run/Debug" → Debug Console) and ipykernel (Jupyter) don't process \r.
+    return not ("debugpy" in sys.modules or "ipykernel" in sys.modules)
+
+
 class ConsoleProgress:
-    """A single-line, in-place progress bar for an evaluation run."""
+    """Evaluation progress: an animated single-line bar where the terminal supports it,
+    and clean (non-stacking) plain newline updates everywhere else."""
 
     def __init__(
         self,
@@ -60,6 +80,7 @@ class ConsoleProgress:
         *,
         stream: TextIO | None = None,
         width: int = 24,
+        animate: bool | None = None,
     ) -> None:
         self.total = max(int(total), 0)
         self.label = label
@@ -71,12 +92,15 @@ class ConsoleProgress:
         self.errored = 0
         self._t0 = time.monotonic()
         self._active = False
+        # Animate (in-place) only when the stream truly supports \r; else plain lines.
+        self._animate = can_animate(self.stream) if animate is None else animate
 
     # -- lifecycle -------------------------------------------------------
     def start(self) -> None:
         self._t0 = time.monotonic()
         self._active = True
-        self._render()
+        if self._animate:
+            self._render()
 
     def on_case_complete(self, item: EvalItemResult, _duration_ms: float) -> None:
         self.done += 1
@@ -87,15 +111,30 @@ class ConsoleProgress:
             self.failed += 1
         elif status == "errored":
             self.errored += 1
-        self._render()
+        if self._animate:
+            self._render()
+        else:
+            self._plain()
 
     def finish(self) -> None:
-        """Erase the bar so the caller's own output starts on a clean line."""
+        """Erase the animated bar so the caller's own output starts on a clean line.
+        No-op in plain mode (its lines are already newline-terminated)."""
         if not self._active:
             return
-        self.stream.write("\r\x1b[2K")  # CR + clear whole line
-        self.stream.flush()
+        if self._animate:
+            self.stream.write("\r\x1b[2K")  # CR + clear whole line
+            self.stream.flush()
         self._active = False
+
+    def _plain(self) -> None:
+        """A clean newline-terminated progress line (no \\r/ANSI). Throttled to ~deciles
+        for large runs so it never floods."""
+        step = max(1, self.total // 10)
+        if self.done == self.total or self.total <= 20 or self.done % step == 0:
+            bad = self.failed + self.errored
+            tail = f"  ({bad} off)" if bad else ""
+            self.stream.write(f"  {self.label}  {self.done}/{self.total}{tail}\n")
+            self.stream.flush()
 
     # -- rendering -------------------------------------------------------
     def _bar(self, frac: float) -> str:

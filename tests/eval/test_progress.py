@@ -1,8 +1,9 @@
 """Tests for the console progress reporter and its auto-detection."""
 
 import io
+import sys
 
-from traceroot.eval.progress import ConsoleProgress, should_show_progress
+from traceroot.eval.progress import ConsoleProgress, can_animate, should_show_progress
 from traceroot.eval.results import EvalItemResult, Score
 
 
@@ -55,7 +56,7 @@ def test_should_show_progress_auto_tty(monkeypatch):
 
 def test_progress_counts_and_renders():
     buf = io.StringIO()
-    bar = ConsoleProgress(3, "demo", stream=buf, width=10)
+    bar = ConsoleProgress(3, "demo", stream=buf, width=10, animate=True)
     bar.start()
     bar.on_case_complete(_item("a", 1.0), 5.0)  # passed
     bar.on_case_complete(_item("b", 0.0), 5.0)  # failed
@@ -77,3 +78,28 @@ def test_progress_finish_is_idempotent_without_start():
     bar = ConsoleProgress(0, "empty", stream=buf)
     bar.finish()  # never started -> no-op, no crash
     assert buf.getvalue() == ""
+
+
+def test_progress_plain_mode_is_clean_newlines_no_carriage_return():
+    buf = io.StringIO()
+    bar = ConsoleProgress(3, "demo", stream=buf, animate=False)  # e.g. VS Code Debug Console
+    bar.start()
+    bar.on_case_complete(_item("a", 1.0), 5.0)
+    bar.on_case_complete(_item("b", 0.0), 5.0)
+    bar.on_case_complete(_item("c", "error"), 5.0)
+    bar.finish()
+    out = buf.getvalue()
+    assert "\r" not in out and "\x1b" not in out  # no CR/ANSI -> cannot stack anywhere
+    assert "3/3" in out
+    assert out.count("\n") == 3  # one clean line per case (small run)
+
+
+def test_can_animate_false_under_debugpy(monkeypatch):
+    class _TTY:
+        def isatty(self):
+            return True
+
+    monkeypatch.delenv("TERM", raising=False)
+    assert can_animate(_TTY()) is True
+    monkeypatch.setitem(sys.modules, "debugpy", object())  # VS Code Debug Console
+    assert can_animate(_TTY()) is False
