@@ -69,8 +69,11 @@ def test_progress_counts_and_renders():
     assert "3/3" in out
     # "off" tail appears once a case fails/errors.
     assert "off" in out
-    # finish() clears the line with CR + the ANSI erase-line escape.
-    assert out.endswith("\r\x1b[2K")
+    # finish() persists the completed bar (redraws the final frame) and ends the line,
+    # instead of erasing it -> the 100% bar stays on screen.
+    assert out.endswith("\n")
+    final = out.rsplit("\r\x1b[2K", 1)[-1]
+    assert "3/3" in final and "█" in final  # the persisted frame shows 100%
 
 
 def test_render_never_exceeds_terminal_width():

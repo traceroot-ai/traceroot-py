@@ -166,12 +166,13 @@ class ConsoleProgress:
             self._plain()
 
     def finish(self) -> None:
-        """Erase the animated bar so the caller's own output starts on a clean line.
-        No-op in plain mode (its lines are already newline-terminated)."""
+        """Persist the completed bar: redraw the final (100%) frame and end the line so it
+        stays on screen, then subsequent output starts cleanly below it. No-op in plain mode
+        (its last line already shows the final count and is newline-terminated)."""
         if not self._active:
             return
         if self._animate:
-            self.stream.write("\r\x1b[2K")  # CR + clear whole line
+            self.stream.write("\r\x1b[2K" + self._frame() + "\n")
             self.stream.flush()
         self._active = False
 
@@ -196,9 +197,8 @@ class ConsoleProgress:
             bar += " " * (self.width - full - 1)
         return bar
 
-    def _render(self) -> None:
-        if not self._active:
-            return
+    def _frame(self) -> str:
+        """The current progress line, clamped to one physical terminal row (no wrap)."""
         total = self.total or 1
         frac = self.done / total
         elapsed = time.monotonic() - self._t0
@@ -212,8 +212,12 @@ class ConsoleProgress:
         limit = max(cols - 1, 0)
         anchor = f"  ▕{self._bar(frac)}▏ {self.done}/{self.total}"  # bar + counts (kept)
         stats = f"  ·  {rate:.1f}/s  ·  {mm:d}:{ss:02d}{tail}"  # dropped first when tight
-        line = _fit(self.label, anchor, stats, limit)
+        return _fit(self.label, anchor, stats, limit)
+
+    def _render(self) -> None:
+        if not self._active:
+            return
         # \r returns to column 0; \x1b[2K erases the whole line -> a clean in-place
         # redraw regardless of the previous frame's length (no manual padding).
-        self.stream.write("\r\x1b[2K" + line)
+        self.stream.write("\r\x1b[2K" + self._frame())
         self.stream.flush()
