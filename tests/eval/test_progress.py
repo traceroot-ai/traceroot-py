@@ -38,7 +38,7 @@ def test_should_show_progress_auto_non_tty(monkeypatch):
         def isatty(self):
             return False
 
-    monkeypatch.setattr("sys.stdout", _NoTTY())
+    monkeypatch.setattr("sys.stderr", _NoTTY())
     assert should_show_progress(None) is False
 
 
@@ -49,7 +49,7 @@ def test_should_show_progress_auto_tty(monkeypatch):
         def isatty(self):
             return True
 
-    monkeypatch.setattr("sys.stdout", _TTY())
+    monkeypatch.setattr("sys.stderr", _TTY())
     assert should_show_progress(None) is True
 
 
@@ -68,8 +68,8 @@ def test_progress_counts_and_renders():
     assert "3/3" in out
     # "off" tail appears once a case fails/errors.
     assert "off" in out
-    # finish() clears the line: output ends with a carriage return + spaces + CR.
-    assert out.rstrip(" ").endswith("\r")
+    # finish() clears the line with CR + the ANSI erase-line escape.
+    assert out.endswith("\r\x1b[2K")
 
 
 def test_progress_finish_is_idempotent_without_start():

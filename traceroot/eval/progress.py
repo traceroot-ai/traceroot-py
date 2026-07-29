@@ -27,16 +27,18 @@ _BLOCKS = " ▏▎▍▌▋▊▉█"
 def should_show_progress(explicit: bool | None) -> bool:
     """Resolve the effective progress setting.
 
-    ``explicit`` wins when set. Otherwise auto-detect: on only for an
-    interactive stdout, and suppressible via ``TRACEROOT_EVAL_PROGRESS=0``.
+    ``explicit`` wins when set. Otherwise auto-detect: on only when the bar's own
+    stream (stderr) is an interactive terminal, and suppressible via
+    ``TRACEROOT_EVAL_PROGRESS=0``. Gating on stderr (not stdout) means the bar shows
+    even when stdout is piped, and is suppressed when stderr is captured (e.g. some
+    IDE run panels / logs) so it can't stack.
     """
     if explicit is not None:
         return explicit
     if os.environ.get("TRACEROOT_EVAL_PROGRESS") == "0":
         return False
-    stream = sys.stdout
     try:
-        return bool(stream.isatty())
+        return bool(sys.stderr.isatty())
     except Exception:
         return False
 
@@ -68,7 +70,6 @@ class ConsoleProgress:
         self.failed = 0
         self.errored = 0
         self._t0 = time.monotonic()
-        self._last_len = 0
         self._active = False
 
     # -- lifecycle -------------------------------------------------------
@@ -92,7 +93,7 @@ class ConsoleProgress:
         """Erase the bar so the caller's own output starts on a clean line."""
         if not self._active:
             return
-        self.stream.write("\r" + " " * self._last_len + "\r")
+        self.stream.write("\r\x1b[2K")  # CR + clear whole line
         self.stream.flush()
         self._active = False
 
@@ -120,7 +121,7 @@ class ConsoleProgress:
             f"  {self.label}  ▕{self._bar(frac)}▏ {self.done}/{self.total}"
             f"  ·  {rate:.1f}/s  ·  {mm:d}:{ss:02d}{tail}"
         )
-        pad = " " * max(0, self._last_len - len(line))
-        self.stream.write("\r" + line + pad)
+        # \r returns to column 0; \x1b[2K erases the whole line -> a clean in-place
+        # redraw regardless of the previous frame's length (no manual padding).
+        self.stream.write("\r\x1b[2K" + line)
         self.stream.flush()
-        self._last_len = len(line)
