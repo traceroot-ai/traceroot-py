@@ -83,7 +83,6 @@ def reproduce_run_snippet(dataset_version_id: str | None = None, *, lang: str = 
             "#     task=your_task,            # your candidate function\n"
             "#     scorers=[your_scorer],     # your scorer callables\n"
             '#     candidate_version="<label>",\n'
-            "#     # baseline=<a prior run>,  # link the comparison\n"
             "# )\n"
         )
     return (
@@ -98,6 +97,5 @@ def reproduce_run_snippet(dataset_version_id: str | None = None, *, lang: str = 
         "//   task: yourTask,            // your candidate function\n"
         "//   scorers: [yourScorer],     // your scorer callables\n"
         '//   candidateVersion: "<label>",\n'
-        "//   // baseline: priorRun,     // link the comparison\n"
         "// });\n"
     )
