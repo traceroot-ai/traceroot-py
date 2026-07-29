@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from opentelemetry import trace
+from opentelemetry.context import Context
 from opentelemetry.trace import Status, StatusCode
 
 from traceroot.constants import SDK_VERSION, TRACEROOT_TRACER_NAME, SpanKind
@@ -228,7 +229,7 @@ async def _run_case(
 
         # Root span opened INSIDE this per-case coroutine (its own asyncio Task via
         # gather), so concurrent cases never share a current-span and never tangle.
-        with tracer.start_as_current_span("evaluation-item") as root:
+        with tracer.start_as_current_span("evaluation-item", context=Context()) as root:
             _set_root_attrs(root, identity, case)
             # Standard span I/O on the root so the trace viewer renders trace-level and
             # root-span Input/Output (output is set below, once the candidate output/error
