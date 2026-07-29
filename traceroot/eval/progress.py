@@ -41,6 +41,13 @@ def should_show_progress(explicit: bool | None) -> bool:
         return False
 
 
+def print_run_url(url: str, stream: TextIO | None = None) -> None:
+    """Print a clickable run link on its own line (same stream as the bar)."""
+    out = stream if stream is not None else sys.stderr
+    out.write(f"  → {url}\n")
+    out.flush()
+
+
 class ConsoleProgress:
     """A single-line, in-place progress bar for an evaluation run."""
 
