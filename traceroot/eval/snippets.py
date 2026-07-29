@@ -18,6 +18,8 @@ intentionally no pull_run / pull_evaluation.
 
 from __future__ import annotations
 
+import json
+
 LANGUAGES = ("python", "typescript")
 
 _DATASET_ID_PLACEHOLDER = "<dataset_id>"
@@ -25,8 +27,9 @@ _VERSION_ID_PLACEHOLDER = "<dataset_version_id>"
 
 
 def _q(value: str | None, placeholder: str) -> str:
-    """A double-quoted id literal, or the placeholder token (also quoted) when unknown."""
-    return f'"{value if value is not None else placeholder}"'
+    """A safely-quoted id literal, or the placeholder when unknown. JSON-encoding escapes
+    any quotes/newlines so the snippet stays a single valid string literal."""
+    return json.dumps(value if value is not None else placeholder)
 
 
 def _check_lang(lang: str) -> None:
