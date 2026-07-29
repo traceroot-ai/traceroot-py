@@ -44,9 +44,10 @@ def should_show_progress(explicit: bool | None) -> bool:
 
 
 def print_run_url(url: str, stream: TextIO | None = None) -> None:
-    """Print a clickable run link on its own line (same stream as the bar)."""
+    """Print a clickable run link on its own line, followed by a blank line to space it
+    from the next evaluate()'s output (same stream as the bar)."""
     out = stream if stream is not None else sys.stderr
-    out.write(f"  → {url}\n")
+    out.write(f"  → {url}\n\n")
     out.flush()
 
 
