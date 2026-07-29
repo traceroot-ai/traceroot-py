@@ -73,6 +73,34 @@ def test_progress_counts_and_renders():
     assert out.endswith("\r\x1b[2K")
 
 
+def test_render_never_exceeds_terminal_width():
+    # A long run name in a narrow terminal must not wrap: each animated frame has to fit on
+    # one physical row, or \r\x1b[2K can't clear it and the overflow stacks (the VS Code
+    # terminal bug). Force a 40-column terminal and a label wide enough to overflow.
+    buf = io.StringIO()
+    bar = ConsoleProgress(6, "ticket-routing-quality-v2", stream=buf, animate=True, cols=40)
+    bar.start()
+    for i in range(6):
+        bar.on_case_complete(_item(f"c{i}", 1.0), 5.0)
+    # Each frame is "\r\x1b[2K" + line; split on the control prefix and check visible width.
+    frames = [f for f in buf.getvalue().split("\r\x1b[2K") if f]
+    assert frames, "expected at least one rendered frame"
+    for line in frames:
+        assert len(line) <= 39, f"frame wider than terminal (would wrap): {line!r}"
+    # The bar + counts (the actual progress) stay visible even when the label is ellipsized.
+    assert "…" in frames[-1] and "6/6" in frames[-1] and "█" in frames[-1]
+
+
+def test_render_full_width_when_it_fits():
+    # A wide terminal keeps the full line (label + bar + stats), untruncated.
+    buf = io.StringIO()
+    bar = ConsoleProgress(3, "demo", stream=buf, width=10, animate=True, cols=200)
+    bar.start()
+    bar.on_case_complete(_item("a", 1.0), 5.0)
+    out = buf.getvalue()
+    assert "demo" in out and "1/3" in out and "/s" in out  # stats survive, nothing trimmed
+
+
 def test_progress_finish_is_idempotent_without_start():
     buf = io.StringIO()
     bar = ConsoleProgress(0, "empty", stream=buf)

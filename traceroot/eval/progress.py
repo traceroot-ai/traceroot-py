@@ -50,6 +50,52 @@ def print_run_url(url: str, stream: TextIO | None = None) -> None:
     out.flush()
 
 
+def _term_cols(stream: TextIO) -> int:
+    """Best-effort terminal width (columns) for ``stream``, default 80.
+
+    The animated bar MUST fit on one physical row: if a frame is wider than the
+    terminal it wraps, and ``\\r\\x1b[2K`` then only clears the last wrapped row —
+    leaving the overflow behind on every frame (the "stacking" bug). We clamp the
+    rendered line to this width so it never wraps.
+    """
+    try:
+        cols = os.get_terminal_size(stream.fileno()).columns
+        if cols > 0:
+            return cols
+    except Exception:
+        pass
+    try:
+        cols = int(os.environ.get("COLUMNS", ""))
+        if cols > 0:
+            return cols
+    except (TypeError, ValueError):
+        pass
+    return 80
+
+
+def _fit(label: str, anchor: str, stats: str, limit: int) -> str:
+    """Compose one progress line that fits within ``limit`` columns without wrapping.
+
+    Keeps the bar + counts (``anchor``) visible at all costs — a progress bar with no
+    progress is useless. Shedding order as space runs out: full line -> drop ``stats`` ->
+    ellipsize ``label`` -> (last resort) hard-trim. ``label`` sits before the anchor,
+    ``stats`` after it.
+    """
+    full = f"  {label}{anchor}{stats}"
+    if len(full) <= limit:
+        return full
+    with_label = f"  {label}{anchor}"
+    if len(with_label) <= limit:  # dropping stats is enough
+        return with_label
+    # Ellipsize the label to make room for the anchor (2 leading spaces + label + anchor).
+    room = limit - len(anchor) - 2
+    if room >= 1:
+        lab = label if len(label) <= room else label[: max(room - 1, 0)] + "…"
+        return f"  {lab}{anchor}"
+    # Terminal too narrow for even the bare anchor: hard-trim so we still never wrap.
+    return with_label[:limit]
+
+
 def can_animate(stream: TextIO) -> bool:
     """Whether ``stream`` supports an in-place (``\\r``/ANSI) redraw.
 
@@ -81,11 +127,14 @@ class ConsoleProgress:
         stream: TextIO | None = None,
         width: int = 24,
         animate: bool | None = None,
+        cols: int | None = None,
     ) -> None:
         self.total = max(int(total), 0)
         self.label = label
         self.stream = stream if stream is not None else sys.stderr
         self.width = width
+        # Terminal width to clamp each frame to (auto-detected when None).
+        self._cols = cols
         self.done = 0
         self.passed = 0
         self.failed = 0
@@ -156,10 +205,14 @@ class ConsoleProgress:
         rate = self.done / elapsed if elapsed > 0 else 0.0
         mm, ss = divmod(int(elapsed), 60)
         tail = f"  {self.failed + self.errored} off" if (self.failed or self.errored) else ""
-        line = (
-            f"  {self.label}  ▕{self._bar(frac)}▏ {self.done}/{self.total}"
-            f"  ·  {rate:.1f}/s  ·  {mm:d}:{ss:02d}{tail}"
-        )
+        # Clamp to one physical row: a line wider than the terminal wraps, and then
+        # \r\x1b[2K only clears the last wrapped row -> the overflow stacks. Trim to cols-1
+        # (leave the last column free so an exactly-full line can't auto-wrap).
+        cols = self._cols if self._cols is not None else _term_cols(self.stream)
+        limit = max(cols - 1, 0)
+        anchor = f"  ▕{self._bar(frac)}▏ {self.done}/{self.total}"  # bar + counts (kept)
+        stats = f"  ·  {rate:.1f}/s  ·  {mm:d}:{ss:02d}{tail}"  # dropped first when tight
+        line = _fit(self.label, anchor, stats, limit)
         # \r returns to column 0; \x1b[2K erases the whole line -> a clean in-place
         # redraw regardless of the previous frame's length (no manual padding).
         self.stream.write("\r\x1b[2K" + line)
