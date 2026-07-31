@@ -241,6 +241,14 @@ class PlatformTransport:
                 return float(spec["threshold"])
         return _DEFAULT_PASS_THRESHOLD
 
+    def _effective_direction(self) -> str:
+        """The main scorer's DECLARED comparison direction (higher_is_better by default).
+        lower_is_better inverts the threshold comparison; none -> not_scored."""
+        for spec in self.scorer_specs or []:
+            if spec.get("name") == self.main_score_name and spec.get("direction") is not None:
+                return str(spec["direction"])
+        return "higher_is_better"
+
     def register_item(self, run: RunHandle, case: EvalCase) -> None:
         # The item->trace link is folded into the result upsert (contract), so no-op.
         return None
@@ -355,7 +363,15 @@ class PlatformTransport:
                 break
         if main is None:
             return "not_scored", None
-        return ("passed" if main >= self._effective_threshold() else "failed"), main
+        threshold = self._effective_threshold()
+        direction = self._effective_direction()
+        if direction == "lower_is_better":
+            passed = main <= threshold
+        elif direction == "none":
+            return "not_scored", main
+        else:  # higher_is_better (the default)
+            passed = main >= threshold
+        return ("passed" if passed else "failed"), main
 
 
 def _dataset_from_version(snapshot: dict, name: str) -> Dataset:
