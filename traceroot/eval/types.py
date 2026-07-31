@@ -267,13 +267,13 @@ class Dataset:
                 lines.append(
                     json.dumps(serialize_value({"type": "case", **c.to_dict()}), ensure_ascii=False)
                 )
-            Path(path).write_text("\n".join(lines) + "\n")
+            Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
         else:
-            Path(path).write_text(self.to_json())
+            Path(path).write_text(self.to_json(), encoding="utf-8")
 
     @classmethod
     def load(cls, path: str) -> Dataset:
-        text = Path(path).read_text()
+        text = Path(path).read_text(encoding="utf-8")
         if path.endswith(".jsonl"):
             records = [json.loads(line) for line in text.strip().splitlines()]
             header = records[0]
