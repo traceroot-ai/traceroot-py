@@ -317,11 +317,13 @@ class EvalRunResult:
         )
 
     def save(self, path: str) -> None:
-        Path(path).write_text(json.dumps(serialize_value(self.to_dict()), ensure_ascii=False))
+        Path(path).write_text(
+            json.dumps(serialize_value(self.to_dict()), ensure_ascii=False), encoding="utf-8"
+        )
 
     @classmethod
     def load(cls, path: str) -> EvalRunResult:
-        return cls.from_dict(json.loads(Path(path).read_text()))
+        return cls.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
 
     def upload(self, transport: Any = None) -> EvalRunResult:
         """Explicitly upload this retained run's results/scores (idempotent).
@@ -333,6 +335,11 @@ class EvalRunResult:
         (requires credentials). Documented limitation: trace SPANS are not
         re-uploadable -- only ``trace_id`` links present from the original run are sent.
         """
+        if not self.local_run_id:
+            raise ValueError(
+                "run.upload() needs a local_run_id as the idempotency key; load a run "
+                "produced by evaluate() or set local_run_id before uploading"
+            )
         active = transport
         if active is None:
             from traceroot.eval.platform import PlatformTransport
