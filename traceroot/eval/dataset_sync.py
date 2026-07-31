@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import dataclasses
 from typing import Any, Protocol, runtime_checkable
+from urllib.parse import quote
 
 from traceroot.eval.types import DatasetSnapshot
 from traceroot.utils import serialize_value
@@ -147,7 +148,7 @@ class PlatformDatasetSync:
         try:
             resp = self._request(
                 "POST",
-                f"/api/v1/public/datasets/{snapshot.dataset_id}/versions",
+                f"/api/v1/public/datasets/{quote(snapshot.dataset_id, safe='')}/versions",
                 {"base_version_id": base_version_id, "changes": changes},
             )
         except RuntimeError as exc:
