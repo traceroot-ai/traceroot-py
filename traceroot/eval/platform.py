@@ -22,6 +22,7 @@ import json
 import urllib.error
 import urllib.request
 from typing import Any
+from urllib.parse import quote
 
 from traceroot.eval.results import EvalItemResult, UploadState
 from traceroot.eval.transport import PublishResult, RunHandle
@@ -240,6 +241,14 @@ class PlatformTransport:
                 return float(spec["threshold"])
         return _DEFAULT_PASS_THRESHOLD
 
+    def _effective_direction(self) -> str:
+        """The main scorer's DECLARED comparison direction (higher_is_better by default).
+        lower_is_better inverts the threshold comparison; none -> not_scored."""
+        for spec in self.scorer_specs or []:
+            if spec.get("name") == self.main_score_name and spec.get("direction") is not None:
+                return str(spec["direction"])
+        return "higher_is_better"
+
     def register_item(self, run: RunHandle, case: EvalCase) -> None:
         # The item->trace link is folded into the result upsert (contract), so no-op.
         return None
@@ -354,7 +363,15 @@ class PlatformTransport:
                 break
         if main is None:
             return "not_scored", None
-        return ("passed" if main >= self._effective_threshold() else "failed"), main
+        threshold = self._effective_threshold()
+        direction = self._effective_direction()
+        if direction == "lower_is_better":
+            passed = main <= threshold
+        elif direction == "none":
+            return "not_scored", main
+        else:  # higher_is_better (the default)
+            passed = main >= threshold
+        return ("passed" if passed else "failed"), main
 
 
 def _dataset_from_version(snapshot: dict, name: str) -> Dataset:
@@ -403,7 +420,7 @@ def pull_dataset(
         )
     host = host.rstrip("/")
 
-    meta = _http_get_json(f"{host}/api/v1/public/datasets/{dataset_id}", key)
+    meta = _http_get_json(f"{host}/api/v1/public/datasets/{quote(dataset_id, safe='')}", key)
     name = meta.get("name", dataset_id)
     if version_id is None:
         version_id = meta["current_dataset_version_id"]
@@ -439,7 +456,9 @@ def pull_dataset_version(
     host = host.rstrip("/")
 
     try:
-        snapshot = _http_get_json(f"{host}/api/v1/public/dataset-versions/{version_id}", key)
+        snapshot = _http_get_json(
+            f"{host}/api/v1/public/dataset-versions/{quote(version_id, safe='')}", key
+        )
     except RuntimeError as exc:
         if " HTTP 404:" in str(exc):
             raise ValueError(f"dataset version {version_id!r} not found") from exc
