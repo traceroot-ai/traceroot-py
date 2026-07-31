@@ -225,7 +225,10 @@ async def _run_case(
         if on_case_start is not None:
             on_case_start(case)
         # Pre-register the item (before execution) so a future live UI can show it.
-        transport.register_item(run, case)
+        try:
+            transport.register_item(run, case)
+        except Exception:
+            pass  # reporting is best-effort; a transport blip must not drop the case
 
         # Root span opened INSIDE this per-case coroutine (its own asyncio Task via
         # gather), so concurrent cases never share a current-span and never tangle.
@@ -329,8 +332,11 @@ async def _run_case(
             trace_id=trace_id,
             duration_ms=(time.perf_counter() - started) * 1000.0,
         )
-        transport.record_item_result(run, item_result)
-        transport.record_scores(run, item_result.case_id, item_result.scores)
+        try:
+            transport.record_item_result(run, item_result)
+            transport.record_scores(run, item_result.case_id, item_result.scores)
+        except Exception:
+            pass  # reporting is best-effort; the computed result is still returned
         if on_case_complete is not None:
             on_case_complete(item_result, item_result.duration_ms)
         return item_result
@@ -557,8 +563,8 @@ async def _run_async(
     finally:
         if reporter is not None:
             reporter.finish()
-
-    upload = active_transport.finish_run(run_handle, status=None)
+        # Finish the run inside finally so a mid-run failure never leaves it open on the backend.
+        upload = active_transport.finish_run(run_handle, status=None)
 
     results_list = list(item_results)
     summary = aggregate_scores(results_list)
