@@ -295,6 +295,12 @@ def llm_judge(
     """
     if output_type not in OUTPUT_TYPES:
         raise ValueError(f"output_type must be one of {OUTPUT_TYPES}, got {output_type!r}")
+    # Validate the comparison metadata up front, like scorer() does, so an invalid direction or
+    # value_type can't reach the reported manifest.
+    if value_type is not None and value_type not in VALUE_TYPES:
+        raise ValueError(f"value_type must be one of {VALUE_TYPES}, got {value_type!r}")
+    if direction is not None and direction not in DIRECTIONS:
+        raise ValueError(f"direction must be one of {DIRECTIONS}, got {direction!r}")
 
     from traceroot.constants import SpanKind
     from traceroot.decorators import observe
