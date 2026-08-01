@@ -117,6 +117,22 @@ def _normalize_score_like(raw: Any, default_name: str) -> list[Score]:
     raise TypeError(f"scorer returned an unsupported type: {type(raw).__name__}")
 
 
+# Process-wide bounded thread pool for sync tasks/scorers, reused across every run. A task
+# orphaned by a timeout can't be cancelled (Python threads), so it keeps a slot until it finishes;
+# sharing ONE bounded pool means those orphans occupy bounded, shared slots instead of a fresh
+# per-run pool leaking threads on every evaluation.
+_SYNC_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _sync_executor(max_workers: int) -> ThreadPoolExecutor:
+    global _SYNC_EXECUTOR
+    if _SYNC_EXECUTOR is None:
+        _SYNC_EXECUTOR = ThreadPoolExecutor(
+            max_workers=max(max_workers, 8), thread_name_prefix="traceroot-eval-sync"
+        )
+    return _SYNC_EXECUTOR
+
+
 async def _await_or_run(
     fn: Callable[[Any], Any], arg: Any, executor: ThreadPoolExecutor | None = None
 ) -> Any:
@@ -564,9 +580,9 @@ async def _run_async(
                 _next(item, duration_ms)
 
     semaphore = asyncio.Semaphore(max_concurrency)
-    # Bounded thread pool for sync tasks/scorers: a task orphaned by a timeout keeps running in a
-    # pool slot but can't push real thread use past max_concurrency (an unbounded to_thread could).
-    sync_executor = ThreadPoolExecutor(max_workers=max_concurrency)
+    # Reuse the process-wide bounded pool (not a fresh per-run one) so timed-out, uncancellable sync
+    # tasks can't accumulate leaked threads across repeated evaluations.
+    sync_executor = _sync_executor(max_concurrency)
     try:
         item_results = await asyncio.gather(
             *[
@@ -587,8 +603,8 @@ async def _run_async(
             ]
         )
     finally:
-        # Don't block shutdown on threads orphaned by a timeout; the process/pool reclaims them.
-        sync_executor.shutdown(wait=False)
+        # The shared executor is intentionally NOT shut down here — it's reused across runs so
+        # orphaned timed-out threads stay bounded to its fixed worker count.
         if reporter is not None:
             reporter.finish()
         # Finish the run inside finally so a mid-run failure never leaves it open on the backend.
