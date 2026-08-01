@@ -86,7 +86,9 @@ def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str
 
 
 def _http_json(method: str, url: str, api_key: str, body: dict | None = None) -> dict:
-    data = json.dumps(body).encode() if body is not None else None
+    # Serialize the body consistently (like _json_dumps) so valid but non-JSON-native SDK metadata
+    # doesn't fail locally with a TypeError before the request is even sent.
+    data = json.dumps(serialize_value(body)).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Authorization", f"Bearer {api_key}")
     if data is not None:
@@ -338,12 +340,21 @@ class PlatformTransport:
             if s.comment is not None:
                 entry["explanation"] = s.comment
             payload.append(entry)
-        # A failing scorer is a score with an error and null value (never 0).
+        # A failing scorer is a score with an error and null value (never 0). Use the scorer's
+        # DECLARED version (from the manifest) so an errored versioned scorer isn't misattributed
+        # to 'unversioned'.
         for name, msg in item_result.scorer_errors.items():
             payload.append(
-                {"scorer_name": name, "scorer_version": _UNVERSIONED_SCORER, "error": msg}
+                {"scorer_name": name, "scorer_version": self._declared_version(name), "error": msg}
             )
         return payload
+
+    def _declared_version(self, name: str) -> str:
+        """Declared manifest version for a scorer name, or the sentinel when none was declared."""
+        for spec in self.scorer_specs or []:
+            if spec.get("name") == name:
+                return spec.get("version") or _UNVERSIONED_SCORER
+        return _UNVERSIONED_SCORER
 
     def _status_and_main(self, item_result: EvalItemResult) -> tuple[str, float | None]:
         if item_result.error is not None:

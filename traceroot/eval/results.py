@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 from typing import Any, Literal
 
@@ -317,9 +318,13 @@ class EvalRunResult:
         )
 
     def save(self, path: str) -> None:
-        Path(path).write_text(
-            json.dumps(serialize_value(self.to_dict()), ensure_ascii=False), encoding="utf-8"
-        )
+        # Atomic write: a temp file + os.replace, so an interrupted write can't destroy a
+        # previously valid artifact (leaving load() unable to read either version).
+        text = json.dumps(serialize_value(self.to_dict()), ensure_ascii=False)
+        p = Path(path)
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, p)
 
     @classmethod
     def load(cls, path: str) -> EvalRunResult:
@@ -364,7 +369,8 @@ class EvalRunResult:
             active.record_item_result(run, item)
             active.record_scores(run, item.case_id, item.scores)
         self.upload_state = active.finish_run(run, status=None)
-        self.run_id = getattr(active, "run_id", None)
+        # Keep the existing server run id if this transport doesn't expose one (don't erase it).
+        self.run_id = getattr(active, "run_id", None) or self.run_id
         return self
 
     def summary(self) -> str:
