@@ -31,17 +31,25 @@ async def slow(x):
 
 class TestTimeout:
     def test_constructor_timeout_is_applied(self):
-        # Evaluation(timeout=...) must actually bound the task (was stored but dropped).
-        run = Evaluation(name="r", dataset=_ds(1), task=slow, scorers=[ok], timeout=0.02).run()
+        # Evaluation(timeout=...) must actually bound the task (was stored but dropped). An explicit
+        # transport is supplied so the run doesn't depend on auto-transport behavior for an
+        # unsynced inline dataset.
+        run = Evaluation(
+            name="r", dataset=_ds(1), task=slow, scorers=[ok], timeout=0.02, report_to=FakeTransport()
+        ).run()
         assert run.item_results[0].error is not None
         assert run.task_error_count == 1
 
     def test_evaluate_accepts_timeout(self):
-        run = evaluate(name="r", dataset=_ds(1), task=slow, scorers=[ok], timeout=0.02)
+        run = evaluate(
+            name="r", dataset=_ds(1), task=slow, scorers=[ok], timeout=0.02, report_to=FakeTransport()
+        )
         assert run.task_error_count == 1
 
     def test_no_timeout_completes(self):
-        run = Evaluation(name="r", dataset=_ds(1), task=echo, scorers=[ok]).run()
+        run = Evaluation(
+            name="r", dataset=_ds(1), task=echo, scorers=[ok], report_to=FakeTransport()
+        ).run()
         assert run.task_error_count == 0
 
 
