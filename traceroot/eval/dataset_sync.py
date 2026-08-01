@@ -60,30 +60,47 @@ class FakeDatasetSync:
     """Deterministic in-memory sync for tests: versions, idempotency, conflicts."""
 
     def __init__(self) -> None:
-        self.current_version_id: str | None = None
-        self._version_counter = 0
-        self._last_revision: str | None = None
+        # Per-dataset version/idempotency/conflict state, so ONE instance can model several
+        # independent server datasets. A single global cursor previously cross-contaminated them
+        # (a second dataset inherited the first's version -> false conflicts or skipped updates).
+        self._by_dataset: dict[str, dict[str, Any]] = {}
+        self._last_dataset_id: str | None = None
         self.pushes: list[tuple[str, str, str]] = []  # (dataset_id, revision, version_id)
 
-    def force_current_version(self, version_id: str) -> None:
-        self.current_version_id = version_id
+    def _state_for(self, dataset_id: str) -> dict[str, Any]:
+        return self._by_dataset.setdefault(
+            dataset_id, {"version_id": None, "counter": 0, "revision": None}
+        )
+
+    @property
+    def current_version_id(self) -> str | None:
+        """Current server version for the most recently pushed dataset."""
+        if self._last_dataset_id is None:
+            return None
+        return self._by_dataset.get(self._last_dataset_id, {}).get("version_id")
+
+    def force_current_version(self, version_id: str, dataset_id: str | None = None) -> None:
+        """Seed a server version to simulate the server moving ahead (test helper). Applies to the
+        given dataset, or the most recently pushed one."""
+        did = dataset_id or self._last_dataset_id
+        if did is None:
+            raise ValueError("force_current_version: push a dataset first, or pass a dataset_id")
+        self._state_for(did)["version_id"] = version_id
 
     def push_dataset(self, snapshot: DatasetSnapshot, base_version_id: str | None) -> PushResult:
-        # Optimistic concurrency: base must match the remote's current version.
-        if self.current_version_id is not None and base_version_id != self.current_version_id:
-            raise DatasetConflictError(base_version_id, self.current_version_id)
+        s = self._state_for(snapshot.dataset_id)
+        self._last_dataset_id = snapshot.dataset_id
+        # Optimistic concurrency: base must match this dataset's current version.
+        if s["version_id"] is not None and base_version_id != s["version_id"]:
+            raise DatasetConflictError(base_version_id, s["version_id"])
         # Idempotency: unchanged content re-push returns the same version.
-        if snapshot.revision == self._last_revision:
-            return PushResult(
-                "uploaded", snapshot.dataset_id, self.current_version_id, self._version_counter
-            )
-        self._version_counter += 1
-        self.current_version_id = f"dsv_{self._version_counter}"
-        self._last_revision = snapshot.revision
-        self.pushes.append((snapshot.dataset_id, snapshot.revision, self.current_version_id))
-        return PushResult(
-            "uploaded", snapshot.dataset_id, self.current_version_id, self._version_counter
-        )
+        if snapshot.revision == s["revision"]:
+            return PushResult("uploaded", snapshot.dataset_id, s["version_id"], s["counter"])
+        s["counter"] += 1
+        s["version_id"] = f"dsv_{s['counter']}"
+        s["revision"] = snapshot.revision
+        self.pushes.append((snapshot.dataset_id, snapshot.revision, s["version_id"]))
+        return PushResult("uploaded", snapshot.dataset_id, s["version_id"], s["counter"])
 
 
 class PlatformDatasetSync:
