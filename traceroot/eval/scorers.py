@@ -168,7 +168,10 @@ def describe_scorers(
     out: list[dict[str, Any]] = []
     for s in scorers:
         base_name = getattr(s, "__name__", None) or s.__class__.__name__
-        out.append(scorer_metadata(s, value_type=hints.get(base_name)))
+        # Honor the omitted-fields contract for direct consumers too: drop keys the scorer did not
+        # declare (None) instead of exposing fabricated null schema fields.
+        desc = {k: v for k, v in scorer_metadata(s, value_type=hints.get(base_name)).items() if v is not None}
+        out.append(desc)
     return out
 
 
@@ -292,6 +295,12 @@ def llm_judge(
     """
     if output_type not in OUTPUT_TYPES:
         raise ValueError(f"output_type must be one of {OUTPUT_TYPES}, got {output_type!r}")
+    # Validate the comparison metadata up front, like scorer() does, so an invalid direction or
+    # value_type can't reach the reported manifest.
+    if value_type is not None and value_type not in VALUE_TYPES:
+        raise ValueError(f"value_type must be one of {VALUE_TYPES}, got {value_type!r}")
+    if direction is not None and direction not in DIRECTIONS:
+        raise ValueError(f"direction must be one of {DIRECTIONS}, got {direction!r}")
 
     from traceroot.constants import SpanKind
     from traceroot.decorators import observe
