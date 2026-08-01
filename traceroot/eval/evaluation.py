@@ -126,6 +126,7 @@ def evaluate(
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
     progress: bool | None = None,
+    retry: Any = None,
 ) -> EvalRunResult:
     """Construct-and-run an :class:`Evaluation`. ``dataset=`` is primary; ``data=`` is an alias."""
     return Evaluation(
@@ -143,6 +144,7 @@ def evaluate(
         metadata=metadata,
         timeout=timeout,
         progress=progress,
+        retry=retry,  # honor the documented NotImplementedError guard instead of a raw TypeError
     ).run()
 
 
@@ -164,6 +166,7 @@ async def evaluate_async(
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
     progress: bool | None = None,
+    retry: Any = None,
 ) -> EvalRunResult:
     """Async form of :func:`evaluate`."""
     return await Evaluation(
@@ -181,4 +184,5 @@ async def evaluate_async(
         metadata=metadata,
         timeout=timeout,
         progress=progress,
+        retry=retry,  # honor the documented NotImplementedError guard instead of a raw TypeError
     ).run_async()

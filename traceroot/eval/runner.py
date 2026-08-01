@@ -156,7 +156,20 @@ def _import_module(path: Path) -> Any:
         raise ImportError(f"cannot load module from {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = module
-    spec.loader.exec_module(module)
+    # Put the eval file's own directory on sys.path while it executes so it can import sibling
+    # modules (a multi-file eval suite invoked by path would otherwise fail on import).
+    pkg_dir = str(path.resolve().parent)
+    added = pkg_dir not in sys.path
+    if added:
+        sys.path.insert(0, pkg_dir)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        if added:
+            try:
+                sys.path.remove(pkg_dir)
+            except ValueError:
+                pass
     return module
 
 
@@ -281,7 +294,9 @@ def _case_metadata(item: EvalItemResult) -> dict[str, Any]:
 def _run_status(result: EvalRunResult, cancelled: bool) -> str:
     if cancelled:
         return "incomplete"
-    if result.task_error_count or result.scorer_error_count:
+    # A failed whole-run scorer is a real quality error too, so surface it rather than reporting a
+    # clean "completed" that hides it from the CLI and artifact consumers.
+    if result.task_error_count or result.scorer_error_count or result.run_scorer_errors:
         return "completed_with_errors"
     return "completed"
 
