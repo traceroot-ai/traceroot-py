@@ -168,7 +168,10 @@ def describe_scorers(
     out: list[dict[str, Any]] = []
     for s in scorers:
         base_name = getattr(s, "__name__", None) or s.__class__.__name__
-        out.append(scorer_metadata(s, value_type=hints.get(base_name)))
+        # Honor the omitted-fields contract for direct consumers too: drop keys the scorer did not
+        # declare (None) instead of exposing fabricated null schema fields.
+        desc = {k: v for k, v in scorer_metadata(s, value_type=hints.get(base_name)).items() if v is not None}
+        out.append(desc)
     return out
 
 
