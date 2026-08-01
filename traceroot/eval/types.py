@@ -6,6 +6,7 @@ perform NO network I/O. See ``offline-eval/architecture-v2-rebaseline.md``.
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import hashlib
 import json
@@ -213,7 +214,10 @@ class Dataset:
     # --- snapshot ---
     def snapshot(self) -> DatasetSnapshot:
         """Immutable snapshot of the active cases with a content revision."""
-        active = tuple(self.cases())
+        # Deep-copy the case payloads so the snapshot is a stable, content-addressed record:
+        # EvalCase is frozen, but its input/expected/metadata hold shared mutable objects, so a
+        # later in-place mutation of the dataset would otherwise change what this revision describes.
+        active = tuple(copy.deepcopy(c) for c in self.cases())
         return DatasetSnapshot(
             dataset_id=self.dataset_id,
             name=self.name,
