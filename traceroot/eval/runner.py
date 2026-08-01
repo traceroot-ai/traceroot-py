@@ -123,6 +123,11 @@ def _enforce_local_only() -> None:
     eval modules import. Reporting transports are simply never constructed.
     """
     os.environ["TRACEROOT_ENABLED"] = "false"
+    # Neutralize ambient credentials too: TRACEROOT_ENABLED=false disables span export, but a
+    # reporting transport resolves its key straight from TRACEROOT_API_KEY (independent of
+    # `enabled`), so a synced-dataset run would still upload. Drop the key so credential
+    # resolution finds none and the run stays strictly local.
+    os.environ.pop("TRACEROOT_API_KEY", None)
     try:
         traceroot.shutdown()
     except Exception:
@@ -508,6 +513,13 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
 
     # Collect completed cases so a cancelled run can still be finalized partially.
     collected: list[EvalItemResult] = []
+    # Capture the registered run ids so a cancel finalizes the partial artifact under the SAME
+    # ids the run registered with (reconcilable with the cloud run), not a fresh local id.
+    registered: dict[str, str | None] = {}
+
+    def on_run_start(local_run_id: str, run_id: str | None) -> None:
+        registered["local_run_id"] = local_run_id
+        registered["run_id"] = run_id
 
     def on_start(case: EvalCase) -> None:
         emitter.emit({"type": "case_started", "case_id": case.id})
@@ -523,6 +535,7 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
         "select": select,
         "on_case_start": on_start,
         "on_case_complete": on_complete,
+        "on_run_start": on_run_start,
         # The runner speaks NDJSON on its own channel; never draw a progress bar.
         "progress": False,
     }
@@ -538,7 +551,13 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
         # Finalize the in-flight run as incomplete from the cases that finished.
         cancelled = True
         is_final = False
-        result = _partial_result(evaluation, collected, candidate_version)
+        result = _partial_result(
+            evaluation,
+            collected,
+            candidate_version,
+            registered.get("local_run_id"),
+            registered.get("run_id"),
+        )
 
     status = _run_status(result, cancelled=cancelled)
     artifact = None
@@ -581,9 +600,18 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
 
 
 def _partial_result(
-    evaluation: Evaluation, collected: list[EvalItemResult], candidate_version: str | None
+    evaluation: Evaluation,
+    collected: list[EvalItemResult],
+    candidate_version: str | None,
+    local_run_id: str | None = None,
+    run_id: str | None = None,
 ) -> EvalRunResult:
-    """Build an incomplete EvalRunResult from the cases that finished before cancel."""
+    """Build an incomplete EvalRunResult from the cases that finished before cancel.
+
+    Reuses the ids the run registered with (``local_run_id``/``run_id``) so the partial artifact
+    reconciles with the cloud run; falls back to a fresh local id only if the run was cancelled
+    before it ever registered.
+    """
     data = evaluation.dataset
     if isinstance(data, DatasetSnapshot):
         dataset_id, revision, version_id = data.dataset_id, data.revision, data.base_version_id
@@ -597,7 +625,8 @@ def _partial_result(
         item_results=list(collected),
         score_summary=aggregate_scores(list(collected)),
         upload_state=UploadState(),
-        local_run_id=new_run_id(),
+        local_run_id=local_run_id or new_run_id(),
+        run_id=run_id,
         candidate_version=candidate_version,
         dataset=RunDatasetRef(
             dataset_id=dataset_id,
