@@ -357,7 +357,7 @@ class EvalRunResult:
         run = active.create_run(
             name=self.name,
             dataset_name=dataset_name,
-            metadata=None,
+            metadata=self.metadata,  # preserve the run's metadata/provenance on re-upload
             client_run_id=self.local_run_id,
         )
         for item in self.item_results:
