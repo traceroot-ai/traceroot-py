@@ -234,6 +234,7 @@ class Dataset:
             "name": self.name,
             "description": self.description,
             "base_version_id": self.base_version_id,
+            "dataset_version_id": self.dataset_version_id,  # keep the remote binding through save/load
             "cases": [c.to_dict() for c in self._cases.values()],  # incl. archived
         }
 
@@ -264,6 +265,7 @@ class Dataset:
                 "name": self.name,
                 "description": self.description,
                 "base_version_id": self.base_version_id,
+                "dataset_version_id": self.dataset_version_id,
                 "schema": 1,
             }
             lines = [json.dumps(serialize_value(header), ensure_ascii=False)]
@@ -281,7 +283,10 @@ class Dataset:
         if path.endswith(".jsonl"):
             records = [json.loads(line) for line in text.strip().splitlines()]
             header = records[0]
-            d = {k: header.get(k) for k in ("dataset_id", "name", "description", "base_version_id")}
+            d = {
+                k: header.get(k)
+                for k in ("dataset_id", "name", "description", "base_version_id", "dataset_version_id")
+            }
             d["cases"] = [{k: v for k, v in rec.items() if k != "type"} for rec in records[1:]]
             return cls.from_dict(d)
         return cls.from_json(text)
