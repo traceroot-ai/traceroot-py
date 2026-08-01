@@ -12,6 +12,7 @@ This module is the internal engine (``_run`` / ``_run_async``); the public API i
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import dataclasses
 import inspect
 import time
@@ -116,17 +117,29 @@ def _normalize_score_like(raw: Any, default_name: str) -> list[Score]:
     raise TypeError(f"scorer returned an unsupported type: {type(raw).__name__}")
 
 
-async def _await_or_run(fn: Callable[[Any], Any], arg: Any) -> Any:
+async def _await_or_run(
+    fn: Callable[[Any], Any], arg: Any, executor: ThreadPoolExecutor | None = None
+) -> Any:
     """Call fn(arg) whether it is sync or async.
 
-    Coroutine functions are awaited directly. Sync callables run in a worker
-    thread via asyncio.to_thread, which propagates the current contextvars
-    Context - so the OTel span active at the call site (added in OE-4) parents
-    any spans the sync callable creates.
+    Coroutine functions — and callable *instances* whose ``__call__`` is async — are awaited on
+    the loop. Plain sync callables run in ``executor`` (a bounded per-run thread pool) so that a
+    task orphaned by a timeout occupies a bounded slot instead of an unbounded ``to_thread``
+    worker, keeping true concurrency within ``max_concurrency``. The current contextvars Context
+    is copied into the worker so the OTel span active at the call site still parents any spans the
+    sync callable creates.
     """
     if inspect.iscoroutinefunction(fn):
         return await fn(arg)
-    return await asyncio.to_thread(fn, arg)
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    result = await loop.run_in_executor(executor, lambda: ctx.run(fn, arg))
+    # A callable *instance* whose __call__ is async is NOT a coroutine function, so it ran in the
+    # thread and returned an un-awaited coroutine; await it on the loop so the coroutine is never
+    # surfaced as the task/scorer output.
+    if inspect.isawaitable(result):
+        result = await result
+    return result
 
 
 @dataclasses.dataclass(frozen=True)
@@ -213,6 +226,7 @@ async def _run_case(
     timeout: float | None = None,
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
+    executor: ThreadPoolExecutor | None = None,
 ) -> EvalItemResult:
     tracer = _eval_tracer()
     async with semaphore:
@@ -257,9 +271,11 @@ async def _run_case(
                 )
                 try:
                     if timeout is not None:
-                        output = await asyncio.wait_for(_await_or_run(task, case.input), timeout)
+                        output = await asyncio.wait_for(
+                            _await_or_run(task, case.input, executor), timeout
+                        )
                     else:
-                        output = await _await_or_run(task, case.input)
+                        output = await _await_or_run(task, case.input, executor)
                     set_span_attribute(
                         task_span, SpanAttributes.SPAN_OUTPUT, serialize_value(output)
                     )
@@ -298,7 +314,7 @@ async def _run_case(
                             scorer_span, SpanAttributes.SPAN_INPUT, serialize_value(scorer_input)
                         )
                         try:
-                            raw = await _await_or_run(scorer, ctx)
+                            raw = await _await_or_run(scorer, ctx, executor)
                             produced = _stamp_scorer_version(
                                 _normalize_score_like(raw, name), scorer
                             )
@@ -343,7 +359,7 @@ async def _run_case(
 
 
 def _auto_transport(
-    data: Dataset | Sequence[EvalCase | dict],
+    data: Dataset | DatasetSnapshot | Sequence[EvalCase | dict],
     scorers: Sequence[Callable[[ScorerContext], Any]],
     dataset_id: str | None,
     candidate_version: str | None,
@@ -360,6 +376,12 @@ def _auto_transport(
     version_id: str | None = None
     if isinstance(data, Dataset):
         version_id = data.dataset_version_id
+        if effective_id is None and version_id is not None:
+            effective_id = data.dataset_id
+    elif isinstance(data, DatasetSnapshot):
+        # A snapshot taken from a synced dataset carries base_version_id; treat it like a synced
+        # Dataset so `evaluate(dataset.snapshot())` reports instead of failing "no synced dataset".
+        version_id = data.base_version_id
         if effective_id is None and version_id is not None:
             effective_id = data.dataset_id
     if effective_id is None:
@@ -542,6 +564,9 @@ async def _run_async(
                 _next(item, duration_ms)
 
     semaphore = asyncio.Semaphore(max_concurrency)
+    # Bounded thread pool for sync tasks/scorers: a task orphaned by a timeout keeps running in a
+    # pool slot but can't push real thread use past max_concurrency (an unbounded to_thread could).
+    sync_executor = ThreadPoolExecutor(max_workers=max_concurrency)
     try:
         item_results = await asyncio.gather(
             *[
@@ -556,11 +581,14 @@ async def _run_async(
                     timeout=timeout,
                     on_case_start=case_start_hook,
                     on_case_complete=case_complete_hook,
+                    executor=sync_executor,
                 )
                 for c in cases
             ]
         )
     finally:
+        # Don't block shutdown on threads orphaned by a timeout; the process/pool reclaims them.
+        sync_executor.shutdown(wait=False)
         if reporter is not None:
             reporter.finish()
         # Finish the run inside finally so a mid-run failure never leaves it open on the backend.
