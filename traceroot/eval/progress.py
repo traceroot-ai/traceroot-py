@@ -14,6 +14,7 @@ machine-readable channels stay clean. Callers can force it with
 from __future__ import annotations
 
 import os
+import re
 import sys
 import time
 from typing import TextIO
@@ -74,27 +75,80 @@ def _term_cols(stream: TextIO) -> int:
     return 80
 
 
+def _char_width(cp: int) -> int:
+    """Terminal columns for one code point: C0/C1 controls & zero-width/combining marks = 0,
+    East Asian Wide/Fullwidth (incl. most emoji) = 2, else 1. Best-effort (no full Unicode DB),
+    but enough to keep CJK/emoji/combining input from wrapping the single line."""
+    if cp < 32 or 0x7F <= cp < 0xA0:  # C0 / C1 controls
+        return 0
+    if 0x0300 <= cp <= 0x036F or 0x200B <= cp <= 0x200F or cp == 0xFEFF or 0xFE00 <= cp <= 0xFE0F:
+        return 0  # combining marks, zero-width, variation selectors
+    if (
+        0x1100 <= cp <= 0x115F
+        or 0x2E80 <= cp <= 0xA4CF
+        or 0xAC00 <= cp <= 0xD7A3
+        or 0xF900 <= cp <= 0xFAFF
+        or 0xFE30 <= cp <= 0xFE4F
+        or 0xFF00 <= cp <= 0xFF60
+        or 0xFFE0 <= cp <= 0xFFE6
+        or 0x1F300 <= cp <= 0x1FAFF
+        or 0x20000 <= cp <= 0x3FFFD
+    ):
+        return 2
+    return 1
+
+
+def _display_width(s: str) -> int:
+    """Display width of a string in terminal columns."""
+    return sum(_char_width(ord(ch)) for ch in s)
+
+
+def _slice_to_width(s: str, max_cols: int) -> str:
+    """Truncate to at most ``max_cols`` display columns."""
+    if max_cols <= 0:
+        return ""
+    width = 0
+    out: list[str] = []
+    for ch in s:
+        cw = _char_width(ord(ch))
+        if width + cw > max_cols:
+            break
+        out.append(ch)
+        width += cw
+    return "".join(out)
+
+
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _sanitize_label(s: str) -> str:
+    """Strip C0/C1 controls (newlines, ANSI escapes) so a run name can't break the single line."""
+    return _CONTROL_RE.sub(" ", s).strip()
+
+
 def _fit(label: str, anchor: str, stats: str, limit: int) -> str:
     """Compose one progress line that fits within ``limit`` columns without wrapping.
 
     Keeps the bar + counts (``anchor``) visible at all costs — a progress bar with no
     progress is useless. Shedding order as space runs out: full line -> drop ``stats`` ->
-    ellipsize ``label`` -> (last resort) hard-trim. ``label`` sits before the anchor,
+    ellipsize ``label`` -> (last resort) trim the anchor. Widths are display columns, so
+    wide/zero-width characters can't sneak past the clamp. ``label`` sits before the anchor,
     ``stats`` after it.
     """
     full = f"  {label}{anchor}{stats}"
-    if len(full) <= limit:
+    if _display_width(full) <= limit:
         return full
     with_label = f"  {label}{anchor}"
-    if len(with_label) <= limit:  # dropping stats is enough
+    if _display_width(with_label) <= limit:  # dropping stats is enough
         return with_label
     # Ellipsize the label to make room for the anchor (2 leading spaces + label + anchor).
-    room = limit - len(anchor) - 2
+    room = limit - _display_width(anchor) - 2
     if room >= 1:
-        lab = label if len(label) <= room else label[: max(room - 1, 0)] + "…"
+        lab = label if _display_width(label) <= room else _slice_to_width(label, max(room - 1, 0)) + "…"
         return f"  {lab}{anchor}"
-    # Terminal too narrow for even the bare anchor: hard-trim so we still never wrap.
-    return with_label[:limit]
+    # Too narrow for even the bare anchor: keep the counts (drop the label) and trim the anchor
+    # itself by display width so it still never wraps.
+    return _slice_to_width(anchor, limit)
 
 
 def can_animate(stream: TextIO) -> bool:
@@ -131,7 +185,7 @@ class ConsoleProgress:
         cols: int | None = None,
     ) -> None:
         self.total = max(int(total), 0)
-        self.label = label
+        self.label = _sanitize_label(label)
         self.stream = stream if stream is not None else sys.stderr
         self.width = width
         # Terminal width to clamp each frame to (auto-detected when None).
