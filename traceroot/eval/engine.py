@@ -460,6 +460,7 @@ async def _run_async(
     progress: bool | None = None,
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
+    on_run_start: Callable[[str, str | None], None] | None = None,
 ) -> EvalRunResult:
     """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py).
 
@@ -530,6 +531,11 @@ async def _run_async(
         metadata=metadata,
         client_run_id=local_run_id,
     )
+    # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the CLI
+    # runner on SIGINT) can finalize its partial artifact under the SAME ids the run registered
+    # with, keeping it reconcilable with the cloud run.
+    if on_run_start is not None:
+        on_run_start(local_run_id, getattr(active_transport, "run_id", None))
 
     # One immutable identity stamped on every per-case evaluation trace (attribute
     # contract). run_id is available now (post create_run) when reported.
