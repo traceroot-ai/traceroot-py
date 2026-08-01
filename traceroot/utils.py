@@ -45,8 +45,17 @@ def _serialize(value: Any, _seen: set[int]) -> Any:
     # Collections
     if isinstance(value, dict):
         return {_serialize(k, _seen): _serialize(v, _seen) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, (list, tuple)):
         return [_serialize(v, _seen) for v in value]
+    if isinstance(value, (set, frozenset)):
+        # set/frozenset iteration order is not stable across processes (hash randomization),
+        # which would make a content-addressed dataset revision change spuriously for the same
+        # data. Emit the serialized elements in a deterministic order (by canonical JSON form).
+        items = [_serialize(v, _seen) for v in value]
+        return sorted(
+            items,
+            key=lambda x: json.dumps(x, sort_keys=True, ensure_ascii=False, default=str),
+        )
 
     # Standard library types
     if isinstance(value, datetime):  # datetime before date (datetime is subclass)
