@@ -214,15 +214,20 @@ class Dataset:
     # --- snapshot ---
     def snapshot(self) -> DatasetSnapshot:
         """Immutable snapshot of the active cases with a content revision."""
-        # Deep-copy the case payloads so the snapshot is a stable, content-addressed record:
-        # EvalCase is frozen, but its input/expected/metadata hold shared mutable objects, so a
-        # later in-place mutation of the dataset would otherwise change what this revision describes.
-        active = tuple(copy.deepcopy(c) for c in self.cases())
+        original = self.cases()
+        # Compute the revision from the ORIGINAL cases, not the deepcopy: the serializer's
+        # opaque-object fallback can include object identity, and a fresh deepcopy would change that
+        # identity (and thus the revision) on every snapshot, breaking the stable content-addressed
+        # contract. The originals keep a consistent identity within the process.
+        revision = _content_revision(tuple(original))
+        # Deep-copy the stored payloads so a later in-place mutation of the dataset can't change
+        # what this immutable snapshot holds (EvalCase is frozen but its payloads are shared refs).
+        active = tuple(copy.deepcopy(c) for c in original)
         return DatasetSnapshot(
             dataset_id=self.dataset_id,
             name=self.name,
             description=self.description,
-            revision=_content_revision(active),
+            revision=revision,
             cases=active,
             base_version_id=self.base_version_id,
         )
