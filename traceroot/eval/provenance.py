@@ -94,7 +94,7 @@ def _git_block(env: dict[str, str], *, detect_dirty: bool) -> dict[str, Any] | N
         # populate `commit` when it actually looks like a SHA, so we never report a branch name
         # as a commit.
         block["ref"] = ref
-        if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref):
+        if re.fullmatch(r"[0-9a-fA-F]{7,64}", ref):  # SHA-1 (40) and SHA-256 (64) OIDs
             block["commit"] = ref
     if detect_dirty:
         dirty = _git_dirty()
