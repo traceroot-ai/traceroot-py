@@ -311,8 +311,11 @@ def llm_judge(
         rendered = _render_messages(messages, ctx)
         # If a provider integration is already tracing this model's calls, let IT own the LLM
         # span (richer: tokens, native semantics) instead of adding our own — otherwise we'd
-        # nest an LLM span inside an LLM span. Self-instrument only when nothing else will.
-        invoke = _call if _provider_integration_traces(model) else _call_instrumented
+        # nest an LLM span inside an LLM span. This only holds for the DEFAULT dispatch: a
+        # user-supplied `complete` is not provider-instrumented, so it must be self-instrumented
+        # (else its call would have no span at all), regardless of the model id.
+        provider_traced = complete is None and _provider_integration_traces(model)
+        invoke = _call if provider_traced else _call_instrumented
         text = invoke(rendered)
         return Score(name, _parse_judge_output(text, output_type), comment=(text or "")[:2000])
 
