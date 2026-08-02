@@ -105,6 +105,17 @@ class TestEvalRunResult:
     def test_upload_status_is_explicit(self):
         assert self._run().upload_state.status == "uploaded"
 
+    def test_save_load_round_trip(self, tmp_path):
+        r = self._run()
+        p = tmp_path / "run.json"
+        r.save(str(p))
+        loaded = EvalRunResult.load(str(p))
+        assert loaded.name == r.name
+        assert len(loaded.item_results) == 2
+        assert loaded.score_summary["acc"].mean == 0.5
+        assert loaded.upload_state.status == r.upload_state.status
+        assert not (tmp_path / "run.json.tmp").exists()  # atomic save leaves no temp file behind
+
 
 class TestScoreSummary:
     def test_fields(self):
