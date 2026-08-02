@@ -216,7 +216,9 @@ def _render_messages(messages: list[dict[str, str]], ctx: Any) -> list[dict[str,
 def _parse_judge_output(text: str, output_type: str) -> float | str:
     if output_type == "classification":
         return (text or "").strip()
-    match = re.search(r"-?\d+(?:\.\d+)?", text or "")
+    # Float-shaped: optional sign, leading-dot decimals (.8), and exponents (8e-1) — otherwise
+    # `.8` / `-.8` / `8e-1` mis-parse (e.g. `.8` matched as `8`).
+    match = re.search(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][-+]?\d+)?", text or "")
     if not match:
         raise ValueError(f"llm_judge: no numeric score found in model output: {text[:200]!r}")
     return float(match.group())

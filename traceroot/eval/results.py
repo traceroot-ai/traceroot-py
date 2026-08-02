@@ -353,7 +353,17 @@ class EvalRunResult:
                 raise ValueError("run.upload() needs a dataset ref or an explicit transport")
             active = PlatformTransport(
                 self.dataset.dataset_id,
-                scorer_names=list(self.score_summary.keys()),
+                # Include scorers that produced scores AND ones that errored on every case (absent
+                # from score_summary), so an all-failing scorer still appears in run registration.
+                scorer_names=list(
+                    dict.fromkeys(
+                        [
+                            *self.score_summary,
+                            *(s.name for item in self.item_results for s in item.scores),
+                            *(name for item in self.item_results for name in item.scorer_errors),
+                        ]
+                    )
+                ),
                 candidate_version=self.candidate_version,
                 dataset_version_id=self.dataset.dataset_version_id,
                 client_run_id=self.local_run_id,

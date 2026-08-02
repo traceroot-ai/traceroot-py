@@ -36,7 +36,7 @@ _CI_PROVIDERS = (
 def _resolved_git(env: dict[str, str]) -> tuple[str | None, str | None]:
     """(repository, commit) using the SAME precedence the client uses, preferring the
     value already resolved on the client so no extra git warning is emitted."""
-    from traceroot import get_client
+    import traceroot
     from traceroot.env import TRACEROOT_GIT_REF, TRACEROOT_GIT_REPO
     from traceroot.git_context import (
         auto_detect_git_context,
@@ -44,7 +44,10 @@ def _resolved_git(env: dict[str, str]) -> tuple[str | None, str | None]:
         harvest_ci_git_context,
     )
 
-    client = get_client()
+    # Read an ALREADY-created client directly — never get_client(), which would lazily construct the
+    # global client (extra git probes/warnings, and telemetry init under ambient credentials). This
+    # helper must stay side-effect-free and cheap.
+    client = getattr(traceroot, "_client", None)
     client_repo = getattr(client, "git_repo", None) if client is not None else None
     client_ref = getattr(client, "git_ref", None) if client is not None else None
 
@@ -94,7 +97,9 @@ def _git_block(env: dict[str, str], *, detect_dirty: bool) -> dict[str, Any] | N
         # populate `commit` when it actually looks like a SHA, so we never report a branch name
         # as a commit.
         block["ref"] = ref
-        if re.fullmatch(r"[0-9a-fA-F]{7,64}", ref):  # SHA-1 (40) and SHA-256 (64) OIDs
+        # Only EXACT OID lengths are commits (SHA-1 = 40, SHA-256 = 64). A shorter hex-looking
+        # branch/tag (e.g. "deadbeef") must stay a ref, not be reported as a commit.
+        if re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", ref):
             block["commit"] = ref
     if detect_dirty:
         dirty = _git_dirty()
