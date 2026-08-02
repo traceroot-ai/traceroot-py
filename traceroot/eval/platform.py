@@ -227,6 +227,7 @@ class PlatformTransport:
                     "output_type",
                     "description",
                     "metadata",
+                    "required_inputs",
                     "language",
                     "source",
                     "model",
