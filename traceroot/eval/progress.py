@@ -144,7 +144,11 @@ def _fit(label: str, anchor: str, stats: str, limit: int) -> str:
     # Ellipsize the label to make room for the anchor (2 leading spaces + label + anchor).
     room = limit - _display_width(anchor) - 2
     if room >= 1:
-        lab = label if _display_width(label) <= room else _slice_to_width(label, max(room - 1, 0)) + "…"
+        lab = (
+            label
+            if _display_width(label) <= room
+            else _slice_to_width(label, max(room - 1, 0)) + "…"
+        )
         return f"  {lab}{anchor}"
     # Too narrow for even the bare anchor: keep the counts (drop the label) and trim the anchor
     # itself by display width so it still never wraps.
@@ -220,6 +224,16 @@ class ConsoleProgress:
         else:
             self._plain()
 
+    def _safe_write(self, text: str) -> None:
+        """Write+flush the frame, treating ANY output failure (e.g. a stderr consumer that closed
+        early) as reporter shutdown. Progress is local presentation only and must never abort the
+        evaluation it observes."""
+        try:
+            self.stream.write(text)
+            self.stream.flush()
+        except (OSError, ValueError):  # broken pipe / closed or detached stream
+            self._active = False
+
     def finish(self) -> None:
         """Persist the completed bar: redraw the final (100%) frame and end the line so it
         stays on screen, then subsequent output starts cleanly below it. No-op in plain mode
@@ -227,8 +241,7 @@ class ConsoleProgress:
         if not self._active:
             return
         if self._animate:
-            self.stream.write("\r\x1b[2K" + self._frame() + "\n")
-            self.stream.flush()
+            self._safe_write("\r\x1b[2K" + self._frame() + "\n")
         self._active = False
 
     def _plain(self) -> None:
@@ -238,8 +251,7 @@ class ConsoleProgress:
         if self.done == self.total or self.total <= 20 or self.done % step == 0:
             bad = self.failed + self.errored
             tail = f"  ({bad} off)" if bad else ""
-            self.stream.write(f"  {self.label}  {self.done}/{self.total}{tail}\n")
-            self.stream.flush()
+            self._safe_write(f"  {self.label}  {self.done}/{self.total}{tail}\n")
 
     # -- rendering -------------------------------------------------------
     def _bar(self, frac: float) -> str:
@@ -274,5 +286,4 @@ class ConsoleProgress:
             return
         # \r returns to column 0; \x1b[2K erases the whole line -> a clean in-place
         # redraw regardless of the previous frame's length (no manual padding).
-        self.stream.write("\r\x1b[2K" + self._frame())
-        self.stream.flush()
+        self._safe_write("\r\x1b[2K" + self._frame())
