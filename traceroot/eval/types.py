@@ -290,7 +290,13 @@ class Dataset:
             header = records[0]
             d = {
                 k: header.get(k)
-                for k in ("dataset_id", "name", "description", "base_version_id", "dataset_version_id")
+                for k in (
+                    "dataset_id",
+                    "name",
+                    "description",
+                    "base_version_id",
+                    "dataset_version_id",
+                )
             }
             d["cases"] = [{k: v for k, v in rec.items() if k != "type"} for rec in records[1:]]
             return cls.from_dict(d)
