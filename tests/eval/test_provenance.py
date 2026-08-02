@@ -27,9 +27,18 @@ class TestCollectRunProvenance:
         assert meta == {"ci": {"provider": "ci"}}
 
     def test_git_block_repository_ref_commit(self, monkeypatch):
-        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "abc123"))
+        # A SHA-looking ref is exposed as both ref and commit.
+        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "abc123def456"))
         meta = collect_run_provenance(env={}, detect_dirty=False)
-        assert meta == {"git": {"repository": "owner/repo", "ref": "abc123", "commit": "abc123"}}
+        assert meta == {
+            "git": {"repository": "owner/repo", "ref": "abc123def456", "commit": "abc123def456"}
+        }
+
+    def test_git_block_branch_ref_has_no_commit(self, monkeypatch):
+        # A branch/tag ref is not a commit SHA -> exposed as ref only, never as commit.
+        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "main"))
+        meta = collect_run_provenance(env={}, detect_dirty=False)
+        assert meta == {"git": {"repository": "owner/repo", "ref": "main"}}
 
     def test_dirty_flag_when_requested(self, monkeypatch):
         monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "abc123"))
@@ -63,9 +72,13 @@ class TestCollectRunProvenance:
 
 class TestEngineAttachesProvenance:
     def test_result_metadata_merges_user_and_git(self, monkeypatch):
-        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "sha1"))
+        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "abc123def456"))
         ds = Dataset("d")
         ds.upsert(EvalCase(input=1, id="c0", expected=1))
         run = evaluate(name="r", dataset=ds, task=echo, scorers=[acc], metadata={"model": "x"})
         assert run.metadata["model"] == "x"
-        assert run.metadata["git"] == {"repository": "owner/repo", "ref": "sha1", "commit": "sha1"}
+        assert run.metadata["git"] == {
+            "repository": "owner/repo",
+            "ref": "abc123def456",
+            "commit": "abc123def456",
+        }

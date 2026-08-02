@@ -308,7 +308,7 @@ class EvalRunResult:
             name=d.get("evaluation_name") or d.get("name", ""),
             item_results=items,
             score_summary={k: ScoreSummary(**v) for k, v in d.get("scores", {}).items()},
-            upload_state=UploadState(),
+            upload_state=UploadState(**d.get("upload", {})),
             local_run_id=d.get("local_run_id", ""),
             candidate_version=d.get("candidate_version"),
             dataset=RunDatasetRef(**ds) if ds else None,
@@ -357,7 +357,7 @@ class EvalRunResult:
         run = active.create_run(
             name=self.name,
             dataset_name=dataset_name,
-            metadata=None,
+            metadata=self.metadata,  # preserve the run's metadata/provenance on re-upload
             client_run_id=self.local_run_id,
         )
         for item in self.item_results:

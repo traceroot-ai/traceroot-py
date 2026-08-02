@@ -19,6 +19,7 @@ Shape:
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from typing import Any
 
@@ -44,11 +45,14 @@ def _resolved_git(env: dict[str, str]) -> tuple[str | None, str | None]:
     )
 
     client = get_client()
-    repo = getattr(client, "git_repo", None) if client is not None else None
-    ref = getattr(client, "git_ref", None) if client is not None else None
+    client_repo = getattr(client, "git_repo", None) if client is not None else None
+    client_ref = getattr(client, "git_ref", None) if client is not None else None
 
-    repo = repo or env.get(TRACEROOT_GIT_REPO) or None
-    ref = ref or env.get(TRACEROOT_GIT_REF) or None
+    # An explicitly supplied env var wins over the client-resolved value: the client resolved ITS
+    # value from os.environ at init, so when `env` IS os.environ the two agree, but when a caller
+    # passes a custom `env` mapping to control provenance, that mapping must take effect.
+    repo = env.get(TRACEROOT_GIT_REPO) or client_repo or None
+    ref = env.get(TRACEROOT_GIT_REF) or client_ref or None
     if repo is None or ref is None:
         # These helpers never raise and never warn (the warning lives in client init).
         for src in (
@@ -81,14 +85,17 @@ def _git_dirty() -> bool | None:
 
 
 def _git_block(env: dict[str, str], *, detect_dirty: bool) -> dict[str, Any] | None:
-    repo, commit = _resolved_git(env)
+    repo, ref = _resolved_git(env)
     block: dict[str, Any] = {}
     if repo:
         block["repository"] = repo
-    if commit:
-        # The SDK resolves git_ref to the commit SHA; expose it as both ref and commit.
-        block["ref"] = commit
-        block["commit"] = commit
+    if ref:
+        # git_ref may be a branch/tag, not a commit SHA. Always expose it as `ref`, but only
+        # populate `commit` when it actually looks like a SHA, so we never report a branch name
+        # as a commit.
+        block["ref"] = ref
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", ref):
+            block["commit"] = ref
     if detect_dirty:
         dirty = _git_dirty()
         if dirty is not None:

@@ -371,11 +371,13 @@ class TestLlmJudgeTrace:
         assert "ANSWER" in str(llm.attributes[SpanAttributes.SPAN_INPUT])  # rendered prompt in
         assert "0.8" in str(llm.attributes[SpanAttributes.SPAN_OUTPUT])  # model response out
 
-    def test_judge_skips_own_llm_span_when_provider_integration_active(
+    def test_judge_self_instruments_custom_complete_even_with_provider_integration(
         self, memory_exporter, monkeypatch
     ):
-        # When a provider integration already traces the model call, the judge must NOT add its
-        # own LLM span (an LLM span nested inside an LLM span). Simulate an active integration.
+        # A user-supplied complete is NOT traced by the provider integration (it never calls the
+        # provider SDK), so the judge must still emit its own LLM span even when the integration is
+        # active — otherwise the judge call would have no span at all. Deferring to the integration
+        # only applies to the default dispatch.
         import traceroot
         from traceroot.eval import llm_judge
         from traceroot.instrumentation import Integration
@@ -400,6 +402,6 @@ class TestLlmJudgeTrace:
         result = evaluate(name="r", data=_ds(1), task=echo, scorers=[judge], report_to=_reported())
 
         by = _by_name(memory_exporter.get_finished_spans())
-        assert "llm_judge:conciseness" not in by  # integration owns the LLM span, not us
+        assert "llm_judge:conciseness" in by  # a custom complete is self-instrumented
         assert "conciseness" in by  # the scorer span still exists
         assert result.item_results[0].scores[0].value == 0.8  # judge still ran + scored
