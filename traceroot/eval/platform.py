@@ -68,6 +68,15 @@ def _duration_ms(value: float | None) -> int | None:
 # (``Dataset.save``/``EvalRunResult.save``).
 
 
+def _numeric_score(value: Any) -> float | None:
+    """The numeric value of a score (bool -> 1.0/0.0), or None for categorical/None."""
+    if isinstance(value, bool):  # bool before int: True->1.0, False->0.0
+        return 1.0 if value else 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str, str]:
     """Fill api_key/host_url from the global client when not explicitly given.
 
@@ -139,9 +148,22 @@ class PlatformTransport:
         self.scorer_specs = scorer_specs
         self.candidate_version = candidate_version or "sdk"
         self.environment = environment
-        self.main_score_name = main_score_name or (
-            self.scorer_names[0] if self.scorer_names else None
-        )
+        # Deterministic main-metric resolution (never a silent "first scorer function name"):
+        #  - an explicit main_score wins (validated at finish against what was actually emitted);
+        #  - a single scorer resolves name-agnostically from its one score, so a scorer whose
+        #    function name differs from its emitted Score name can no longer silently zero the run;
+        #  - multiple scorers with no explicit main have no headline metric here (the engine
+        #    requires an explicit main_score for a reported multi-scorer run).
+        n_scorers = len(self.scorer_names) or (len(self.scorer_specs) if self.scorer_specs else 0)
+        self._main_configured = main_score_name is not None
+        if self._main_configured:
+            self.main_score_name = main_score_name
+        elif n_scorers == 1 and self.scorer_names:
+            self.main_score_name = self.scorer_names[0]
+        else:
+            self.main_score_name = None
+        self._name_agnostic_main = (not self._main_configured) and n_scorers == 1
+        self._emitted_metrics: set[str] = set()
         self.dataset_version_id = dataset_version_id
         self.client_run_id = client_run_id
         self.pass_threshold = pass_threshold
@@ -263,6 +285,7 @@ class PlatformTransport:
         return None
 
     def record_item_result(self, run: RunHandle, item_result: EvalItemResult) -> None:
+        self._emitted_metrics.update(s.name for s in item_result.scores)
         status, main_score = self._status_and_main(item_result)
         if status == "errored":
             self._task_errors += 1
@@ -299,8 +322,17 @@ class PlatformTransport:
         return None
 
     def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState:
+        # A configured main score that no successful case ever emitted is a misconfiguration
+        # (e.g. a scorer whose function name differs from its emitted Score name). Complete the
+        # run as errored and raise an actionable message rather than silently finishing a
+        # main-less run that quietly reads as not_scored.
+        misconfigured = (
+            self._main_configured and self._main_count == 0 and bool(self._emitted_metrics)
+        )
         effective = status or (
-            "completed_with_errors" if (self._task_errors or self._scorer_errors) else "completed"
+            "completed_with_errors"
+            if (misconfigured or self._task_errors or self._scorer_errors)
+            else "completed"
         )
         body: dict[str, Any] = {
             "status": effective,
@@ -317,6 +349,13 @@ class PlatformTransport:
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
             body,
         )
+        if misconfigured:
+            emitted = sorted(self._emitted_metrics)
+            raise ValueError(
+                f"main_score={self.main_score_name!r} was never emitted by any scorer; the run "
+                f"emitted metric(s) {emitted}. Set main_score to one of those (or align the "
+                f"scorer's Score(name=...) with its declared name)."
+            )
         # Join the backend's UI-relative run path with our host to form a clickable
         # link; None when the backend did not return one (older/self-hosted).
         # Prefer the backend's absolute run_url; fall back to host_url + run_path for a
@@ -354,22 +393,29 @@ class PlatformTransport:
             )
         return payload
 
+    def _main_value(self, scores: list[Score]) -> float | None:
+        """The run's main-metric value for one case, or None when unresolved.
+
+        Name-agnostic for a single unconfigured scorer (its one numeric/boolean score);
+        matched by ``main_score_name`` when an explicit main is set; None when multiple
+        scorers have no configured main (genuinely no headline metric)."""
+        if self._name_agnostic_main:
+            for s in scores:
+                v = _numeric_score(s.value)
+                if v is not None:
+                    return v
+            return None
+        if self.main_score_name is None:
+            return None
+        for s in scores:
+            if s.name == self.main_score_name:
+                return _numeric_score(s.value)  # numeric, or None for a categorical main
+        return None
+
     def _status_and_main(self, item_result: EvalItemResult) -> tuple[str, float | None]:
         if item_result.error is not None:
             return "errored", None
-        main = None
-        for s in item_result.scores:
-            if self.main_score_name is not None and s.name != self.main_score_name:
-                continue
-            if isinstance(s.value, bool):  # bool before int: True->1.0, False->0.0
-                main = 1.0 if s.value else 0.0
-                break
-            if isinstance(s.value, (int, float)):
-                main = float(s.value)
-                break
-            if self.main_score_name is not None:
-                # The named main scorer produced a categorical value -> no numeric main.
-                break
+        main = self._main_value(item_result.scores)
         if main is None:
             return "not_scored", None
         threshold = self._effective_threshold()

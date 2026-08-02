@@ -348,6 +348,7 @@ def _auto_transport(
     dataset_id: str | None,
     candidate_version: str | None,
     environment: str,
+    main_score: str | None = None,
 ) -> EvalTransport | None:
     """Build the reporting transport from credentials + a synced dataset. Returns None when
     it cannot (no synced dataset, or no credentials); the caller turns that into a clear error
@@ -377,6 +378,7 @@ def _auto_transport(
         candidate_version=candidate_version,
         environment=environment,
         dataset_version_id=version_id,
+        main_score_name=main_score,
     )
 
 
@@ -430,6 +432,7 @@ async def _run_async(
     transport: EvalTransport | None = None,
     dataset_id: str | None = None,
     candidate_version: str | None = None,
+    main_score: str | None = None,
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
     run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
@@ -480,13 +483,21 @@ async def _run_async(
         active_transport: EvalTransport = transport
     else:
         active_transport = _auto_transport(
-            data, scorers, dataset_id, candidate_version, environment
+            data, scorers, dataset_id, candidate_version, environment, main_score
         )
         if active_transport is None:
             raise RuntimeError(
                 "evaluate() reports to the TraceRoot platform, but no credentials or synced "
                 "dataset were found. Set TRACEROOT_API_KEY and pass a pulled dataset "
                 "(traceroot.pull_dataset(...)), or pass an explicit transport=."
+            )
+        # A reported multi-scorer run needs an explicit headline metric: refuse to silently
+        # pick one (the old behavior guessed the first scorer's function name).
+        if main_score is None and len(scorers) > 1:
+            raise ValueError(
+                f"This run reports {len(scorers)} scorers to the platform but no main_score, so "
+                "the headline metric is ambiguous. Pass main_score='<scorer/metric name>' to "
+                "select which one drives the run's pass/fail and aggregate main score."
             )
 
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual

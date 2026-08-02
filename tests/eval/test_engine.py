@@ -46,7 +46,9 @@ class TestBasicRuns:
         async def ascore(ctx):
             return 1.0
 
-        result = evaluate(name="r", data=_ds(2), task=echo_task, scorers=[exact, ascore])
+        result = evaluate(
+            name="r", data=_ds(2), task=echo_task, scorers=[exact, ascore], main_score="exact"
+        )
         assert result.score_summary["exact"].mean == 1.0
         assert result.score_summary["ascore"].mean == 1.0
 
@@ -110,7 +112,9 @@ class TestFailureIsolation:
         def bad(ctx):
             raise RuntimeError("scorer boom")
 
-        result = evaluate(name="r", data=_ds(2), task=echo_task, scorers=[exact, bad])
+        result = evaluate(
+            name="r", data=_ds(2), task=echo_task, scorers=[exact, bad], main_score="exact"
+        )
         it = result.item_results[0]
         assert "bad" in it.scorer_errors
         assert "scorer boom" in it.scorer_errors["bad"]

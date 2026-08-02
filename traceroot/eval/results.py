@@ -107,22 +107,32 @@ class RunView:
     score_summary: dict[str, ScoreSummary]
 
 
-def case_status(item: EvalItemResult, pass_threshold: float = 1.0) -> str:
+def case_status(
+    item: EvalItemResult, pass_threshold: float = 1.0, main_score_name: str | None = None
+) -> str:
     """Derive passed | failed | errored | not_scored for one item.
 
     A task error is 'errored' (distinct from a scorer error). A case with no
     numeric/boolean score is 'not_scored' (distinct from a score of zero).
+
+    ``main_score_name`` selects the metric that drives pass/fail; when None the first
+    numeric/boolean score is used (the single-scorer case). Passing the run's resolved
+    main keeps this local status in agreement with the reported (cloud) status.
     """
     if item.error is not None:
         return "errored"
     main: float | None = None
     for s in item.scores:
+        if main_score_name is not None and s.name != main_score_name:
+            continue
         if isinstance(s.value, bool):
             main = 1.0 if s.value else 0.0
             break
         if isinstance(s.value, (int, float)):
             main = float(s.value)
             break
+        if main_score_name is not None:
+            break  # the named main scorer produced a categorical value -> no numeric main
     if main is None:
         return "not_scored"
     return "passed" if main >= pass_threshold else "failed"

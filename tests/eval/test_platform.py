@@ -137,13 +137,14 @@ class TestPlatformTransport:
         t = RecordingTransport(
             "ds_1",
             scorer_names=["acc", "helpful"],
+            main_score_name="acc",  # multiple scorers now require an explicit main
             candidate_version="sonnet",
             api_key="tr-x",
             host_url="https://h",
         )
         t.create_run("routing", "d", None)
         body = t.requests[0][2]
-        assert body["main_score_name"] == "acc"  # defaults to the first scorer
+        assert body["main_score_name"] == "acc"  # the explicitly selected headline metric
         assert body["candidate_version"] == "sonnet"
         # Comparison is the backend's job; the SDK sends no baseline linkage.
         assert "baseline_run_id" not in body

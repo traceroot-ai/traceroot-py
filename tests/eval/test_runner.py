@@ -53,7 +53,7 @@ ds = Dataset("d")
 ds.add(input="ok", id="ok", expected="ok")
 ds.add(input="boom", id="err", expected="boom")
 
-mixed_eval = Evaluation(name="mixed", dataset=ds, task=task, scorers=[good, bad])
+mixed_eval = Evaluation(name="mixed", dataset=ds, task=task, scorers=[good, bad], main_score="good")
 """
 
 INSTRUMENTED_EVAL = """
