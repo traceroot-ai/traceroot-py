@@ -184,6 +184,10 @@ class Dataset:
         """Replace fields of an existing case; raises KeyError if absent."""
         if id not in self._cases:
             raise KeyError(id)
+        # Reject id changes: the map is keyed by id, so silently changing it would leave the case
+        # under the old key (get(new_id) fails) and let snapshots hold ids that don't match the index.
+        if changes.get("id", id) != id:
+            raise ValueError("test case id cannot be changed via update()")
         updated = dataclasses.replace(self._cases[id], **changes)
         self._cases[id] = updated
         return updated
@@ -290,7 +294,13 @@ class Dataset:
             header = records[0]
             d = {
                 k: header.get(k)
-                for k in ("dataset_id", "name", "description", "base_version_id", "dataset_version_id")
+                for k in (
+                    "dataset_id",
+                    "name",
+                    "description",
+                    "base_version_id",
+                    "dataset_version_id",
+                )
             }
             d["cases"] = [{k: v for k, v in rec.items() if k != "type"} for rec in records[1:]]
             return cls.from_dict(d)
