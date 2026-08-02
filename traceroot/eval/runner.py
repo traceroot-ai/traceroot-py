@@ -26,6 +26,7 @@ See ``offline-eval/cli-architecture-2026-07-20.md`` (SDK agent handoff).
 
 from __future__ import annotations
 
+import dataclasses
 import importlib.util
 import json
 import os
@@ -51,6 +52,7 @@ from traceroot.eval.results import (
     aggregate_scores,
     case_status,
 )
+from traceroot.eval.transport import FakeTransport
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase
 from traceroot.utils import serialize_value
 
@@ -190,18 +192,23 @@ def discover(paths: list[str]) -> list[tuple[str, Evaluation]]:
 # =============================================================================
 # Sampling / filtering
 # =============================================================================
-def _case_ids(data: Any) -> list[str]:
+def _cases(data: Any) -> list[EvalCase]:
+    """EvalCase objects for the dataset (positional ids filled in), for count/selection checks."""
     if isinstance(data, DatasetSnapshot):
-        return [c.id for c in data.cases]  # type: ignore[misc]
+        return list(data.cases)
     if isinstance(data, Dataset):
-        return [c.id for c in data]  # active cases
-    ids: list[str] = []
+        return list(data)  # active cases
+    out: list[EvalCase] = []
     for i, item in enumerate(data):
         if isinstance(item, EvalCase):
-            ids.append(item.id or f"case-{i}")
+            out.append(item if item.id else dataclasses.replace(item, id=f"case-{i}"))
         elif isinstance(item, dict):
-            ids.append(item.get("id") or f"case-{i}")
-    return ids
+            out.append(EvalCase(**{**item, "id": item.get("id") or f"case-{i}"}))
+    return out
+
+
+def _case_ids(data: Any) -> list[str]:
+    return [c.id for c in _cases(data)]  # type: ignore[misc]
 
 
 def _subset(
@@ -506,9 +513,13 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     else:
         select = base_select
 
-    # Full-run case count is known up front; a subset reports its chosen size.
-    full_count = len(_case_ids(evaluation.dataset))
-    case_count = len(chosen) if chosen is not None else full_count
+    # Report the count that will actually run: apply BOTH the sample subset and the evaluation's
+    # select filter, so the start event's case_count matches the results (an Evaluation.select that
+    # drops cases was previously ignored here).
+    if select is not None:
+        case_count = sum(1 for c in _cases(evaluation.dataset) if select(c))
+    else:
+        case_count = len(_case_ids(evaluation.dataset))
     emitter.emit(
         {
             "type": "evaluation_started",
@@ -554,6 +565,10 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
         # The runner speaks NDJSON on its own channel; never draw a progress bar.
         "progress": False,
     }
+    if not bool(options.get("reporting")):
+        # Local-only guarantee: replace any transport the Evaluation supplied (report_to) with an
+        # in-memory no-op, so lifecycle requests never leave the process even when reporting is off.
+        run_kwargs["transport"] = FakeTransport()
     if options.get("max_concurrency"):
         run_kwargs["max_concurrency"] = int(options["max_concurrency"])
     if options.get("timeout") is not None:
@@ -676,8 +691,10 @@ def main(argv: list[str] | None = None) -> int:
     """
     paths = list(argv if argv is not None else sys.argv[1:])
     emitter = Emitter(_open_channel())
-    options = _load_options()
     try:
+        # Parse options INSIDE the error boundary so malformed TRACEROOT_EVAL_OPTIONS produces a
+        # structured `fatal` event (and the exit-0 contract) instead of an uncaught traceback.
+        options = _load_options()
         cancelled = run_suite(paths, options, emitter)
         if cancelled:
             return 130  # SIGINT: run was finalized as incomplete; the CLI maps 130
