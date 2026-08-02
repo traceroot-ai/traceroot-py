@@ -56,8 +56,11 @@ class TestMetadata:
         seen = {}
 
         class CapturingTransport(FakeTransport):
-            def create_run(self, name, dataset_name, metadata, client_run_id=None):
+            def create_run(
+                self, name, dataset_name, metadata, client_run_id=None, provenance=None
+            ):
                 seen["metadata"] = metadata
+                seen["provenance"] = provenance
                 return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
         Evaluation(
@@ -69,6 +72,8 @@ class TestMetadata:
             report_to=CapturingTransport(),
         ).run()
         assert seen["metadata"] == {"model": "gpt"}
+        # Phase 1: typed provenance reaches registration alongside free-form metadata.
+        assert seen["provenance"]["sdk_language"] == "python"
 
 
 class TestRetryRejected:

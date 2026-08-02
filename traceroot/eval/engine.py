@@ -464,13 +464,14 @@ async def _run_async(
         case_count=len(cases),
     )
 
-    # Enrich run metadata with auto-discovered provenance (git/ci) for the run record.
-    # Cheap path (no git-status subprocess); dirty is available via the public
-    # collect_run_provenance helper. NOTE: not uploaded -- the backend's strict
-    # run-registration schema has no metadata field.
-    from traceroot.eval.provenance import collect_run_provenance
+    # Local run record keeps the combined view (user metadata + git/ci) for the artifact.
+    # The wire form is separate: typed provenance (flat RunProvenance shape) reported at
+    # registration, with the user's free-form metadata sent verbatim alongside it. Dirty
+    # state is observed here (one bounded git-status call at run start).
+    from traceroot.eval.provenance import collect_run_provenance, run_provenance
 
     run_metadata = collect_run_provenance(metadata, detect_dirty=False)
+    run_provenance_wire = run_provenance(detect_dirty=True)
 
     dataset_name = snapshot.name
     # Cloud-only: an explicit transport wins; otherwise build a reporting transport from
@@ -507,6 +508,7 @@ async def _run_async(
         dataset_name=dataset_name,
         metadata=metadata,
         client_run_id=local_run_id,
+        provenance=run_provenance_wire,
     )
 
     # One immutable identity stamped on every per-case evaluation trace (attribute

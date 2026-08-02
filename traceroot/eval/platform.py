@@ -172,6 +172,7 @@ class PlatformTransport:
         dataset_name: str,
         metadata: dict | None,
         client_run_id: str | None = None,
+        provenance: dict | None = None,
     ) -> RunHandle:
         body: dict[str, Any] = {
             "evaluation_name": name,
@@ -188,6 +189,13 @@ class PlatformTransport:
         effective_crun = client_run_id or self.client_run_id
         if effective_crun is not None:
             body["client_run_id"] = effective_crun
+        # Typed execution provenance (git/CI/SDK identity) and free-form user metadata.
+        # Both are optional on the backend; omit when there is nothing to report so we
+        # match its absent-or-null rules rather than sending empty objects.
+        if provenance:
+            body["provenance"] = provenance
+        if metadata:
+            body["metadata"] = metadata
         resp = self._request("POST", "/api/v1/public/evaluation-runs", body)
         self.run_id = resp["evaluation_run_id"]
         # Optional, absent on older/self-hosted backends. Prefer the absolute run_url
