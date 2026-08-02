@@ -96,7 +96,7 @@ def test_describe_scorers_list_and_value_type_hint():
     # a runtime value_type hint fills an undeclared value_type
     assert by["latency"]["value_type"] == "numeric"
     assert by["latency"]["direction"] == "lower_is_better"
-    assert by["acc"]["value_type"] is None  # no hint, not declared
+    assert "value_type" not in by["acc"]  # undeclared fields are omitted, not exposed as null
 
 
 class TestScorerSpecsOnWire:
