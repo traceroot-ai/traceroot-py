@@ -28,11 +28,13 @@ from traceroot.eval.ids import new_run_id
 from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
+    MainScore,
     MainScoreError,
     RunDatasetRef,
     RunView,
     aggregate_scores,
     resolve_main_score_name,
+    resolve_main_score_policy,
 )
 from traceroot.eval.transport import EvalTransport, RunHandle
 from traceroot.eval.types import (
@@ -505,10 +507,15 @@ async def _run_async(
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
     # scorer callables when the transport accepts specs and the caller did not pre-set them.
     # Must happen BEFORE create_run so the descriptors reach registration.
-    if getattr(active_transport, "scorer_specs", "unset") is None:
-        from traceroot.eval.scorers import describe_scorers
+    from traceroot.eval.scorers import describe_scorers
 
+    if getattr(active_transport, "scorer_specs", "unset") is None:
         active_transport.scorer_specs = describe_scorers(scorers)
+    # The main metric's threshold + direction come from the OWNING scorer's declaration (a
+    # single scorer's policy governs whatever metric it emits). Resolved ONCE here and applied
+    # identically by the local result and the cloud reporter -- never two rule sets.
+    _specs = getattr(active_transport, "scorer_specs", None) or describe_scorers(scorers)
+    main_threshold, main_direction = resolve_main_score_policy(_specs, main_score)
 
     # Client-side run id: the idempotency key for run registration AND the id carried on
     # the result (the platform run_id is separate, assigned by the backend).
@@ -548,7 +555,11 @@ async def _run_async(
     if should_show_progress(progress):
         from traceroot.eval.progress import ConsoleProgress
 
-        reporter = ConsoleProgress(len(cases), name)
+        reporter = ConsoleProgress(
+            len(cases),
+            name,
+            main_score=MainScore(main_score, main_threshold, main_direction),
+        )
         reporter.start()
 
         def case_complete_hook(item, duration_ms, _next=on_case_complete):
@@ -618,6 +629,8 @@ async def _run_async(
         run_scorer_errors=run_scorer_errors,
         metadata=run_metadata,
         main_score_name=resolved_main,
+        main_score_threshold=main_threshold,
+        main_score_direction=main_direction,
     )
 
     # When the bar was shown (interactive), surface the clickable run link if the

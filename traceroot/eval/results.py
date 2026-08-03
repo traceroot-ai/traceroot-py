@@ -144,35 +144,77 @@ def resolve_main_score_name(configured: str | None, numeric_metrics: list[str]) 
     return distinct[0] if distinct else None
 
 
-def case_status(
-    item: EvalItemResult, pass_threshold: float = 1.0, main_score_name: str | None = None
-) -> str:
-    """Derive passed | failed | errored | not_scored for one item.
+_DEFAULT_PASS_THRESHOLD = 1.0
 
-    A task error is 'errored' (distinct from a scorer error). A case with no
-    numeric/boolean score is 'not_scored' (distinct from a score of zero).
 
-    ``main_score_name`` selects the metric that drives pass/fail; when None the first
-    numeric/boolean score is used (the single-scorer case). Passing the run's resolved
-    main keeps this local status in agreement with the reported (cloud) status.
+@dataclasses.dataclass(frozen=True)
+class MainScore:
+    """The one resolved scoring policy for a run's headline metric: which emitted metric drives
+    pass/fail, plus the threshold + direction (from the OWNING scorer's declaration) applied to
+    it. The SAME object drives local status and the cloud report -- never separate rules."""
+
+    name: str | None
+    threshold: float = _DEFAULT_PASS_THRESHOLD
+    direction: str = "higher_is_better"
+
+    def status(self, value: float) -> str:
+        if self.direction == "none":
+            return "not_scored"
+        if self.direction == "lower_is_better":
+            return "passed" if value <= self.threshold else "failed"
+        return "passed" if value >= self.threshold else "failed"
+
+
+def resolve_main_score_policy(
+    scorer_specs: list[dict[str, Any]] | None, configured: str | None
+) -> tuple[float, str]:
+    """(threshold, direction) for the main metric, from the OWNING scorer's declared policy.
+
+    For a single scorer its declaration governs whatever metric it emits -- even when the
+    function name differs from the emitted ``Score`` name (we do NOT match the emitted metric
+    name against the function name). For an explicit main, the scorer whose declared name
+    matches owns it. Falls back to (1.0, higher_is_better)."""
+    specs = scorer_specs or []
+    owner: dict[str, Any] | None = None
+    if configured is not None:
+        owner = next((s for s in specs if s.get("name") == configured), None)
+    if owner is None and len(specs) == 1:
+        owner = specs[0]  # single scorer: its policy owns its emitted metric
+    threshold = (owner or {}).get("threshold")
+    direction = (owner or {}).get("direction")
+    return (
+        threshold if threshold is not None else _DEFAULT_PASS_THRESHOLD,
+        str(direction) if direction is not None else "higher_is_better",
+    )
+
+
+def case_status(item: EvalItemResult, main_score: MainScore | None = None) -> str:
+    """Derive passed | failed | errored | not_scored for one item using the run's resolved
+    ``MainScore`` (metric name + threshold + direction).
+
+    A task error is 'errored' (distinct from a scorer error). A case with no numeric/boolean
+    score is 'not_scored'. When ``main_score`` is None the first numeric/boolean score is used
+    with the default policy. Passing the run's resolved ``MainScore`` keeps this local status
+    in agreement with the reported (cloud) status -- one policy, not two.
     """
     if item.error is not None:
         return "errored"
-    main: float | None = None
+    ms = main_score if main_score is not None else MainScore(None)
+    value: float | None = None
     for s in item.scores:
-        if main_score_name is not None and s.name != main_score_name:
+        if ms.name is not None and s.name != ms.name:
             continue
         if isinstance(s.value, bool):
-            main = 1.0 if s.value else 0.0
+            value = 1.0 if s.value else 0.0
             break
         if isinstance(s.value, (int, float)):
-            main = float(s.value)
+            value = float(s.value)
             break
-        if main_score_name is not None:
+        if ms.name is not None:
             break  # the named main scorer produced a categorical value -> no numeric main
-    if main is None:
+    if value is None:
         return "not_scored"
-    return "passed" if main >= pass_threshold else "failed"
+    return ms.status(value)
 
 
 def aggregate_scores(item_results: list[EvalItemResult]) -> dict[str, ScoreSummary]:
@@ -220,9 +262,15 @@ class EvalRunResult:
     run_scores: list[Score] = dataclasses.field(default_factory=list)  # whole-run scores
     run_scorer_errors: dict[str, str] = dataclasses.field(default_factory=dict)
     metadata: dict[str, Any] | None = None  # run context (model, prompt, branch, CI, ...)
-    # The one resolved main-metric name (from resolve_main_score_name); every status/summary
-    # view derives pass/fail from THIS metric, agreeing with the reported (cloud) run.
+    # The one resolved main-metric policy (name + threshold + direction from resolve_*). Every
+    # status/summary view derives pass/fail from THIS, agreeing with the reported (cloud) run.
     main_score_name: str | None = None
+    main_score_threshold: float = _DEFAULT_PASS_THRESHOLD
+    main_score_direction: str = "higher_is_better"
+
+    @property
+    def main_score(self) -> MainScore:
+        return MainScore(self.main_score_name, self.main_score_threshold, self.main_score_direction)
 
     # --- inspection ---
     @property
@@ -230,9 +278,7 @@ class EvalRunResult:
         return self.item_results
 
     def _by_status(self, status: str) -> list[EvalItemResult]:
-        return [
-            it for it in self.item_results if case_status(it, main_score_name=self.main_score_name) == status
-        ]
+        return [it for it in self.item_results if case_status(it, self.main_score) == status]
 
     def failures(self) -> list[EvalItemResult]:
         return self._by_status("failed")
@@ -277,6 +323,8 @@ class EvalRunResult:
             "run_id": self.run_id,
             "candidate_version": self.candidate_version,
             "main_score_name": self.main_score_name,
+            "main_score_threshold": self.main_score_threshold,
+            "main_score_direction": self.main_score_direction,
             "dataset": self.dataset.to_dict() if self.dataset else None,
             "counts": {
                 "case_count": self.case_count,
@@ -322,6 +370,8 @@ class EvalRunResult:
             run_scorer_errors=d.get("run_scorer_errors", {}),
             metadata=d.get("metadata"),
             main_score_name=d.get("main_score_name"),
+            main_score_threshold=d.get("main_score_threshold", _DEFAULT_PASS_THRESHOLD),
+            main_score_direction=d.get("main_score_direction", "higher_is_better"),
         )
 
     @classmethod

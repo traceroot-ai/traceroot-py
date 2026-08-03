@@ -24,7 +24,7 @@ import urllib.request
 from typing import Any
 from urllib.parse import quote
 
-from traceroot.eval.results import EvalItemResult, UploadState
+from traceroot.eval.results import EvalItemResult, UploadState, resolve_main_score_policy
 from traceroot.eval.transport import PublishResult, RunHandle
 from traceroot.eval.types import Dataset, EvalCase, Score
 from traceroot.utils import serialize_value
@@ -259,23 +259,21 @@ class PlatformTransport:
         return [{"name": n, "version": _UNVERSIONED_SCORER} for n in self.scorer_names]
 
     def _effective_threshold(self) -> float:
-        """The pass threshold for status: an explicit pass_threshold wins; else the main
-        scorer's DECLARED threshold; else the default. Keeps cloud status in agreement
-        with a scorer's declared threshold (Phase 3)."""
+        """The pass threshold for status: an explicit pass_threshold wins; else the OWNING
+        scorer's declared threshold (a single scorer's declaration governs its emitted metric,
+        even when its function name differs from the emitted Score name); else the default.
+        Uses the SAME policy resolver as the local result -- one rule, not two."""
         if self.pass_threshold is not None:
             return self.pass_threshold
-        for spec in self.scorer_specs or []:
-            if spec.get("name") == self.main_score_name and spec.get("threshold") is not None:
-                return float(spec["threshold"])
-        return _DEFAULT_PASS_THRESHOLD
+        threshold, _ = resolve_main_score_policy(self.scorer_specs, self.main_score_name)
+        return threshold
 
     def _effective_direction(self) -> str:
-        """The main scorer's DECLARED comparison direction (higher_is_better by default).
-        lower_is_better inverts the threshold comparison; none -> not_scored."""
-        for spec in self.scorer_specs or []:
-            if spec.get("name") == self.main_score_name and spec.get("direction") is not None:
-                return str(spec["direction"])
-        return "higher_is_better"
+        """The OWNING scorer's declared comparison direction (higher_is_better by default);
+        lower_is_better inverts the threshold comparison; none -> not_scored. Same resolver as
+        the local result."""
+        _, direction = resolve_main_score_policy(self.scorer_specs, self.main_score_name)
+        return direction
 
     def register_item(self, run: RunHandle, case: EvalCase) -> None:
         # The item->trace link is folded into the result upsert (contract), so no-op.
@@ -338,11 +336,11 @@ class PlatformTransport:
         # main metric and the baseline delta as "-" (change = run.mainScore - baseline).
         if self._main_count:
             body["main_score"] = self._main_sum / self._main_count
-        # NOTE: the resolved headline metric NAME is intentionally NOT sent here. The current
-        # CompleteRunRequest schema has no main_score_name field AND rejects unknown keys, so
-        # the late-bound name stays on the local result until the backend adds the field (see
-        # the handoff). ``main_score_name`` is accepted for the eventual wire once it lands.
-        _ = main_score_name
+        # The resolved headline metric NAME, late-bound for a single scorer. Requires the
+        # backend addition that accepts an optional main_score_name at completion (coordinated
+        # dependency: deploy that before this SDK, or completion 400s on the unknown key).
+        if main_score_name is not None:
+            body["main_score_name"] = main_score_name
         self._request(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",

@@ -18,7 +18,7 @@ import sys
 import time
 from typing import TextIO
 
-from traceroot.eval.results import EvalItemResult, case_status
+from traceroot.eval.results import EvalItemResult, MainScore, case_status
 
 # Eighth-block glyphs for a smooth sub-cell bar edge.
 _BLOCKS = " ▏▎▍▌▋▊▉█"
@@ -129,9 +129,13 @@ class ConsoleProgress:
         width: int = 24,
         animate: bool | None = None,
         cols: int | None = None,
+        main_score: MainScore | None = None,
     ) -> None:
         self.total = max(int(total), 0)
         self.label = label
+        # The run's resolved scoring policy (threshold + direction), so live pass/fail matches
+        # the final result. None -> the default policy (single-scorer default).
+        self._main_score = main_score
         self.stream = stream if stream is not None else sys.stderr
         self.width = width
         # Terminal width to clamp each frame to (auto-detected when None).
@@ -154,7 +158,7 @@ class ConsoleProgress:
 
     def on_case_complete(self, item: EvalItemResult, _duration_ms: float) -> None:
         self.done += 1
-        status = case_status(item)
+        status = case_status(item, self._main_score)
         if status == "passed":
             self.passed += 1
         elif status == "failed":

@@ -46,10 +46,12 @@ from traceroot.eval.ids import new_run_id
 from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
+    MainScore,
     RunDatasetRef,
     UploadState,
     aggregate_scores,
     case_status,
+    resolve_main_score_policy,
 )
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase
 from traceroot.utils import serialize_value
@@ -261,10 +263,10 @@ def _scorer_versions(result: EvalRunResult) -> dict[str, str | None]:
     return versions
 
 
-def _case_metadata(item: EvalItemResult, main_score_name: str | None = None) -> dict[str, Any]:
+def _case_metadata(item: EvalItemResult, main_score: MainScore | None = None) -> dict[str, Any]:
     return {
         "case_id": item.case_id,
-        "status": case_status(item, main_score_name=main_score_name),
+        "status": case_status(item, main_score),
         "scores": [_score_event(s) for s in item.scores],
         "task_error": item.error,
         "scorer_errors": _scorer_error_events(item),
@@ -362,7 +364,7 @@ def write_artifacts(
         record = {
             "schema_version": "1",
             "case_id": item.case_id,
-            "status": case_status(item, main_score_name=result.main_score_name),
+            "status": case_status(item, result.main_score),
             "input": inp,
             "output": out,
             "expected": exp,
@@ -399,7 +401,7 @@ def write_artifacts(
         "scores": {k: v.to_dict() for k, v in result.score_summary.items()},
         "upload": result.upload_state.to_dict(),
         "artifact": artifact,
-        "cases": [_case_metadata(it, result.main_score_name) for it in result.item_results],
+        "cases": [_case_metadata(it, result.main_score) for it in result.item_results],
     }
     _atomic_write(run_path, json.dumps(serialize_value(run_doc), ensure_ascii=False, indent=2))
     return artifact
@@ -513,13 +515,18 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     def on_start(case: EvalCase) -> None:
         emitter.emit({"type": "case_started", "case_id": case.id})
 
+    # The scoring POLICY (threshold + direction) is known up front from the scorers, so live
+    # per-case status uses it immediately -- never the default 1.0 that a late-bound name would
+    # otherwise imply. The metric NAME is name-agnostic live (a single scorer's one score) and
+    # resolves to the same value as the final artifact, so live and final agree.
+    from traceroot.eval.scorers import describe_scorers as _describe
+
+    _lt, _ld = resolve_main_score_policy(_describe(evaluation.scorers), evaluation.main_score)
+    live_main = MainScore(evaluation.main_score, _lt, _ld)
+
     def on_complete(item: EvalItemResult, _dur: float) -> None:
         collected.append(item)
-        # Live status uses the CONFIGURED main (known up front); a single scorer's late-bound
-        # metric is name-agnostic and resolves to the same value, so live and final agree.
-        emitter.emit(
-            {"type": "case_completed", **_case_metadata(item, getattr(evaluation, "main_score", None))}
-        )
+        emitter.emit({"type": "case_completed", **_case_metadata(item, live_main)})
 
     # Only override the Evaluation's own concurrency/timeout when the option is present;
     # an absent option must NOT replace the definition's value with a runner default.
