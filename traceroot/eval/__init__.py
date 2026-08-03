@@ -93,14 +93,14 @@ def __getattr__(name: str):
     return value
 
 
-# --- CLI runner compatibility handshake (see offline-eval/cli-architecture-2026-07-20.md) ---
+# --- Runner compatibility handshake ---
 # Bump __api_version__ on any breaking change to: the runner event protocol, the
 # side-effect-free/network-free Evaluation construction guarantee, or the artifact schema.
 __api_version__ = 1
 
 
 def capabilities() -> dict[str, bool]:
-    """Feature flags the CLI runner negotiates against. Stable keys only."""
+    """Feature flags the runner negotiates against. Stable keys only."""
     return {
         "snapshot": True,
         "run_session": True,

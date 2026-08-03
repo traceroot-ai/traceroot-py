@@ -1,0 +1,19 @@
+{
+  "_comment": "Shared cross-language parity fixtures for the offline-eval SDK. traceroot-py and traceroot-ts each keep an IDENTICAL copy and assert their implementation matches it.",
+  "judge_parsing": [
+    {"text": "1.0", "expected": 1.0},
+    {"text": "0.8", "expected": 0.8},
+    {"text": "  0  ", "expected": 0.0},
+    {"text": "-2", "expected": -2.0},
+    {"text": "1.0.", "expected": 1.0},
+    {"text": "The score is 0.8", "expected": 0.8},
+    {"text": "Step 3: the score is 0.8", "error": true},
+    {"text": "1 out of 10", "error": true},
+    {"text": "no idea", "error": true}
+  ],
+  "required_inputs": [
+    {"content": "ANSWER:\n{{output}}", "expected": ["output"]},
+    {"content": "{{expected}} vs {{output}} for {{input}}", "expected": ["input", "output", "expected"]},
+    {"content": "Grade this answer.", "expected": []}
+  ]
+}
