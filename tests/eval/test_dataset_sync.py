@@ -131,9 +131,13 @@ class TestRunUpload:
         assert sum(1 for p in transport.paths if p.endswith("/results")) == 2
         assert transport.paths[-1].endswith("/complete")
 
-    def test_upload_without_transport_or_creds_raises(self):
+    def test_upload_without_transport_or_creds_raises(self, monkeypatch):
         import traceroot
 
+        # get_client() re-initializes a client from the env when _client is None, so an ambient
+        # TRACEROOT_API_KEY would make this pass for the wrong reason. Clear it to genuinely
+        # exercise the no-credentials path.
+        monkeypatch.delenv("TRACEROOT_API_KEY", raising=False)
         traceroot.shutdown()
         traceroot._client = None
         with pytest.raises((ValueError, RuntimeError)):
