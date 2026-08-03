@@ -1,5 +1,5 @@
-"""Phase 3: one canonical run-artifact reader. EvalRunResult.load understands BOTH the
-save() shape and the CLI runner's run.json, so a loaded run reconstructs cases + scores."""
+"""One canonical run-artifact reader. EvalRunResult.load understands BOTH the
+save() shape and the runner's run.json, so a loaded run reconstructs cases + scores."""
 
 from traceroot.eval import Dataset, EvalCase, EvalRunResult, evaluate
 from traceroot.eval.runner import write_artifacts

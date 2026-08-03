@@ -20,19 +20,23 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.trace import Status, StatusCode
 
-from traceroot.constants import SDK_VERSION, TRACEROOT_TRACER_NAME, SpanKind
+from traceroot.constants import SpanKind
 from traceroot.eval.ids import new_run_id
 from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
+    MainScore,
+    MainScoreError,
     RunDatasetRef,
     RunView,
     aggregate_scores,
+    resolve_main_score_name,
+    resolve_main_score_policy,
 )
+from traceroot.eval.tracer import eval_tracer as _eval_tracer  # span-export tracer (own module)
 from traceroot.eval.transport import EvalTransport, RunHandle
 from traceroot.eval.types import (
     Dataset,
@@ -49,12 +53,6 @@ from traceroot.utils import serialize_value, set_span_attribute
 _INLINE_DATASET = "<inline>"
 
 _CASE_FIELDS = {f.name for f in dataclasses.fields(EvalCase)}
-
-
-def _eval_tracer():
-    """The global production tracer for evaluation spans. Evaluation is cloud-only, so a
-    run always exports its per-case spans, which are then linked to the reported results."""
-    return trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
 
 
 def _fmt_error(exc: BaseException) -> str:
@@ -380,6 +378,7 @@ def _auto_transport(
     dataset_id: str | None,
     candidate_version: str | None,
     environment: str,
+    main_score: str | None = None,
 ) -> EvalTransport | None:
     """Build the reporting transport from credentials + a synced dataset. Returns None when
     it cannot (no synced dataset, or no credentials); the caller turns that into a clear error
@@ -415,6 +414,7 @@ def _auto_transport(
         candidate_version=candidate_version,
         environment=environment,
         dataset_version_id=version_id,
+        main_score_name=main_score,
     )
 
 
@@ -468,6 +468,7 @@ async def _run_async(
     transport: EvalTransport | None = None,
     dataset_id: str | None = None,
     candidate_version: str | None = None,
+    main_score: str | None = None,
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
     run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
@@ -481,7 +482,7 @@ async def _run_async(
     """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py).
 
     ``timeout`` bounds each task (seconds; a timeout is an isolated per-case error).
-    ``on_case_start``/``on_case_complete`` are internal hooks the CLI runner uses to
+    ``on_case_start``/``on_case_complete`` are internal hooks the runner uses to
     stream per-case events; ``on_case_complete(item, duration_ms)``.
     """
     _validate_config(name, task, scorers, max_concurrency)
@@ -503,13 +504,14 @@ async def _run_async(
         case_count=len(cases),
     )
 
-    # Enrich run metadata with auto-discovered provenance (git/ci) for the run record.
-    # Cheap path (no git-status subprocess); dirty is available via the public
-    # collect_run_provenance helper. NOTE: not uploaded -- the backend's strict
-    # run-registration schema has no metadata field.
-    from traceroot.eval.provenance import collect_run_provenance
+    # Local run record keeps the combined view (user metadata + git/ci) for the artifact.
+    # The wire form is separate: typed provenance (flat RunProvenance shape) reported at
+    # registration, with the user's free-form metadata sent verbatim alongside it. Dirty
+    # state is observed here (one bounded git-status call at run start).
+    from traceroot.eval.provenance import collect_run_provenance, run_provenance
 
     run_metadata = collect_run_provenance(metadata, detect_dirty=False)
+    run_provenance_wire = run_provenance(detect_dirty=True)
 
     dataset_name = snapshot.name
     # Cloud-only: an explicit transport wins; otherwise build a reporting transport from
@@ -518,7 +520,7 @@ async def _run_async(
         active_transport: EvalTransport = transport
     else:
         active_transport = _auto_transport(
-            data, scorers, dataset_id, candidate_version, environment
+            data, scorers, dataset_id, candidate_version, environment, main_score
         )
         if active_transport is None:
             raise RuntimeError(
@@ -526,14 +528,27 @@ async def _run_async(
                 "dataset were found. Set TRACEROOT_API_KEY and pass a pulled dataset "
                 "(traceroot.pull_dataset(...)), or pass an explicit transport=."
             )
+        # A reported multi-scorer run needs an explicit headline metric: refuse to silently
+        # pick one (the old behavior guessed the first scorer's function name).
+        if main_score is None and len(scorers) > 1:
+            raise ValueError(
+                f"This run reports {len(scorers)} scorers to the platform but no main_score, so "
+                "the headline metric is ambiguous. Pass main_score='<scorer/metric name>' to "
+                "select which one drives the run's pass/fail and aggregate main score."
+            )
 
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
     # scorer callables when the transport accepts specs and the caller did not pre-set them.
     # Must happen BEFORE create_run so the descriptors reach registration.
-    if getattr(active_transport, "scorer_specs", "unset") is None:
-        from traceroot.eval.scorers import describe_scorers
+    from traceroot.eval.scorers import describe_scorers
 
+    if getattr(active_transport, "scorer_specs", "unset") is None:
         active_transport.scorer_specs = describe_scorers(scorers)
+    # The main metric's threshold + direction come from the OWNING scorer's declaration (a
+    # single scorer's policy governs whatever metric it emits). Resolved ONCE here and applied
+    # identically by the local result and the cloud reporter -- never two rule sets.
+    _specs = getattr(active_transport, "scorer_specs", None) or describe_scorers(scorers)
+    main_threshold, main_direction = resolve_main_score_policy(_specs, main_score)
 
     # Client-side run id: the idempotency key for run registration AND the id carried on
     # the result (the platform run_id is separate, assigned by the backend).
@@ -546,8 +561,9 @@ async def _run_async(
         dataset_name=dataset_name,
         metadata=metadata,
         client_run_id=local_run_id,
+        provenance=run_provenance_wire,
     )
-    # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the CLI
+    # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the runner
     # runner on SIGINT) can finalize its partial artifact under the SAME ids the run registered
     # with, keeping it reconcilable with the cloud run.
     if on_run_start is not None:
@@ -577,7 +593,11 @@ async def _run_async(
     if should_show_progress(progress):
         from traceroot.eval.progress import ConsoleProgress
 
-        reporter = ConsoleProgress(len(cases), name)
+        reporter = ConsoleProgress(
+            len(cases),
+            name,
+            main_score=MainScore(main_score, main_threshold, main_direction),
+        )
         reporter.start()
 
         def case_complete_hook(item, duration_ms, _next=on_case_complete):
@@ -589,6 +609,10 @@ async def _run_async(
     # Reuse the process-wide bounded pool (not a fresh per-run one) so timed-out, uncancellable sync
     # tasks can't accumulate leaked threads across repeated evaluations.
     sync_executor = _sync_executor(max_concurrency)
+    results_list: list[EvalItemResult] = []
+    summary: dict[str, Any] = {}
+    resolved_main: str | None = None
+    resolve_error: MainScoreError | None = None
     try:
         item_results = await asyncio.gather(
             *[
@@ -608,16 +632,32 @@ async def _run_async(
                 for c in cases
             ]
         )
+        results_list = list(item_results)
+        summary = aggregate_scores(results_list)
+        # The ONE resolution of the run's main metric (late-bound to what was actually
+        # emitted). The same resolved value stamps the local result and the cloud completion.
+        numeric = [n for n, s in summary.items() if s.mean is not None]
+        try:
+            resolved_main = resolve_main_score_name(main_score, numeric)
+        except MainScoreError as exc:
+            resolve_error = exc
     finally:
         # The shared executor is intentionally NOT shut down here — it's reused across runs so
         # orphaned timed-out threads stay bounded to its fixed worker count.
         if reporter is not None:
             reporter.finish()
-        # Finish the run inside finally so a mid-run failure never leaves it open on the backend.
-        upload = active_transport.finish_run(run_handle, status=None)
+        # Finish inside finally so a mid-run failure never leaves the run open; a main-score
+        # misconfiguration completes the run in a terminal 'failed' state before we raise, so
+        # a registered run is never left orphaned in 'running'.
+        upload = active_transport.finish_run(
+            run_handle,
+            status="failed" if resolve_error is not None else None,
+            main_score_name=resolved_main,
+        )
 
-    results_list = list(item_results)
-    summary = aggregate_scores(results_list)
+    if resolve_error is not None:
+        raise resolve_error
+
     run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
 
     result = EvalRunResult(
@@ -632,6 +672,9 @@ async def _run_async(
         run_scores=run_scores,
         run_scorer_errors=run_scorer_errors,
         metadata=run_metadata,
+        main_score_name=resolved_main,
+        main_score_threshold=main_threshold,
+        main_score_direction=main_direction,
     )
 
     # When the bar was shown (interactive), surface the clickable run link if the

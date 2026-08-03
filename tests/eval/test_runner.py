@@ -1,4 +1,4 @@
-"""Phase 0: the traceroot.eval.runner module (discovery, events, artifacts, local-only)."""
+"""The traceroot.eval.runner module (discovery, events, artifacts, local-only)."""
 
 import json
 import os
@@ -53,7 +53,7 @@ ds = Dataset("d")
 ds.add(input="ok", id="ok", expected="ok")
 ds.add(input="boom", id="err", expected="boom")
 
-mixed_eval = Evaluation(name="mixed", dataset=ds, task=task, scorers=[good, bad])
+mixed_eval = Evaluation(name="mixed", dataset=ds, task=task, scorers=[good, bad], main_score="good")
 """
 
 INSTRUMENTED_EVAL = """
@@ -263,7 +263,7 @@ class TestInterrupt:
             Emitter(lambda line: events.append(json.loads(line))),
         )
 
-        # The suite reports cancellation (drives the CLI's 130 exit).
+        # The suite reports cancellation (drives the 130 exit).
         assert cancelled is True
         suite = events[-1]
         assert suite == {"type": "suite_completed", "evaluations": 1, "cancelled": True}
@@ -298,7 +298,7 @@ class TestInterrupt:
         from traceroot.eval import runner
 
         code = runner.main([str(d)])
-        assert code == 130  # SIGINT exit convention, chosen by the runner->CLI contract
+        assert code == 130  # SIGINT exit convention, chosen by the runner contract
 
         events = [json.loads(x) for x in event_file.read_text().splitlines()]
         done = next(e for e in events if e["type"] == "evaluation_completed")

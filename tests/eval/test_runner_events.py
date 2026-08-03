@@ -1,4 +1,4 @@
-"""Phase 4: runner/event correctness reconciled with the CLI's expectations."""
+"""Runner/event correctness."""
 
 import json
 import os
@@ -36,7 +36,7 @@ for i in range(3):
     ds.add(input=i, id=f"c{i}", expected=i)
 def task(x): return x
 def acc(ctx): return 1.0
-# The definition's own concurrency must be honored when the CLI omits the option.
+# The definition's own concurrency must be honored when the option is omitted.
 conc = Evaluation(name="conc", dataset=ds, task=task, scorers=[acc], max_concurrency=3)
 """
 
@@ -94,7 +94,7 @@ class TestEventEnrichment:
         d = _write(tmp_path, "simple_eval.py", SIMPLE_EVAL)
         events = _collect([d], {"reporting": True, "no_artifact": True})
         done = next(e for e in events if e["type"] == "evaluation_completed")
-        assert done["local_run_id"].startswith("run_")  # ULID-based, CLI derives created_at
+        assert done["local_run_id"].startswith("run_")  # ULID-based; created_at derived from it
         assert "created_at" in done
         assert done["dataset"]["dataset_id"] == "ds_remote"
 

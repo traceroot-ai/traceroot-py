@@ -1,4 +1,4 @@
-"""Phase 4: run metadata + provenance collection (machine-independent -- never depends on
+"""Run metadata + provenance collection (machine-independent -- never depends on
 the test machine's real git repo or CI env)."""
 
 import traceroot.eval.provenance as prov
@@ -28,10 +28,18 @@ class TestCollectRunProvenance:
 
     def test_git_block_repository_ref_commit(self, monkeypatch):
         # A SHA-looking ref is exposed as both ref and commit.
-        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "0123456789abcdef0123456789abcdef01234567"))
+        monkeypatch.setattr(
+            prov,
+            "_resolved_git",
+            lambda env: ("owner/repo", "0123456789abcdef0123456789abcdef01234567"),
+        )
         meta = collect_run_provenance(env={}, detect_dirty=False)
         assert meta == {
-            "git": {"repository": "owner/repo", "ref": "0123456789abcdef0123456789abcdef01234567", "commit": "0123456789abcdef0123456789abcdef01234567"}
+            "git": {
+                "repository": "owner/repo",
+                "ref": "0123456789abcdef0123456789abcdef01234567",
+                "commit": "0123456789abcdef0123456789abcdef01234567",
+            }
         }
 
     def test_git_block_branch_ref_has_no_commit(self, monkeypatch):
@@ -72,7 +80,11 @@ class TestCollectRunProvenance:
 
 class TestEngineAttachesProvenance:
     def test_result_metadata_merges_user_and_git(self, monkeypatch):
-        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "0123456789abcdef0123456789abcdef01234567"))
+        monkeypatch.setattr(
+            prov,
+            "_resolved_git",
+            lambda env: ("owner/repo", "0123456789abcdef0123456789abcdef01234567"),
+        )
         ds = Dataset("d")
         ds.upsert(EvalCase(input=1, id="c0", expected=1))
         run = evaluate(name="r", dataset=ds, task=echo, scorers=[acc], metadata={"model": "x"})
