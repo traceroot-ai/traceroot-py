@@ -250,13 +250,31 @@ def _render_messages(messages: list[dict[str, str]], ctx: Any) -> list[dict[str,
     return rendered
 
 
+_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
+
+
 def _parse_judge_output(text: str, output_type: str) -> float | str:
+    """Parse a judge's response into a score.
+
+    The judge contract is "reply with a single number and nothing else", so the response
+    itself is the number. To avoid the "first number wins" footgun (``Step 3: the score is
+    0.8`` must NOT become ``3``), we accept an exact numeric response, or a single unambiguous
+    number in prose, and otherwise raise -- a malformed/ambiguous response is an isolated
+    scorer error with the raw text preserved for diagnosis, never a wrong silent score.
+    """
     if output_type == "classification":
         return (text or "").strip()
-    match = re.search(r"-?\d+(?:\.\d+)?", text or "")
-    if not match:
-        raise ValueError(f"llm_judge: no numeric score found in model output: {text[:200]!r}")
-    return float(match.group())
+    stripped = (text or "").strip()
+    candidate = stripped.rstrip(".")  # tolerate a trailing period on an exact answer
+    if _NUMBER.fullmatch(candidate):
+        return float(candidate)
+    numbers = _NUMBER.findall(stripped)
+    if len(numbers) == 1:
+        return float(numbers[0])
+    raise ValueError(
+        f"llm_judge: expected a single numeric score, found {len(numbers)} in model "
+        f"output: {stripped[:200]!r}"
+    )
 
 
 def _provider_integration_traces(model: str) -> bool:
