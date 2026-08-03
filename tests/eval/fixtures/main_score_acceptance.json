@@ -1,0 +1,38 @@
+{
+  "_comment": "Shared B1 acceptance matrix for single-scorer/main-score resolution. traceroot-py and traceroot-ts load an IDENTICAL copy and drive both suites from it. Each scorer spec: fn_name (function/declared name) + threshold + direction + one of emit | emit_scalar | emit_multi | emit_by_case.",
+  "main_score_acceptance": [
+    {"name": "single higher passed", "cases": 1, "main_score": null,
+     "scorers": [{"fn_name": "grade", "threshold": 0.9, "direction": "higher_is_better", "emit": {"name": "quality", "value": 0.95}}],
+     "expect": {"status": "passed", "main_score_name": "quality"}},
+
+    {"name": "single higher failed", "cases": 1, "main_score": null,
+     "scorers": [{"fn_name": "grade", "threshold": 0.9, "direction": "higher_is_better", "emit": {"name": "quality", "value": 0.85}}],
+     "expect": {"status": "failed", "main_score_name": "quality"}},
+
+    {"name": "lower is better passed", "cases": 1, "main_score": null,
+     "scorers": [{"fn_name": "cost", "threshold": 0.2, "direction": "lower_is_better", "emit": {"name": "latency", "value": 0.1}}],
+     "expect": {"status": "passed", "main_score_name": "latency"}},
+
+    {"name": "lower is better failed", "cases": 1, "main_score": null,
+     "scorers": [{"fn_name": "cost", "threshold": 0.2, "direction": "lower_is_better", "emit": {"name": "latency", "value": 0.3}}],
+     "expect": {"status": "failed", "main_score_name": "latency"}},
+
+    {"name": "scalar scorer keeps its declared name", "cases": 1, "main_score": null,
+     "scorers": [{"fn_name": "acc", "threshold": 1.0, "direction": "higher_is_better", "emit_scalar": 1.0}],
+     "expect": {"status": "passed", "main_score_name": "acc"}},
+
+    {"name": "score array multiple names no selection", "cases": 1, "main_score": null,
+     "scorers": [{"fn_name": "multi", "threshold": 1.0, "direction": "higher_is_better", "emit_multi": [{"name": "a", "value": 1.0}, {"name": "b", "value": 0.0}]}],
+     "expect": {"error": true, "terminal_failed": true}},
+
+    {"name": "explicit multi metric selection", "cases": 1, "main_score": "format",
+     "scorers": [
+       {"fn_name": "accuracy", "threshold": 1.0, "direction": "higher_is_better", "emit": {"name": "accuracy", "value": 0.0}},
+       {"fn_name": "fmt", "threshold": 1.0, "direction": "higher_is_better", "emit": {"name": "format", "value": 1.0}}],
+     "expect": {"status": "passed", "main_score_name": "format"}},
+
+    {"name": "late discovered mismatch terminates failed", "cases": 2, "main_score": null,
+     "scorers": [{"fn_name": "grade", "threshold": 0.9, "direction": "higher_is_better", "emit_by_case": [{"name": "a", "value": 0.95}, {"name": "b", "value": 0.95}]}],
+     "expect": {"error": true, "terminal_failed": true}}
+  ]
+}

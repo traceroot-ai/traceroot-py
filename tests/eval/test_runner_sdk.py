@@ -1,4 +1,4 @@
-"""Phase 0 SDK prerequisites: capability handshake, per-case timing/timeout, schema_version."""
+"""SDK prerequisites: capability handshake, per-case timing/timeout, schema_version."""
 
 import traceroot.eval as ev
 from traceroot.eval import Dataset, EvalRunResult, ScorerContext

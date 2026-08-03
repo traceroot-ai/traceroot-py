@@ -1,4 +1,4 @@
-"""Phase 6: honest scoring semantics (product direction 2.7 / 10.3 error vocabulary).
+"""Honest scoring semantics.
 
 A missing or errored judgment must NEVER become a numeric zero, and the distinct
 outcomes -- quality failure, task error, scorer error, not-scored, pending review --
@@ -44,7 +44,9 @@ class TestErrorVocabulary:
         def broken(c):
             raise RuntimeError("judge down")
 
-        run = evaluate(name="r", dataset=_one(), task=echo, scorers=[good, broken])
+        run = evaluate(
+            name="r", dataset=_one(), task=echo, scorers=[good, broken], main_score="good"
+        )
         item = run.item_results[0]
         # the good score survives; the broken scorer is recorded as an error, not a 0.
         assert [s.name for s in item.scores] == ["good"]
@@ -98,7 +100,7 @@ class TestAggregateHonesty:
         ds = Dataset(name="d")
         for i in range(4):
             ds.upsert(EvalCase(input=i, id=f"c{i}", expected=i))
-        run = evaluate(name="r", dataset=ds, task=echo, scorers=[acc, flaky])
+        run = evaluate(name="r", dataset=ds, task=echo, scorers=[acc, flaky], main_score="acc")
 
         summary = aggregate_scores(run.item_results)
         assert summary["acc"].mean == 1.0 and summary["acc"].count == 4

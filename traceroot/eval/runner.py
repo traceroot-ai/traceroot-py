@@ -1,6 +1,6 @@
-"""Stable runner entry point for the TraceRoot CLI (Phase 0).
+"""Stable programmatic runner entry point for offline evaluation.
 
-Invoked out-of-process by the CLI as::
+Invoked out-of-process as::
 
     <interpreter> -m traceroot.eval.runner <eval paths...>
 
@@ -11,7 +11,7 @@ file (``TRACEROOT_EVAL_EVENT_FILE``). Structured options come from the JSON env 
 ``TRACEROOT_EVAL_OPTIONS``; eval paths come from argv.
 
 The runner ALWAYS exits 0 when the harness itself functioned - pass/fail is carried
-in the events; the CLI decides the process exit code. It emits ``fatal`` before
+in the events; the caller decides the process exit code. It emits ``fatal`` before
 dying whenever it can.
 
 Local-only by default: unless ``reporting`` is explicitly enabled, the runner
@@ -21,7 +21,7 @@ evaluated app called ``traceroot.initialize()``. (User task/scorer code may stil
 call LLM providers, tools, or other services; the runner neither intercepts nor
 restricts that.)
 
-See ``offline-eval/cli-architecture-2026-07-20.md`` (SDK agent handoff).
+The event stream is the authoritative interface.
 """
 
 from __future__ import annotations
@@ -47,10 +47,12 @@ from traceroot.eval.ids import new_run_id
 from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
+    MainScore,
     RunDatasetRef,
     UploadState,
     aggregate_scores,
     case_status,
+    resolve_main_score_policy,
 )
 from traceroot.eval.transport import FakeTransport
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase
@@ -286,10 +288,10 @@ def _scorer_versions(result: EvalRunResult) -> dict[str, str | None]:
     return versions
 
 
-def _case_metadata(item: EvalItemResult) -> dict[str, Any]:
+def _case_metadata(item: EvalItemResult, main_score: MainScore | None = None) -> dict[str, Any]:
     return {
         "case_id": item.case_id,
-        "status": case_status(item),
+        "status": case_status(item, main_score),
         "scores": [_score_event(s) for s in item.scores],
         "task_error": item.error,
         "scorer_errors": _scorer_error_events(item),
@@ -302,7 +304,7 @@ def _run_status(result: EvalRunResult, cancelled: bool) -> str:
     if cancelled:
         return "incomplete"
     # A failed whole-run scorer is a real quality error too, so surface it rather than reporting a
-    # clean "completed" that hides it from the CLI and artifact consumers.
+    # clean "completed" that hides it from the caller and artifact consumers.
     if result.task_error_count or result.scorer_error_count or result.run_scorer_errors:
         return "completed_with_errors"
     return "completed"
@@ -389,7 +391,7 @@ def write_artifacts(
         record = {
             "schema_version": "1",
             "case_id": item.case_id,
-            "status": case_status(item),
+            "status": case_status(item, result.main_score),
             "input": inp,
             "output": out,
             "expected": exp,
@@ -411,6 +413,7 @@ def write_artifacts(
         "run_id": result.run_id,
         "created_at": created_at or _now_iso(),
         "evaluation_name": result.name,
+        "main_score_name": result.main_score_name,
         "status": status,
         "candidate_version": candidate_version,
         "run_mode": run_mode,
@@ -425,7 +428,7 @@ def write_artifacts(
         "scores": {k: v.to_dict() for k, v in result.score_summary.items()},
         "upload": result.upload_state.to_dict(),
         "artifact": artifact,
-        "cases": [_case_metadata(it) for it in result.item_results],
+        "cases": [_case_metadata(it, result.main_score) for it in result.item_results],
     }
     _atomic_write(run_path, json.dumps(serialize_value(run_doc), ensure_ascii=False, indent=2))
     return artifact
@@ -495,7 +498,7 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     first = options.get("first")
     sample = options.get("sample")
     seed = int(options.get("sample_seed", 0) or 0)
-    # An option is an OVERRIDE only when the CLI/user actually supplied it; otherwise
+    # An option is an OVERRIDE only when the caller actually supplied it; otherwise
     # the Evaluation's own value stands (never silently replaced with a runner default).
     candidate_version = options.get("candidate_version") or evaluation.candidate_version
     provenance = options.get("provenance")
@@ -550,9 +553,18 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     def on_start(case: EvalCase) -> None:
         emitter.emit({"type": "case_started", "case_id": case.id})
 
+    # The scoring POLICY (threshold + direction) is known up front from the scorers, so live
+    # per-case status uses it immediately -- never the default 1.0 that a late-bound name would
+    # otherwise imply. The metric NAME is name-agnostic live (a single scorer's one score) and
+    # resolves to the same value as the final artifact, so live and final agree.
+    from traceroot.eval.scorers import describe_scorers as _describe
+
+    _lt, _ld = resolve_main_score_policy(_describe(evaluation.scorers), evaluation.main_score)
+    live_main = MainScore(evaluation.main_score, _lt, _ld)
+
     def on_complete(item: EvalItemResult, _dur: float) -> None:
         collected.append(item)
-        emitter.emit({"type": "case_completed", **_case_metadata(item)})
+        emitter.emit({"type": "case_completed", **_case_metadata(item, live_main)})
 
     # Only override the Evaluation's own concurrency/timeout when the option is present;
     # an absent option must NOT replace the definition's value with a runner default.
@@ -679,13 +691,13 @@ def _fmt(exc: BaseException) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Runner entry point. Exit-code contract (coordinated with the CLI parser):
+    """Runner entry point. Exit-code contract (coordinated with the caller):
 
     - Normal completion (even with task/scorer errors): exit 0. Quality/error outcomes
       are conveyed by the EVENT STREAM, not the exit code.
     - Unrecoverable harness failure: emit a structured ``fatal`` event and STILL exit 0.
       The presence of the ``fatal`` event -- not a nonzero code -- is what marks a run a
-      harness failure, so the CLI reads the stream as authoritative.
+      harness failure, so the caller reads the stream as authoritative.
     - Cancellation (SIGINT): finalize a partial ``incomplete`` artifact and exit 130
       (the one code that corroborates the ``fatal``/cancelled signal).
     """
@@ -697,7 +709,7 @@ def main(argv: list[str] | None = None) -> int:
         options = _load_options()
         cancelled = run_suite(paths, options, emitter)
         if cancelled:
-            return 130  # SIGINT: run was finalized as incomplete; the CLI maps 130
+            return 130  # SIGINT: run was finalized as incomplete; the caller maps 130
     except KeyboardInterrupt:  # safety net if SIGINT lands outside an in-flight case
         emitter.emit({"type": "fatal", "kind": "cancelled", "message": "interrupted"})
         return 130

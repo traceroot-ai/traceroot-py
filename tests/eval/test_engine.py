@@ -46,7 +46,9 @@ class TestBasicRuns:
         async def ascore(ctx):
             return 1.0
 
-        result = evaluate(name="r", data=_ds(2), task=echo_task, scorers=[exact, ascore])
+        result = evaluate(
+            name="r", data=_ds(2), task=echo_task, scorers=[exact, ascore], main_score="exact"
+        )
         assert result.score_summary["exact"].mean == 1.0
         assert result.score_summary["ascore"].mean == 1.0
 
@@ -110,7 +112,9 @@ class TestFailureIsolation:
         def bad(ctx):
             raise RuntimeError("scorer boom")
 
-        result = evaluate(name="r", data=_ds(2), task=echo_task, scorers=[exact, bad])
+        result = evaluate(
+            name="r", data=_ds(2), task=echo_task, scorers=[exact, bad], main_score="exact"
+        )
         it = result.item_results[0]
         assert "bad" in it.scorer_errors
         assert "scorer boom" in it.scorer_errors["bad"]
@@ -126,8 +130,10 @@ class TestFailureIsolation:
 
 
 class TestScoreNormalization:
-    def _one(self, scorer):
-        return evaluate(name="r", data=_ds(1), task=echo_task, scorers=[scorer]).item_results[0]
+    def _one(self, scorer, main_score=None):
+        return evaluate(
+            name="r", data=_ds(1), task=echo_task, scorers=[scorer], main_score=main_score
+        ).item_results[0]
 
     def test_scalar(self):
         def s(ctx):
@@ -165,7 +171,8 @@ class TestScoreNormalization:
         def s(ctx):
             return [Score("a", 1.0), Score("b", 0.0)]
 
-        names = {sc.name for sc in self._one(s).scores}
+        # Two emitted metrics -> the run needs an explicit main_score (else it fails clearly).
+        names = {sc.name for sc in self._one(s, main_score="a").scores}
         assert names == {"a", "b"}
 
     def test_none_abstains(self):

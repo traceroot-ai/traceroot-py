@@ -213,7 +213,7 @@ class TestEvalSpanIO:
 
 
 class TestEvalTraceIdentityContract:
-    """Phase 4: the versioned identity attribute set on each reported eval trace root
+    """The versioned identity attribute set on each reported eval trace root
     (see offline-eval/contract-notes/eval-trace-attributes.md)."""
 
     def test_root_carries_full_identity(self, memory_exporter):
@@ -315,7 +315,7 @@ class TestReportedTraceExport:
 
 
 class TestUsageAttributionHierarchy:
-    """Phase 6 metrics boundary: the SDK only guarantees the span hierarchy for provider
+    """Metrics boundary: the SDK only guarantees the span hierarchy for provider
     usage attribution (LLM under the right task/scorer span). It never fabricates token or
     cost totals on its wrapper spans -- the backend derives usage from the real trace."""
 

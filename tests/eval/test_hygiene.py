@@ -1,4 +1,4 @@
-"""Phase 0B: artifact hygiene -- dir perms, .gitignore, bounded payloads, and a proof
+"""Artifact hygiene -- dir perms, .gitignore, bounded payloads, and a proof
 that credentials never land in a written artifact."""
 
 import json
