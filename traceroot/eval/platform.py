@@ -338,11 +338,11 @@ class PlatformTransport:
         # main metric and the baseline delta as "-" (change = run.mainScore - baseline).
         if self._main_count:
             body["main_score"] = self._main_sum / self._main_count
-        # The resolved headline metric NAME (late-bound for a single scorer). Sent
-        # forward-compatibly; the current CompleteRunRequest schema has NO main_score_name
-        # field, so the backend ignores it until that field is added (see the handoff).
-        if main_score_name is not None:
-            body["main_score_name"] = main_score_name
+        # NOTE: the resolved headline metric NAME is intentionally NOT sent here. The current
+        # CompleteRunRequest schema has no main_score_name field AND rejects unknown keys, so
+        # the late-bound name stays on the local result until the backend adds the field (see
+        # the handoff). ``main_score_name`` is accepted for the eventual wire once it lands.
+        _ = main_score_name
         self._request(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
