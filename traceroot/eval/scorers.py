@@ -36,8 +36,23 @@ VALUE_TYPES = ("numeric", "boolean", "categorical")
 DIRECTIONS = ("higher_is_better", "lower_is_better", "none")
 OUTPUT_TYPES = ("score", "classification")
 SCORER_TYPES = ("code", "llm_judge")
+# The ScorerContext fields a scorer may declare it needs. An extensible descriptor
+# (not a narrow reference_based boolean): output-only scorers declare ["output"], a
+# reference scorer adds "expected", etc. Absent = unknown (never assumed).
+REQUIRED_INPUTS = ("input", "output", "expected", "metadata", "trace")
 
 _META_ATTR = "_traceroot_scorer"
+
+
+def _validate_required_inputs(value: Any) -> list[str]:
+    """Coerce a declared ``required_inputs`` to a validated, canonically-ordered list."""
+    if not isinstance(value, (list, tuple)) or not all(isinstance(x, str) for x in value):
+        raise ValueError("required_inputs must be a list of strings")
+    unknown = [x for x in value if x not in REQUIRED_INPUTS]
+    if unknown:
+        raise ValueError(f"required_inputs must be a subset of {REQUIRED_INPUTS}, got {unknown!r}")
+    present = set(value)
+    return [x for x in REQUIRED_INPUTS if x in present]
 
 
 def scorer(
@@ -51,12 +66,17 @@ def scorer(
     output_type: str | None = None,
     description: str | None = None,
     metadata: dict[str, Any] | None = None,
+    required_inputs: list[str] | None = None,
 ) -> Callable:
     """Decorator that attaches metadata to a (code) scorer callable.
 
     Usable bare (``@scorer``) or with arguments. The scorer's SOURCE is captured
     automatically at report time (``inspect.getsource``); ``@scorer`` only adds the
-    declared metadata (output type, threshold, description, ...).
+    declared metadata (output type, threshold, description, required inputs, ...).
+
+    ``required_inputs`` declares which ``ScorerContext`` fields the scorer consumes
+    (a subset of ``REQUIRED_INPUTS``); an output-only scorer declares ``["output"]``.
+    Left unset, a code scorer's requirements are unknown and the field is omitted.
     """
     if value_type is not None and value_type not in VALUE_TYPES:
         raise ValueError(f"value_type must be one of {VALUE_TYPES}, got {value_type!r}")
@@ -64,6 +84,8 @@ def scorer(
         raise ValueError(f"direction must be one of {DIRECTIONS}, got {direction!r}")
     if output_type is not None and output_type not in OUTPUT_TYPES:
         raise ValueError(f"output_type must be one of {OUTPUT_TYPES}, got {output_type!r}")
+    if required_inputs is not None:
+        required_inputs = _validate_required_inputs(required_inputs)
 
     def apply(f: Callable) -> Callable:
         meta = dict(getattr(f, _META_ATTR, {}))
@@ -76,6 +98,7 @@ def scorer(
             ("output_type", output_type),
             ("description", description),
             ("metadata", metadata),
+            ("required_inputs", required_inputs),
         ):
             if val is not None:
                 meta[key] = val
@@ -137,6 +160,13 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
     if output_type is None and vtype is not None:
         output_type = "classification" if vtype == "categorical" else "score"
 
+    # Declared requirements win; an llm_judge otherwise derives them from its template
+    # placeholders. A bare/undeclared code scorer stays unknown (None -> omitted): we never
+    # claim ``expected`` is required just because it exists on the context.
+    required_inputs = _declared(fn, "required_inputs")
+    if required_inputs is None and scorer_type == "llm_judge":
+        required_inputs = _derive_required_inputs(_declared(fn, "messages"))
+
     desc: dict[str, Any] = {
         "name": name,
         "version": declared_version(fn),
@@ -147,6 +177,7 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
         "output_type": output_type,
         "description": _declared(fn, "description"),
         "metadata": _declared(fn, "metadata"),
+        "required_inputs": required_inputs,
     }
     if scorer_type == "llm_judge":
         desc["model"] = _declared(fn, "model")
@@ -170,7 +201,11 @@ def describe_scorers(
         base_name = getattr(s, "__name__", None) or s.__class__.__name__
         # Honor the omitted-fields contract for direct consumers too: drop keys the scorer did not
         # declare (None) instead of exposing fabricated null schema fields.
-        desc = {k: v for k, v in scorer_metadata(s, value_type=hints.get(base_name)).items() if v is not None}
+        desc = {
+            k: v
+            for k, v in scorer_metadata(s, value_type=hints.get(base_name)).items()
+            if v is not None
+        }
         out.append(desc)
     return out
 
@@ -180,14 +215,19 @@ def describe_scorers(
 _PLACEHOLDER = re.compile(r"\{\{\s*(input|output|expected)\s*\}\}")
 
 
-def _as_text(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    import json
+def _derive_required_inputs(messages: Any) -> list[str] | None:
+    """The ScorerContext fields an llm_judge template actually references, derived from its
+    ``{{input}}``/``{{output}}``/``{{expected}}`` placeholders (canonical order). None when
+    no messages are available; ``[]`` when the prompt references no case fields."""
+    if not messages:
+        return None
+    found: set[str] = set()
+    for msg in messages:
+        content = msg.get("content", "") if isinstance(msg, dict) else ""
+        found.update(m.group(1) for m in _PLACEHOLDER.finditer(content or ""))
+    return [x for x in REQUIRED_INPUTS if x in found]
 
-    try:
-        return json.dumps(value, ensure_ascii=False)
-    except TypeError:
-        return str(value)
+
+# The llm_judge scorer lives in its own module; re-exported here so existing imports
+# (``from traceroot.eval.scorers import llm_judge``) keep working unchanged.
+from traceroot.eval.judge import _parse_judge_output, llm_judge  # noqa: E402,F401

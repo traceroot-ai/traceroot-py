@@ -3,6 +3,7 @@
 import enum
 import json
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
@@ -124,11 +125,19 @@ def _serialize_object(value: Any, _seen: set[int]) -> Any:
     if hasattr(value, "__dict__"):
         return _serialize_dict_object(value, _seen)
 
-    # Last resort — stringify
+    # Last resort — stringify, but NEVER embed object identity. The default object repr includes
+    # the memory address (`<Foo object at 0x...>`), which would make content hashes / dataset
+    # revisions non-deterministic across processes and deep copies. Strip that to a stable type tag.
     try:
-        return str(value)
+        text = str(value)
     except Exception:
-        return f"<{type(value).__name__}>"
+        text = ""
+    if not text or _DEFAULT_REPR_RE.search(text):
+        return f"<{type(value).__module__}.{type(value).__qualname__}>"
+    return text
+
+
+_DEFAULT_REPR_RE = re.compile(r" object at 0x[0-9A-Fa-f]+|at 0x[0-9A-Fa-f]+")
 
 
 def _serialize_dict_object(value: Any, _seen: set[int]) -> Any:
