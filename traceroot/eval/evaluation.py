@@ -41,6 +41,7 @@ class Evaluation:
         scorers: Sequence[Callable[[ScorerContext], Any]],
         run_scorers: Sequence[Callable[[Any], Any]] | None = None,
         candidate_version: str | None = None,
+        main_score: str | None = None,
         metadata: dict[str, Any] | None = None,
         max_concurrency: int = 10,
         timeout: float | None = None,
@@ -64,6 +65,7 @@ class Evaluation:
         self.scorers = scorers
         self.run_scorers = run_scorers
         self.candidate_version = candidate_version
+        self.main_score = main_score
         self.metadata = metadata
         self.max_concurrency = max_concurrency
         self.timeout = timeout
@@ -84,6 +86,7 @@ class Evaluation:
             transport=self.report_to,
             dataset_id=self.dataset_id,
             candidate_version=self.candidate_version,
+            main_score=self.main_score,
             environment=self.environment,
             select=self.select,
             run_scorers=self.run_scorers,
@@ -120,6 +123,7 @@ def evaluate(
     report_to: EvalTransport | None = None,
     dataset_id: str | None = None,
     candidate_version: str | None = None,
+    main_score: str | None = None,
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
     run_scorers: Sequence[Callable[[Any], Any]] | None = None,
@@ -138,6 +142,7 @@ def evaluate(
         report_to=report_to or transport,
         dataset_id=dataset_id,
         candidate_version=candidate_version,
+        main_score=main_score,
         environment=environment,
         select=select,
         run_scorers=run_scorers,
@@ -160,6 +165,7 @@ async def evaluate_async(
     report_to: EvalTransport | None = None,
     dataset_id: str | None = None,
     candidate_version: str | None = None,
+    main_score: str | None = None,
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
     run_scorers: Sequence[Callable[[Any], Any]] | None = None,
@@ -178,6 +184,7 @@ async def evaluate_async(
         report_to=report_to or transport,
         dataset_id=dataset_id,
         candidate_version=candidate_version,
+        main_score=main_score,
         environment=environment,
         select=select,
         run_scorers=run_scorers,
