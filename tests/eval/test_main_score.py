@@ -1,4 +1,4 @@
-"""Phase 2: boolean main-score behavior is consistent across local + cloud status.
+"""Boolean main-score behavior is consistent across local + cloud status.
 
 True -> 1.0, False -> 0.0 for the numeric MAIN score and passed/failed status; the
 individual scorer payload keeps the boolean as bool_value; errors stay distinct.

@@ -1,4 +1,4 @@
-"""Run metadata + provenance collection for offline evaluation (Phase 4).
+"""Run metadata + provenance collection for offline evaluation.
 
 Merges caller-supplied run metadata with automatically discovered provenance -- git
 (repository/ref/commit/dirty) and CI (provider/build_id) -- when it is available. Reuses
@@ -30,6 +30,18 @@ _CI_PROVIDERS = (
     ("CIRCLECI", "circleci", "CIRCLE_BUILD_NUM"),
     ("BUILDKITE", "buildkite", "BUILDKITE_BUILD_ID"),
     ("JENKINS_URL", "jenkins", "BUILD_NUMBER"),
+)
+
+_SDK_LANGUAGE = "python"
+
+# Branch/ref env vars set by common CI providers (distinct from the commit SHA).
+_CI_BRANCH_VARS = (
+    "GITHUB_HEAD_REF",
+    "GITHUB_REF_NAME",
+    "CI_COMMIT_REF_NAME",
+    "CIRCLE_BRANCH",
+    "BUILDKITE_BRANCH",
+    "GIT_BRANCH",
 )
 
 
@@ -142,3 +154,74 @@ def collect_run_provenance(
     if user_metadata:
         meta = {**meta, **user_metadata}  # user metadata takes precedence
     return meta or None
+
+
+def _sdk_version() -> str | None:
+    """The installed SDK version, or None if it cannot be determined."""
+    try:
+        from traceroot.constants import SDK_VERSION
+
+        return SDK_VERSION or None
+    except Exception:
+        return None
+
+
+def _git_branch(env: dict[str, str]) -> str | None:
+    """Best-effort branch name -- distinct from the commit SHA. CI branch env first,
+    then ``git rev-parse --abbrev-ref HEAD``. None on detached HEAD or when unknown."""
+    for var in _CI_BRANCH_VARS:
+        branch = env.get(var)
+        if branch:
+            return branch
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return None
+    if out.returncode != 0:
+        return None
+    branch = out.stdout.strip()
+    return branch if branch and branch != "HEAD" else None
+
+
+def run_provenance(
+    *, env: dict[str, str] | None = None, detect_dirty: bool = True
+) -> dict[str, Any]:
+    """Typed execution provenance in the backend's flat ``RunProvenance`` wire shape
+    (snake_case keys). Every value is what the SDK can actually observe; absent values
+    are omitted, never inferred. ``sdk_language``/``sdk_version`` identify the SDK and
+    are always reported when known.
+
+    Distinct from free-form user ``metadata`` and never a substitute for the
+    ``candidate_version`` display label. Model/prompt identity is NOT auto-detected --
+    the platform observes actual models from task-subtree LLM spans -- so
+    ``declared_model``/``declared_prompt_version`` are left for the user to declare.
+    """
+    env = env if env is not None else dict(os.environ)
+    prov: dict[str, Any] = {}
+    repo, commit = _resolved_git(env)
+    if repo:
+        prov["git_repository"] = repo
+    branch = _git_branch(env)
+    if branch:
+        prov["git_ref"] = branch
+    if commit:
+        prov["git_commit"] = commit
+    if detect_dirty:
+        dirty = _git_dirty()
+        if dirty is not None:
+            prov["git_dirty"] = dirty
+    ci = _ci_block(env)
+    if ci:
+        prov["ci_provider"] = ci["provider"]
+        if ci.get("build_id"):
+            prov["ci_build_id"] = ci["build_id"]
+    prov["sdk_language"] = _SDK_LANGUAGE
+    version = _sdk_version()
+    if version:
+        prov["sdk_version"] = version
+    return prov

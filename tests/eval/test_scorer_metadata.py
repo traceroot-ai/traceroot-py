@@ -1,4 +1,4 @@
-"""Phase 3: first-class scorer comparison metadata (name/version/value_type/direction/threshold).
+"""First-class scorer comparison metadata (name/version/value_type/direction/threshold).
 
 Authoring is via the @scorer decorator (or supported callable attributes); plain callables
 keep working. Defaults: numeric/boolean -> higher_is_better, categorical -> none; an explicit
@@ -242,7 +242,7 @@ def test_llm_judge_executes_with_injected_complete_and_renders_placeholders():
     def fake_complete(model, messages):
         seen["model"] = model
         seen["rendered"] = messages
-        return "The score is 0.7 out of 1."
+        return "The score is 0.7"  # judge contract: a single unambiguous number
 
     concise = llm_judge(
         name="concise",
