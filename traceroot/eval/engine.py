@@ -28,9 +28,11 @@ from traceroot.eval.ids import new_run_id
 from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
+    MainScoreError,
     RunDatasetRef,
     RunView,
     aggregate_scores,
+    resolve_main_score_name,
 )
 from traceroot.eval.transport import EvalTransport, RunHandle
 from traceroot.eval.types import (
@@ -555,6 +557,10 @@ async def _run_async(
                 _next(item, duration_ms)
 
     semaphore = asyncio.Semaphore(max_concurrency)
+    results_list: list[EvalItemResult] = []
+    summary: dict[str, Any] = {}
+    resolved_main: str | None = None
+    resolve_error: MainScoreError | None = None
     try:
         item_results = await asyncio.gather(
             *[
@@ -573,14 +579,30 @@ async def _run_async(
                 for c in cases
             ]
         )
+        results_list = list(item_results)
+        summary = aggregate_scores(results_list)
+        # The ONE resolution of the run's main metric (late-bound to what was actually
+        # emitted). The same resolved value stamps the local result and the cloud completion.
+        numeric = [n for n, s in summary.items() if s.mean is not None]
+        try:
+            resolved_main = resolve_main_score_name(main_score, numeric)
+        except MainScoreError as exc:
+            resolve_error = exc
     finally:
         if reporter is not None:
             reporter.finish()
-        # Finish the run inside finally so a mid-run failure never leaves it open on the backend.
-        upload = active_transport.finish_run(run_handle, status=None)
+        # Finish inside finally so a mid-run failure never leaves the run open; a main-score
+        # misconfiguration completes the run in a terminal 'failed' state before we raise, so
+        # a registered run is never left orphaned in 'running'.
+        upload = active_transport.finish_run(
+            run_handle,
+            status="failed" if resolve_error is not None else None,
+            main_score_name=resolved_main,
+        )
 
-    results_list = list(item_results)
-    summary = aggregate_scores(results_list)
+    if resolve_error is not None:
+        raise resolve_error
+
     run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
 
     result = EvalRunResult(
@@ -595,6 +617,7 @@ async def _run_async(
         run_scores=run_scores,
         run_scorer_errors=run_scorer_errors,
         metadata=run_metadata,
+        main_score_name=resolved_main,
     )
 
     # When the bar was shown (interactive), surface the clickable run link if the

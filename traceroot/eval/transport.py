@@ -52,7 +52,9 @@ class EvalTransport(Protocol):
 
     def record_scores(self, run: RunHandle, case_id: str, scores: list[Score]) -> None: ...
 
-    def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState: ...
+    def finish_run(
+        self, run: RunHandle, status: str | None = None, main_score_name: str | None = None
+    ) -> UploadState: ...
 
 
 class FakeTransport:
@@ -84,8 +86,11 @@ class FakeTransport:
     def record_scores(self, run: RunHandle, case_id: str, scores: list[Score]) -> None:
         self.calls.append(("record_scores", case_id))
 
-    def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState:
+    def finish_run(
+        self, run: RunHandle, status: str | None = None, main_score_name: str | None = None
+    ) -> UploadState:
         self.calls.append(("finish_run", status))
+        self.last_main_score_name = main_score_name
         return UploadState(status="uploaded", dashboard_url=None)
 
     def publish_dataset(self, dataset_name: str, item_count: int) -> PublishResult:

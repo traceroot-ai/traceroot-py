@@ -74,7 +74,9 @@ class TestSendsRawData:
         assert reqs[0][1] == "/api/v1/public/evaluation-runs"
         assert reg["candidate_version"] == "sonnet"
         assert "baseline_run_id" not in reg  # SDK sends NO comparison linkage
-        assert reg["main_score_name"] == "acc"
+        # Single unconfigured scorer: the main metric is late-bound to what it emits and
+        # reported at completion, so registration does NOT fabricate a name from the function.
+        assert "main_score_name" not in reg
         # scorer comparison metadata + definition (raw description, not a comparison result)
         (sc,) = reg["scorers"]
         assert sc["name"] == "acc" and sc["version"] == "v2"

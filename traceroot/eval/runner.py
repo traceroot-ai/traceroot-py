@@ -261,10 +261,10 @@ def _scorer_versions(result: EvalRunResult) -> dict[str, str | None]:
     return versions
 
 
-def _case_metadata(item: EvalItemResult) -> dict[str, Any]:
+def _case_metadata(item: EvalItemResult, main_score_name: str | None = None) -> dict[str, Any]:
     return {
         "case_id": item.case_id,
-        "status": case_status(item),
+        "status": case_status(item, main_score_name=main_score_name),
         "scores": [_score_event(s) for s in item.scores],
         "task_error": item.error,
         "scorer_errors": _scorer_error_events(item),
@@ -362,7 +362,7 @@ def write_artifacts(
         record = {
             "schema_version": "1",
             "case_id": item.case_id,
-            "status": case_status(item),
+            "status": case_status(item, main_score_name=result.main_score_name),
             "input": inp,
             "output": out,
             "expected": exp,
@@ -384,6 +384,7 @@ def write_artifacts(
         "run_id": result.run_id,
         "created_at": created_at or _now_iso(),
         "evaluation_name": result.name,
+        "main_score_name": result.main_score_name,
         "status": status,
         "candidate_version": candidate_version,
         "run_mode": run_mode,
@@ -398,7 +399,7 @@ def write_artifacts(
         "scores": {k: v.to_dict() for k, v in result.score_summary.items()},
         "upload": result.upload_state.to_dict(),
         "artifact": artifact,
-        "cases": [_case_metadata(it) for it in result.item_results],
+        "cases": [_case_metadata(it, result.main_score_name) for it in result.item_results],
     }
     _atomic_write(run_path, json.dumps(serialize_value(run_doc), ensure_ascii=False, indent=2))
     return artifact
@@ -514,7 +515,11 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
 
     def on_complete(item: EvalItemResult, _dur: float) -> None:
         collected.append(item)
-        emitter.emit({"type": "case_completed", **_case_metadata(item)})
+        # Live status uses the CONFIGURED main (known up front); a single scorer's late-bound
+        # metric is name-agnostic and resolves to the same value, so live and final agree.
+        emitter.emit(
+            {"type": "case_completed", **_case_metadata(item, getattr(evaluation, "main_score", None))}
+        )
 
     # Only override the Evaluation's own concurrency/timeout when the option is present;
     # an absent option must NOT replace the definition's value with a runner default.

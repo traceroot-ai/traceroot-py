@@ -156,14 +156,11 @@ class PlatformTransport:
         #    requires an explicit main_score for a reported multi-scorer run).
         n_scorers = len(self.scorer_names) or (len(self.scorer_specs) if self.scorer_specs else 0)
         self._main_configured = main_score_name is not None
-        if self._main_configured:
-            self.main_score_name = main_score_name
-        elif n_scorers == 1 and self.scorer_names:
-            self.main_score_name = self.scorer_names[0]
-        else:
-            self.main_score_name = None
+        # Registration reports main_score_name ONLY when the user configured it. A single
+        # scorer's metric is late-bound (resolved from what it actually emits) and reported at
+        # completion -- never fabricated from the scorer's function name here.
+        self.main_score_name = main_score_name
         self._name_agnostic_main = (not self._main_configured) and n_scorers == 1
-        self._emitted_metrics: set[str] = set()
         self.dataset_version_id = dataset_version_id
         self.client_run_id = client_run_id
         self.pass_threshold = pass_threshold
@@ -285,7 +282,6 @@ class PlatformTransport:
         return None
 
     def record_item_result(self, run: RunHandle, item_result: EvalItemResult) -> None:
-        self._emitted_metrics.update(s.name for s in item_result.scores)
         status, main_score = self._status_and_main(item_result)
         if status == "errored":
             self._task_errors += 1
@@ -321,18 +317,16 @@ class PlatformTransport:
         # Already sent inside record_item_result (which carries the full item).
         return None
 
-    def finish_run(self, run: RunHandle, status: str | None = None) -> UploadState:
-        # A configured main score that no successful case ever emitted is a misconfiguration
-        # (e.g. a scorer whose function name differs from its emitted Score name). Complete the
-        # run as errored and raise an actionable message rather than silently finishing a
-        # main-less run that quietly reads as not_scored.
-        misconfigured = (
-            self._main_configured and self._main_count == 0 and bool(self._emitted_metrics)
-        )
+    def finish_run(
+        self,
+        run: RunHandle,
+        status: str | None = None,
+        main_score_name: str | None = None,
+    ) -> UploadState:
+        # Pure reporter: the engine owns the ONE main-score resolution and passes the terminal
+        # ``status`` (e.g. "failed" on a misconfiguration) and the resolved ``main_score_name``.
         effective = status or (
-            "completed_with_errors"
-            if (misconfigured or self._task_errors or self._scorer_errors)
-            else "completed"
+            "completed_with_errors" if (self._task_errors or self._scorer_errors) else "completed"
         )
         body: dict[str, Any] = {
             "status": effective,
@@ -344,18 +338,16 @@ class PlatformTransport:
         # main metric and the baseline delta as "-" (change = run.mainScore - baseline).
         if self._main_count:
             body["main_score"] = self._main_sum / self._main_count
+        # The resolved headline metric NAME (late-bound for a single scorer). Sent
+        # forward-compatibly; the current CompleteRunRequest schema has NO main_score_name
+        # field, so the backend ignores it until that field is added (see the handoff).
+        if main_score_name is not None:
+            body["main_score_name"] = main_score_name
         self._request(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
             body,
         )
-        if misconfigured:
-            emitted = sorted(self._emitted_metrics)
-            raise ValueError(
-                f"main_score={self.main_score_name!r} was never emitted by any scorer; the run "
-                f"emitted metric(s) {emitted}. Set main_score to one of those (or align the "
-                f"scorer's Score(name=...) with its declared name)."
-            )
         # Join the backend's UI-relative run path with our host to form a clickable
         # link; None when the backend did not return one (older/self-hosted).
         # Prefer the backend's absolute run_url; fall back to host_url + run_path for a

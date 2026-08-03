@@ -130,8 +130,10 @@ class TestFailureIsolation:
 
 
 class TestScoreNormalization:
-    def _one(self, scorer):
-        return evaluate(name="r", data=_ds(1), task=echo_task, scorers=[scorer]).item_results[0]
+    def _one(self, scorer, main_score=None):
+        return evaluate(
+            name="r", data=_ds(1), task=echo_task, scorers=[scorer], main_score=main_score
+        ).item_results[0]
 
     def test_scalar(self):
         def s(ctx):
@@ -169,7 +171,8 @@ class TestScoreNormalization:
         def s(ctx):
             return [Score("a", 1.0), Score("b", 0.0)]
 
-        names = {sc.name for sc in self._one(s).scores}
+        # Two emitted metrics -> the run needs an explicit main_score (else it fails clearly).
+        names = {sc.name for sc in self._one(s, main_score="a").scores}
         assert names == {"a", "b"}
 
     def test_none_abstains(self):

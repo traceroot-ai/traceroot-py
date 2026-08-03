@@ -107,6 +107,43 @@ class RunView:
     score_summary: dict[str, ScoreSummary]
 
 
+class MainScoreError(ValueError):
+    """A run-level main-score misconfiguration: the configured main was never emitted, or
+    multiple metrics were emitted with no explicit selection. Raised once, after resolution."""
+
+
+def resolve_main_score_name(configured: str | None, numeric_metrics: list[str]) -> str | None:
+    """The single resolved main-metric name (or None when the run produced no numeric score).
+
+    THE one resolver -- used by both the local result and the cloud reporter so they never
+    diverge:
+
+    - explicit ``configured`` wins, but must have been emitted (else raise);
+    - no config + exactly one numeric metric -> that metric (late-bound to what was emitted,
+      so a scorer whose function name differs from its emitted ``Score`` name resolves to the
+      EMITTED name, never the function name);
+    - no config + multiple numeric metrics -> ambiguous, raise;
+    - no numeric metric at all -> None (unscored; not an error).
+    """
+    distinct = list(dict.fromkeys(numeric_metrics))
+    if configured is not None:
+        if configured in distinct:
+            return configured
+        if distinct:
+            raise MainScoreError(
+                f"main_score={configured!r} was never emitted; the run emitted numeric "
+                f"metric(s) {distinct}. Set main_score to one of those (or align the scorer's "
+                f"Score(name=...) with its declared name)."
+            )
+        return configured  # no numeric scores at all -> keep the label; run is simply unscored
+    if len(distinct) > 1:
+        raise MainScoreError(
+            f"multiple numeric metrics emitted {distinct} but no main_score; pass main_score "
+            f"to select the headline metric."
+        )
+    return distinct[0] if distinct else None
+
+
 def case_status(
     item: EvalItemResult, pass_threshold: float = 1.0, main_score_name: str | None = None
 ) -> str:
@@ -183,6 +220,9 @@ class EvalRunResult:
     run_scores: list[Score] = dataclasses.field(default_factory=list)  # whole-run scores
     run_scorer_errors: dict[str, str] = dataclasses.field(default_factory=dict)
     metadata: dict[str, Any] | None = None  # run context (model, prompt, branch, CI, ...)
+    # The one resolved main-metric name (from resolve_main_score_name); every status/summary
+    # view derives pass/fail from THIS metric, agreeing with the reported (cloud) run.
+    main_score_name: str | None = None
 
     # --- inspection ---
     @property
@@ -190,7 +230,9 @@ class EvalRunResult:
         return self.item_results
 
     def _by_status(self, status: str) -> list[EvalItemResult]:
-        return [it for it in self.item_results if case_status(it) == status]
+        return [
+            it for it in self.item_results if case_status(it, main_score_name=self.main_score_name) == status
+        ]
 
     def failures(self) -> list[EvalItemResult]:
         return self._by_status("failed")
@@ -234,6 +276,7 @@ class EvalRunResult:
             "local_run_id": self.local_run_id,
             "run_id": self.run_id,
             "candidate_version": self.candidate_version,
+            "main_score_name": self.main_score_name,
             "dataset": self.dataset.to_dict() if self.dataset else None,
             "counts": {
                 "case_count": self.case_count,
@@ -278,6 +321,7 @@ class EvalRunResult:
             run_scores=[Score(**s) for s in d.get("run_scores", [])],
             run_scorer_errors=d.get("run_scorer_errors", {}),
             metadata=d.get("metadata"),
+            main_score_name=d.get("main_score_name"),
         )
 
     @classmethod
@@ -389,5 +433,6 @@ class EvalRunResult:
         lines = [head]
         for name, summ in self.score_summary.items():
             mean = "n/a" if summ.mean is None else f"{summ.mean:.4g}"
-            lines.append(f"  {name}: mean={mean} count={summ.count}")
+            marker = "  (main)" if name == self.main_score_name else ""
+            lines.append(f"  {name}: mean={mean} count={summ.count}{marker}")
         return "\n".join(lines)

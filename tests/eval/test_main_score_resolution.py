@@ -50,14 +50,12 @@ def test_explicit_main_matches_by_name():
     assert main == 1.0
 
 
-def test_explicit_main_never_emitted_fails_loud_at_finish():
-    t = _tx(["grade"], main_score_name="grade")
-    captured: dict = {}
-    t._request = lambda m, p, b=None: captured.update(body=b) or {"evaluation_run_id": "r"}
-    t.create_run("e", "d", None)
-    t.record_item_result(None, _item([Score("quality", 1.0)]))
-    with pytest.raises(ValueError, match="never emitted"):
-        t.finish_run(None)
+def test_configured_main_never_emitted_raises():
+    from traceroot.eval.results import MainScoreError, resolve_main_score_name
+
+    # The one resolver (used by both local result + cloud completion) fails loudly.
+    with pytest.raises(MainScoreError, match="never emitted"):
+        resolve_main_score_name("grade", ["quality"])
 
 
 def test_multiple_scorers_no_main_has_no_headline_metric():
