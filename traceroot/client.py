@@ -190,10 +190,10 @@ class TracerootClient:
             )
         else:
             logger.warning(
-                "TraceRoot: no integrations provided — LLM calls will not be traced. "
+                "TraceRoot: no integrations provided — LLM calls will not be auto-instrumented. "
                 "Pass integrations=[...] to traceroot.initialize(). See "
-                "https://traceroot.ai/docs/getting-started/quickstart"
-            )
+                "https://traceroot.ai/docs/tracing/get-started"
+        )
 
     @property
     def enabled(self) -> bool:
