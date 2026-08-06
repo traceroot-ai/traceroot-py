@@ -187,6 +187,36 @@ class TestPlatformTransport:
             "string_value": "billing",
         } in body["scores"]
 
+    def test_explicit_transport_resolves_single_scorer_after_specs_injected(self):
+        """Regression: an explicitly-constructed transport (no scorer_names at __init__) whose
+        scorer_specs are injected AFTER construction — exactly what the engine does — must still
+        resolve the single scorer's emitted metric name-agnostically. Freezing the name-agnostic
+        flag from the empty constructor makes every case report not_scored / null main. A fn named
+        'grade' emitting Score(name='quality') under lower_is_better must SCORE the case."""
+        from traceroot.eval.results import EvalItemResult
+
+        t = RecordingTransport("ds_1", api_key="tr-x", host_url="https://h")  # no scorer_names
+        # Engine injects specs after construction (engine._run: active_transport.scorer_specs = ...).
+        t.scorer_specs = [
+            {
+                "name": "grade",
+                "version": "v1",
+                "threshold": 0.2,
+                "direction": "lower_is_better",
+                "value_type": "numeric",
+            }
+        ]
+        t.create_run("r", "d", None)
+        item = EvalItemResult(
+            "tc0", "i", "o", "e",
+            [Score("quality", 0.3)],  # emitted 'quality' != fn 'grade'; 0.3 > 0.2 (lower better) -> fail
+            {}, None, "t",
+        )
+        t.record_item_result(None, item)
+        body = t.requests[-1][2]
+        assert body["status"] == "failed"
+        assert body["main_score"] == 0.3
+
     def test_result_reports_duration_ms_as_nonneg_int(self):
         from traceroot.eval.results import EvalItemResult
 

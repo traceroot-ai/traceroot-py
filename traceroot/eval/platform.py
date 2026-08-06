@@ -156,13 +156,14 @@ class PlatformTransport:
         #    function name differs from its emitted Score name can no longer silently zero the run;
         #  - multiple scorers with no explicit main have no headline metric here (the engine
         #    requires an explicit main_score for a reported multi-scorer run).
-        n_scorers = len(self.scorer_names) or (len(self.scorer_specs) if self.scorer_specs else 0)
-        self._main_configured = main_score_name is not None
         # Registration reports main_score_name ONLY when the user configured it. A single
         # scorer's metric is late-bound (resolved from what it actually emits) and reported at
         # completion -- never fabricated from the scorer's function name here.
         self.main_score_name = main_score_name
-        self._name_agnostic_main = (not self._main_configured) and n_scorers == 1
+        # NB: `_name_agnostic_main` is a COMPUTED property (below), never cached here. The engine
+        # injects `scorer_specs` AFTER construction (and callers may build the transport explicitly
+        # with no scorer_names), so a value frozen from the empty constructor would leave a single
+        # scorer unresolved and make every case report not_scored / null main.
         self.dataset_version_id = dataset_version_id
         self.client_run_id = client_run_id
         self.pass_threshold = pass_threshold
@@ -181,6 +182,20 @@ class PlatformTransport:
         self._scorer_errors = 0
         self._main_sum = 0.0  # aggregate of the main-score values for run.mainScore
         self._main_count = 0
+
+    @property
+    def _name_agnostic_main(self) -> bool:
+        """A single scorer resolves its emitted metric name-agnostically (its one numeric/boolean
+        score IS the main metric, even when the fn name differs from the emitted Score name).
+
+        Derived from the CURRENT config on every access -- deliberately NOT cached at __init__ --
+        so it reflects `scorer_specs` the engine injects after construction. An explicit
+        `main_score_name` opts out (the configured metric owns it); zero or multiple scorers have
+        no single headline metric here (a reported multi-scorer run requires an explicit main)."""
+        if self.main_score_name is not None:
+            return False
+        n_scorers = len(self.scorer_names) or (len(self.scorer_specs) if self.scorer_specs else 0)
+        return n_scorers == 1
 
     # --- HTTP seam (overridable in tests) ---
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
