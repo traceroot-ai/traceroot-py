@@ -392,6 +392,9 @@ class PlatformTransport:
                 entry["string_value"] = str(v)
             if s.comment is not None:
                 entry["explanation"] = s.comment
+            passed = self._score_passed(s)
+            if passed is not None:
+                entry["passed"] = passed
             payload.append(entry)
         # A failing scorer is a score with an error and null value (never 0). Use the scorer's
         # DECLARED version (from the manifest) so an errored versioned scorer isn't misattributed
@@ -408,6 +411,49 @@ class PlatformTransport:
             if spec.get("name") == name:
                 return spec.get("version") or _UNVERSIONED_SCORER
         return _UNVERSIONED_SCORER
+
+    def _score_policy(self, name: str | None) -> tuple[float, str] | None:
+        """(threshold, direction) for ONE emitted metric, or None when it can't be resolved
+        without guessing. A single scorer's declared policy owns whatever metric it emits, even
+        when the function name differs from the emitted Score name (name-agnostic). With multiple
+        scorers the emitted name must match a declared scorer; an unmatched metric returns None so
+        the platform is told 'unknown', never a fabricated pass/fail. Mirrors the OWNING-scorer
+        rule of ``resolve_main_score_policy`` at per-score granularity."""
+        specs = self.scorer_specs or []
+        owner = specs[0] if len(specs) == 1 else next(
+            (s for s in specs if s.get("name") == name), None
+        )
+        if owner is None:
+            return None
+        threshold = owner.get("threshold")
+        direction = owner.get("direction")
+        return (
+            threshold if threshold is not None else _DEFAULT_PASS_THRESHOLD,
+            str(direction) if direction is not None else "higher_is_better",
+        )
+
+    def _score_passed(self, score: Score) -> bool | None:
+        """SDK-computed pass/fail for one emitted metric, derived at serialization time and never
+        stored on the Score. Boolean: true = pass. Numeric: compared against the OWNING scorer's
+        threshold+direction (the same policy that decides the case status, so a single scorer's
+        main score and its per-score `passed` always agree). Categorical values, a 'none'-direction
+        metric, or a numeric metric whose policy can't be resolved have no pass/fail -> None (the
+        SDK does not guess; the platform stores null)."""
+        v = score.value
+        if isinstance(v, bool):
+            return v
+        n = _numeric_score(v)
+        if n is None:
+            return None
+        policy = self._score_policy(score.name)
+        if policy is None:
+            return None
+        threshold, direction = policy
+        if direction == "lower_is_better":
+            return n <= threshold
+        if direction == "none":
+            return None
+        return n >= threshold  # higher_is_better (the default)
 
     def _main_value(self, scores: list[Score]) -> float | None:
         """The run's main-metric value for one case, or None when unresolved.

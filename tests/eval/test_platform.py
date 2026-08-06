@@ -217,6 +217,57 @@ class TestPlatformTransport:
         assert body["status"] == "failed"
         assert body["main_score"] == 0.3
 
+    def test_scores_payload_includes_per_score_passed(self):
+        """Each emitted score carries an SDK-computed `passed` (contract ScoreInput.passed) so the
+        platform never re-derives policy. A single scorer 'grade' emitting Score(name='quality',
+        value=0.3) under lower_is_better threshold 0.2 -> 0.3 <= 0.2 is False -> passed False,
+        consistent with the case status 'failed'. The emitted name stays the score identity."""
+        from traceroot.eval.results import EvalItemResult
+
+        t = RecordingTransport("ds_1", api_key="tr-x", host_url="https://h")
+        t.scorer_specs = [
+            {"name": "grade", "version": "v1", "threshold": 0.2,
+             "direction": "lower_is_better", "value_type": "numeric"}
+        ]
+        t.create_run("r", "d", None)
+        item = EvalItemResult("tc0", "i", "o", "e", [Score("quality", 0.3)], {}, None, "t")
+        t.record_item_result(None, item)
+        scores = t.requests[-1][2]["scores"]
+        assert scores[0]["scorer_name"] == "quality"  # emitted-metric identity, unchanged
+        assert scores[0]["passed"] is False
+
+    def test_per_score_passed_value_types_and_multi_scorer(self):
+        """passed is honest per value type and per owning policy. Boolean: true = pass. Categorical:
+        no pass/fail -> omitted. With multiple scorers each numeric score is judged by the scorer
+        whose declared name matches the emitted metric; a numeric metric that matches no declared
+        scorer is left unresolved (omitted, never guessed)."""
+        from traceroot.eval.results import EvalItemResult
+
+        t = RecordingTransport("ds_1", api_key="tr-x", host_url="https://h")
+        t.scorer_specs = [
+            {"name": "accuracy", "version": "v1", "threshold": 1.0,
+             "direction": "higher_is_better", "value_type": "numeric"},
+            {"name": "is_billing", "version": "v1", "value_type": "boolean"},
+            {"name": "route", "version": "v1", "value_type": "categorical"},
+        ]
+        t.create_run("r", "d", None)
+        item = EvalItemResult(
+            "tc0", "i", "o", "e",
+            [
+                Score("accuracy", 1.0),      # 1.0 >= 1.0 -> passed True
+                Score("is_billing", True),   # boolean true -> passed True
+                Score("route", "billing"),   # categorical -> no pass/fail -> omitted
+                Score("mystery", 0.5),        # numeric, matches no declared scorer -> omitted
+            ],
+            {}, None, "t",
+        )
+        t.record_item_result(None, item)
+        by_name = {s["scorer_name"]: s for s in t.requests[-1][2]["scores"]}
+        assert by_name["accuracy"]["passed"] is True
+        assert by_name["is_billing"]["passed"] is True
+        assert "passed" not in by_name["route"]
+        assert "passed" not in by_name["mystery"]
+
     def test_result_reports_duration_ms_as_nonneg_int(self):
         from traceroot.eval.results import EvalItemResult
 
