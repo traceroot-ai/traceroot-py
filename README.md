@@ -12,6 +12,122 @@
 
 Please see the [Python SDK Docs](https://traceroot.ai/docs/tracing/get-started) for details.
 
+# Offline Evaluation
+
+Run your AI app over a dataset, score each case with your own scorers, and report the results to
+TraceRoot to compare candidates over time. A runnable end-to-end example lives in
+[`examples/offline_eval.py`](examples/offline_eval.py) (it needs no backend — see below).
+
+## Quickstart (5 minutes)
+
+```python
+import traceroot
+from traceroot import Dataset, ScorerContext, evaluate
+from traceroot.eval import scorer
+
+# 1. A dataset — cases with an input and an optional expected reference.
+dataset = Dataset("support-routing")
+dataset.add(input={"message": "I was charged twice"}, expected={"route": "billing"})
+dataset.add(input={"message": "the app keeps crashing"}, expected={"route": "technical"})
+
+# 2. Your app (the "task"): one case input -> one candidate output.
+def route_ticket(ticket: dict) -> dict:
+    msg = ticket["message"].lower()
+    return {"route": "billing" if "charge" in msg else "technical" if "crash" in msg else "general"}
+
+# 3. A scorer. @scorer declares the metric's comparison policy; it receives a ScorerContext
+#    (input / output / expected / metadata) and returns a value, bool, Score, or list of Scores.
+@scorer(value_type="numeric", direction="higher_is_better", threshold=1.0)
+def accuracy(ctx: ScorerContext) -> float:
+    return 1.0 if ctx.output["route"] == ctx.expected["route"] else 0.0
+
+# 4. Run it. `evaluate` pulls its cases from a synced dataset and reports to the platform.
+run = evaluate(name="routing-v1", dataset=dataset, task=route_ticket, scorers=[accuracy])
+print(run.summary())
+```
+
+## Datasets: create, publish, pull, version
+
+```python
+ds = Dataset("support-routing")                     # create
+ds.upsert(input={"message": "hi"}, id="c1", expected={"route": "general"})
+ds.push()                                            # publish to the platform (creates a version)
+
+pulled = traceroot.pull_dataset("<dataset-id>")      # pull the current version (needs credentials)
+exact  = traceroot.pull_dataset("<dataset-id>", version_id="<version-id>")   # pull a pinned version
+ds.push(base_version_id="<version-id>")              # publish a NEW version based on an existing one
+```
+
+Pulling a dataset stamps its `dataset_id`/`dataset_version_id` onto the returned `Dataset`, so a run
+against it is pinned to the exact cases it scored (reproducible).
+
+## Scorers
+
+A **deterministic** scorer is any function of the `ScorerContext`. `@scorer` declares its metric
+policy; the emitted `Score` name may differ from the function name (a `grade` function may emit a
+`quality` metric):
+
+```python
+from traceroot import Score
+
+@scorer(value_type="numeric", direction="lower_is_better", threshold=0.2)
+def grade(ctx: ScorerContext) -> Score:
+    return Score("quality", latency_seconds(ctx.output))   # emits the metric "quality"
+```
+
+An **LLM judge** — `model` + `messages` are its reported definition; `{{output}}` etc. interpolate
+the case. Provide `complete=...` to stub the model (deterministic/offline), or omit it to call the
+real model:
+
+```python
+from traceroot.eval import llm_judge
+
+tone = llm_judge(
+    name="tone", model="claude-sonnet-5",
+    messages=[{"role": "user", "content": "Rate politeness 0..1:\n{{output}}"}],
+    output_type="score",
+)
+```
+
+## Main score, threshold, direction
+
+- Each scorer declares its own **`threshold`** and **`direction`** (`higher_is_better` /
+  `lower_is_better`); that policy decides whether the metric passes for a case.
+- The **main score** is the headline metric that sets each case's pass/fail. With a **single**
+  scorer it is inferred from the one metric emitted — you don't name it, even if the function name
+  differs from the emitted metric name. With **multiple** numeric metrics, name it explicitly:
+  `evaluate(..., main_score="accuracy")`; otherwise the run fails loudly rather than guess.
+
+## Reporting, transports, and failure behavior
+
+`evaluate` is cloud-first: it reports to TraceRoot using `TRACEROOT_API_KEY` and a synced dataset.
+The **default transport** is built for you from those. Pass an **explicit transport** to control
+reporting directly — both behave identically for scoring:
+
+```python
+from traceroot.eval.platform import PlatformTransport
+t = PlatformTransport("<dataset-id>", candidate_version="v2")
+run = evaluate(name="routing-v2", dataset=pulled, task=route_ticket, scorers=[accuracy], transport=t)
+```
+
+Honest statuses, never faked: a **task** error → `errored`; a **scorer** error is isolated to that
+scorer (other scorers on the case still record); a case with no numeric/boolean score →
+`not_scored` (never a silent 0).
+
+## Candidate vs. baseline
+
+Tag each run with `candidate_version` (e.g. `"v1"`, `"gpt-4o"`); the SDK reports only the candidate
+and never a baseline linkage — **comparison is done in the TraceRoot UI**, where you pick the
+baseline run to diff against. Re-run the same dataset with a new `candidate_version` to compare:
+
+```python
+evaluate(name="routing", dataset=pulled, task=route_ticket, scorers=[accuracy], candidate_version="v1")
+evaluate(name="routing", dataset=pulled, task=route_v2,     scorers=[accuracy], candidate_version="v2")
+```
+
+See the [platform evaluation docs](https://traceroot.ai/docs) for the UI: run tables, comparison,
+and the scorer catalog.
+
 <!-- Links -->
 
 [discord-image]: https://img.shields.io/discord/1395844148568920114?logo=discord&labelColor=%235462eb&logoColor=%23f5f5f5&color=%235462eb
