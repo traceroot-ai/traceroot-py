@@ -332,11 +332,33 @@ class PlatformTransport:
         # Already sent inside record_item_result (which carries the full item).
         return None
 
+    def _resolved_scorer_manifest(self, emitted: dict[str, list[str]]) -> list[dict]:
+        """The registration scorer refs augmented with the metrics each DEFINITION actually emitted
+        during the run. The platform keys a metric's policy on the EMITTED-metric name, so a
+        definition whose function name differs from its emitted metric (``grade`` -> ``quality``)
+        must declare that ownership here or the platform can't resolve the metric's threshold/
+        direction. Each emitted metric carries the definition's declared policy (a scorer's
+        declaration governs whatever metric it emits). Rebuilt from the SAME refs registration sent,
+        so completion merges by definition name without dropping the definition's detail."""
+        out: list[dict] = []
+        for ref in self._scorer_refs():
+            metrics = emitted.get(ref["name"])
+            if metrics:
+                policy = {
+                    k: ref[k]
+                    for k in ("value_type", "direction", "threshold")
+                    if ref.get(k) is not None
+                }
+                ref = {**ref, "emitted_metrics": [{"name": m, **policy} for m in metrics]}
+            out.append(ref)
+        return out
+
     def finish_run(
         self,
         run: RunHandle,
         status: str | None = None,
         main_score_name: str | None = None,
+        emitted_metrics: dict[str, list[str]] | None = None,
     ) -> UploadState:
         # Pure reporter: the engine owns the ONE main-score resolution and passes the terminal
         # ``status`` (e.g. "failed" on a misconfiguration) and the resolved ``main_score_name``.
@@ -358,6 +380,13 @@ class PlatformTransport:
         # dependency: deploy that before this SDK, or completion 400s on the unknown key).
         if main_score_name is not None:
             body["main_score_name"] = main_score_name
+        # The RESOLVED scorer->emitted-metric manifest, discovered during execution. The platform
+        # merges it (by definition name) into the stored manifest so each emitted metric's policy is
+        # keyed on the metric name for reconciliation, read-back, and comparison. Additive.
+        if emitted_metrics:
+            manifest = self._resolved_scorer_manifest(emitted_metrics)
+            if manifest:
+                body["scorers"] = manifest
         self._request(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",

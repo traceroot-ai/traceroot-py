@@ -241,6 +241,7 @@ async def _run_case(
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
     executor: ThreadPoolExecutor | None = None,
+    emitted_ownership: dict[str, set[str]] | None = None,
 ) -> EvalItemResult:
     tracer = _eval_tracer()
     async with semaphore:
@@ -312,6 +313,11 @@ async def _run_case(
                 )
                 for scorer in scorers:
                     name = getattr(scorer, "__name__", scorer.__class__.__name__)
+                    # Record scorer->metric ownership AT THE POINT OF PRODUCTION (never inferred
+                    # afterward by matching names). Seed the definition now so a scorer that errors
+                    # before emitting still appears in the completion manifest with no metrics.
+                    if emitted_ownership is not None:
+                        emitted_ownership.setdefault(name, set())
                     with tracer.start_as_current_span(name) as scorer_span:
                         scorer_span.set_attribute(SpanAttributes.SPAN_TYPE, SpanKind.SCORER)
                         scorer_span.set_attribute(SpanAttributes.EVAL_RUN_NAME, identity.name)
@@ -333,6 +339,10 @@ async def _run_case(
                                 _normalize_score_like(raw, name), scorer
                             )
                             scores.extend(produced)
+                            if emitted_ownership is not None:
+                                emitted_ownership[name].update(
+                                    s.name for s in produced if s.name
+                                )
                             _record_scorer_span(scorer_span, produced)
                             if produced:  # span.output = the score value(s) + explanation
                                 set_span_attribute(
@@ -613,6 +623,9 @@ async def _run_async(
     summary: dict[str, Any] = {}
     resolved_main: str | None = None
     resolve_error: MainScoreError | None = None
+    # definition name -> the metric names it emitted, accumulated across cases (union: a metric
+    # emitted by only some cases still counts). Recorded during execution, sent at completion.
+    emitted_ownership: dict[str, set[str]] = {}
     try:
         item_results = await asyncio.gather(
             *[
@@ -628,6 +641,7 @@ async def _run_async(
                     on_case_start=case_start_hook,
                     on_case_complete=case_complete_hook,
                     executor=sync_executor,
+                    emitted_ownership=emitted_ownership,
                 )
                 for c in cases
             ]
@@ -653,6 +667,7 @@ async def _run_async(
             run_handle,
             status="failed" if resolve_error is not None else None,
             main_score_name=resolved_main,
+            emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
         )
 
     if resolve_error is not None:
