@@ -14,18 +14,25 @@ Please see the [Python SDK Docs](https://traceroot.ai/docs/tracing/get-started) 
 
 # Offline Evaluation
 
-Run your AI app over a dataset, score each case with your own scorers, and report the results to
-TraceRoot to compare candidates over time. A runnable end-to-end example lives in
-[`examples/offline_eval.py`](examples/offline_eval.py) (it needs no backend — see below).
+Run your AI app over a dataset, score each case with your own scorers, and (optionally) report the
+results to TraceRoot to compare candidates over time. A runnable end-to-end example lives in
+[`examples/offline_eval.py`](examples/offline_eval.py) — it runs offline via an in-memory transport.
 
-## Quickstart (5 minutes)
+`evaluate()` is **cloud-first**: by default it reports to TraceRoot and therefore needs
+`TRACEROOT_API_KEY` and a **pulled** dataset (a purely local `Dataset` cannot start a reported run).
+For a self-contained run with no backend, pass an in-memory transport (below).
+
+The task, scorer, and reporting behavior are identical in both modes — only the dataset source and
+the transport differ.
+
+## Quickstart — local run (no backend)
 
 ```python
-import traceroot
 from traceroot import Dataset, ScorerContext, evaluate
 from traceroot.eval import scorer
+from traceroot.eval.transport import FakeTransport  # in-memory stand-in for the platform
 
-# 1. A dataset — cases with an input and an optional expected reference.
+# 1. A local dataset — add(input, *, expected=..., id=...). (No cloud dataset is created.)
 dataset = Dataset("support-routing")
 dataset.add(input={"message": "I was charged twice"}, expected={"route": "billing"})
 dataset.add(input={"message": "the app keeps crashing"}, expected={"route": "technical"})
@@ -41,21 +48,58 @@ def route_ticket(ticket: dict) -> dict:
 def accuracy(ctx: ScorerContext) -> float:
     return 1.0 if ctx.output["route"] == ctx.expected["route"] else 0.0
 
-# 4. Run it. `evaluate` pulls its cases from a synced dataset and reports to the platform.
-run = evaluate(name="routing-v1", dataset=dataset, task=route_ticket, scorers=[accuracy])
+# 4. Run it locally — FakeTransport keeps everything in-memory (nothing is uploaded).
+run = evaluate(name="routing-v1", dataset=dataset, task=route_ticket, scorers=[accuracy],
+               transport=FakeTransport())
 print(run.summary())
 ```
 
-## Datasets: create, publish, pull, version
+## Quickstart — cloud run (reports to TraceRoot)
+
+Create the dataset in the **TraceRoot UI**, then pull it and run — the run appears in the platform.
 
 ```python
-ds = Dataset("support-routing")                     # create
-ds.upsert(input={"message": "hi"}, id="c1", expected={"route": "general"})
-ds.push()                                            # publish to the platform (creates a version)
+import traceroot
+from traceroot import ScorerContext, evaluate
+from traceroot.eval import scorer
 
-pulled = traceroot.pull_dataset("<dataset-id>")      # pull the current version (needs credentials)
-exact  = traceroot.pull_dataset("<dataset-id>", version_id="<version-id>")   # pull a pinned version
-ds.push(base_version_id="<version-id>")              # publish a NEW version based on an existing one
+# Needs TRACEROOT_API_KEY. Pull the dataset you created in the UI (this is the synced dataset a
+# reported run requires); it arrives with its dataset_id/dataset_version_id already set.
+dataset = traceroot.pull_dataset("<dataset-id>")
+
+@scorer(value_type="numeric", direction="higher_is_better", threshold=1.0)
+def accuracy(ctx: ScorerContext) -> float:
+    return 1.0 if ctx.output["route"] == ctx.expected["route"] else 0.0
+
+def route_ticket(ticket: dict) -> dict:
+    msg = ticket["message"].lower()
+    return {"route": "billing" if "charge" in msg else "technical" if "crash" in msg else "general"}
+
+run = evaluate(name="routing-v1", dataset=dataset, task=route_ticket, scorers=[accuracy],
+               candidate_version="v1")           # -> a real run visible in the TraceRoot UI
+print(run.upload.dashboard_url)                    # link to the run in the platform
+```
+
+## Datasets
+
+Cases are added locally with `add(input, *, expected=..., id=...)` or `upsert(EvalCase(...))`:
+
+```python
+from traceroot import Dataset, EvalCase
+
+ds = Dataset("support-routing")
+ds.add(input={"message": "hi"}, id="c1", expected={"route": "general"})
+ds.upsert(EvalCase(input={"message": "bye"}, id="c2", expected={"route": "general"}))
+```
+
+**Datasets are created and versioned in the TraceRoot UI, not from the SDK.** `ds.push()` returns
+`status="local_only"` and does **not** create a platform dataset. To run a reported evaluation, create
+the dataset in the UI and pull it:
+
+```python
+import traceroot
+pulled = traceroot.pull_dataset("<dataset-id>")                              # current version
+exact  = traceroot.pull_dataset("<dataset-id>", version_id="<version-id>")   # a pinned version
 ```
 
 Pulling a dataset stamps its `dataset_id`/`dataset_version_id` onto the returned `Dataset`, so a run
