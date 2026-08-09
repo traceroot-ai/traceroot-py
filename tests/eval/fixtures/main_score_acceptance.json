@@ -23,7 +23,7 @@
 
     {"name": "score array multiple names no selection", "cases": 1, "main_score": null,
      "scorers": [{"fn_name": "multi", "threshold": 1.0, "direction": "higher_is_better", "emit_multi": [{"name": "a", "value": 1.0}, {"name": "b", "value": 0.0}]}],
-     "expect": {"error": true, "terminal_failed": true}},
+     "expect": {"main_score_name": null, "status": "not_scored"}},
 
     {"name": "explicit multi metric selection", "cases": 1, "main_score": "format",
      "scorers": [
@@ -31,8 +31,9 @@
        {"fn_name": "fmt", "threshold": 1.0, "direction": "higher_is_better", "emit": {"name": "format", "value": 1.0}}],
      "expect": {"status": "passed", "main_score_name": "format"}},
 
-    {"name": "late discovered mismatch terminates failed", "cases": 2, "main_score": null,
-     "scorers": [{"fn_name": "grade", "threshold": 0.9, "direction": "higher_is_better", "emit_by_case": [{"name": "a", "value": 0.95}, {"name": "b", "value": 0.95}]}],
-     "expect": {"error": true, "terminal_failed": true}}
+    {"name": "multiple metrics no primary completes unscored", "cases": 2, "main_score": null,
+     "scorers": [{"fn_name": "acc", "threshold": 1.0, "direction": "higher_is_better", "emit": {"name": "accuracy", "value": 1.0}},
+                 {"fn_name": "cov", "threshold": 1.0, "direction": "higher_is_better", "emit": {"name": "coverage", "value": 0.5}}],
+     "expect": {"main_score_name": null, "status": "not_scored"}}
   ]
 }

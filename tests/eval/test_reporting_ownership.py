@@ -100,9 +100,10 @@ class TestSendsRawData:
         assert "duration_ms" in ok  # measurement present (int or null)
         assert "trace_id" in ok  # trace identity link
         assert ok["scores"] == [
-            {"scorer_name": "acc", "scorer_version": "v2", "numeric_value": 1.0, "passed": True}
-        ]  # raw per-scorer value + declared version + SDK-computed pass/fail (its OWN policy,
-        # not a comparison against a baseline -- see TestDoesNotSendComparisonLabels)
+            {"scorer_name": "acc", "scorer_version": "v2", "numeric_value": 1.0}
+        ]  # raw per-scorer value + declared version. `acc` declares NO threshold, so there is no
+        # fabricated pass/fail -- `passed` is omitted (a numeric metric without a declared threshold
+        # is scored but carries no verdict; see test_primary_metric).
 
         # scorer error: preserved as a per-scorer error, task_error stays null
         se = by_id["c1"]

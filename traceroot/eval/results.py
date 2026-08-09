@@ -138,10 +138,10 @@ def resolve_main_score_name(configured: str | None, numeric_metrics: list[str]) 
             )
         return configured  # no numeric scores at all -> keep the label; run is simply unscored
     if len(distinct) > 1:
-        raise MainScoreError(
-            f"multiple numeric metrics emitted {distinct} but no main_score; pass main_score "
-            f"to select the headline metric."
-        )
+        # No primary is required merely to record multiple metrics: every score is still stored;
+        # we simply select no headline metric (None) and invent no overall pass/fail. A CI gate
+        # that wants a verdict selects its own metric via main_score / primary_metric.
+        return None
     return distinct[0] if distinct else None
 
 
@@ -201,6 +201,14 @@ def case_status(item: EvalItemResult, main_score: MainScore | None = None) -> st
     if item.error is not None:
         return "errored"
     ms = main_score if main_score is not None else MainScore(None)
+    if ms.name is None:
+        # No primary metric selected: with MULTIPLE numeric/boolean metrics there is no headline to
+        # judge, so the case is scored but carries no invented pass/fail (never "first of many").
+        numeric_names = {
+            s.name for s in item.scores if isinstance(s.value, (bool, int, float))
+        }
+        if len(numeric_names) > 1:
+            return "not_scored"
     value: float | None = None
     for s in item.scores:
         if ms.name is not None and s.name != ms.name:

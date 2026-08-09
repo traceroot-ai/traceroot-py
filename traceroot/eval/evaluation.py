@@ -124,6 +124,7 @@ def evaluate(
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     main_score: str | None = None,
+    primary_metric: str | None = None,  # alias for main_score (the headline metric)
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
     run_scorers: Sequence[Callable[[Any], Any]] | None = None,
@@ -142,7 +143,7 @@ def evaluate(
         report_to=report_to or transport,
         dataset_id=dataset_id,
         candidate_version=candidate_version,
-        main_score=main_score,
+        main_score=main_score if main_score is not None else primary_metric,
         environment=environment,
         select=select,
         run_scorers=run_scorers,
@@ -166,6 +167,7 @@ async def evaluate_async(
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     main_score: str | None = None,
+    primary_metric: str | None = None,  # alias for main_score (the headline metric)
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
     run_scorers: Sequence[Callable[[Any], Any]] | None = None,
@@ -184,7 +186,7 @@ async def evaluate_async(
         report_to=report_to or transport,
         dataset_id=dataset_id,
         candidate_version=candidate_version,
-        main_score=main_score,
+        main_score=main_score if main_score is not None else primary_metric,
         environment=environment,
         select=select,
         run_scorers=run_scorers,

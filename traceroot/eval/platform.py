@@ -442,7 +442,7 @@ class PlatformTransport:
                 return spec.get("version") or _UNVERSIONED_SCORER
         return _UNVERSIONED_SCORER
 
-    def _score_policy(self, name: str | None) -> tuple[float, str] | None:
+    def _score_policy(self, name: str | None) -> tuple[float | None, str] | None:
         """(threshold, direction) for ONE emitted metric, or None when it can't be resolved
         without guessing. A single scorer's declared policy owns whatever metric it emits, even
         when the function name differs from the emitted Score name (name-agnostic). With multiple
@@ -455,12 +455,11 @@ class PlatformTransport:
         )
         if owner is None:
             return None
+        # RAW declared threshold (may be None): a numeric metric with no declared threshold is
+        # scored but gets no fabricated pass/fail. Direction still defaults for a declared metric.
         threshold = owner.get("threshold")
         direction = owner.get("direction")
-        return (
-            threshold if threshold is not None else _DEFAULT_PASS_THRESHOLD,
-            str(direction) if direction is not None else "higher_is_better",
-        )
+        return (threshold, str(direction) if direction is not None else "higher_is_better")
 
     def _score_passed(self, score: Score) -> bool | None:
         """SDK-computed pass/fail for one emitted metric, derived at serialization time and never
@@ -479,10 +478,10 @@ class PlatformTransport:
         if policy is None:
             return None
         threshold, direction = policy
+        if threshold is None or direction == "none":
+            return None  # no declared threshold (or no ordering) -> scored, but no fabricated verdict
         if direction == "lower_is_better":
             return n <= threshold
-        if direction == "none":
-            return None
         return n >= threshold  # higher_is_better (the default)
 
     def _main_value(self, scores: list[Score]) -> float | None:
