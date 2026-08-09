@@ -15,8 +15,7 @@ exactly what a reported run does.
     python examples/offline_eval.py
 """
 
-from traceroot import Dataset, Score, ScorerContext, evaluate
-from traceroot.eval import llm_judge, scorer
+from traceroot import Dataset, Score, ScorerContext, Scorer, evaluate
 from traceroot.eval.transport import FakeTransport
 
 
@@ -37,24 +36,28 @@ dataset.add(input={"message": "the app keeps crashing"}, expected={"route": "tec
 dataset.add(input={"message": "hello there"}, expected={"route": "general"})
 
 
-# --- 3. Scorers ------------------------------------------------------------------------------
-# A deterministic scorer. `@scorer` declares the metric's policy: how its value is compared
-# (direction) and the pass threshold. It receives a ScorerContext (input / output / expected /
-# metadata) and returns a value, a bool, a Score, or a list of Scores.
-@scorer(value_type="numeric", direction="higher_is_better", threshold=1.0)
-def accuracy(ctx: ScorerContext) -> float:
-    return 1.0 if ctx.output["route"] == ctx.expected["route"] else 0.0
+# --- 3. Scorers: simplest first, then richer ------------------------------------------------
+# (a) The simplest scorer is an ORDINARY FUNCTION of (input, output, expected=None, metadata=None)
+#     that returns a bool or a number. No wrapper, no Score object. The metric name is the
+#     function name.
+def is_general(input, output, expected=None):
+    return output["route"] == "general"
 
 
-# A scorer may emit a metric whose NAME differs from the function name, and may attach a comment.
-@scorer(value_type="boolean")
-def is_confident(ctx: ScorerContext) -> Score:
-    return Score("confident", ctx.output["route"] != "general", comment="non-general route")
+# (b) `Scorer.code(...)` is the same thing with declared POLICY: how the value is compared
+#     (direction) and the pass threshold. The decorated function receives a ScorerContext and may
+#     return a value, a bool, a Score, or a list of Scores.
+@Scorer.code(value_type="numeric", direction="higher_is_better", threshold=1.0)
+def accuracy(ctx: ScorerContext) -> Score:
+    hit = ctx.output["route"] == ctx.expected["route"]
+    # A Score is optional sugar: a named value + a comment. Returning `1.0 if hit else 0.0` works too.
+    return Score("accuracy", 1.0 if hit else 0.0, comment=ctx.output["route"])
 
 
-# An LLM judge. `complete` is stubbed here so the example is deterministic and offline; drop it to
-# call the real model named by `model`. The judge is reported by its definition (model + messages).
-tone = llm_judge(
+# (c) `Scorer.llm_judge(...)` is a STATIC judge: its declarative config (model + rubric/messages) IS
+#     its versioned definition — no function body required. `complete` is stubbed here so the example
+#     is deterministic and offline; drop it to call the real model named by `model`.
+tone = Scorer.llm_judge(
     name="tone",
     model="claude-sonnet-5",
     messages=[{"role": "user", "content": "Rate politeness 0..1 for:\n{{output}}"}],
@@ -71,7 +74,7 @@ run = evaluate(
     name="support-routing-v1",
     dataset=dataset,
     task=route_ticket,
-    scorers=[accuracy, is_confident, tone],
+    scorers=[is_general, accuracy, tone],
     main_score="accuracy",  # the metric that decides pass/fail per case
     candidate_version="v1",
     transport=FakeTransport(),  # in-memory stand-in so the example needs no backend
