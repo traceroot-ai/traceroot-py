@@ -189,6 +189,12 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
     if scorer_type == "llm_judge":
         desc["model"] = _declared(fn, "model")
         desc["messages"] = _declared(fn, "messages")
+        # A DYNAMIC judge also carries its builder-callback provenance (captured at construction);
+        # a static judge has none (its declarative config IS its source, via version=config-hash).
+        builder_source = _declared(fn, "builder_source")
+        if builder_source is not None:
+            desc["language"] = "python"
+            desc["source"] = builder_source
     else:
         src = _capture_source(fn)
         if src is not None:

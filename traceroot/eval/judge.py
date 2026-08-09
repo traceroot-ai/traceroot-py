@@ -204,6 +204,15 @@ def _build_judge(*, name: str, model: str, messages: list[dict[str, str]], outpu
     from traceroot.decorators import observe
     from traceroot.eval.types import Score
 
+    if builder is not None:
+        # Capture the dynamic judge's builder-callback provenance (in addition to the declarative
+        # config). Missing source (notebook / C callable) is honest -- it just isn't recorded.
+        from traceroot.eval.scorers import _capture_source
+
+        b_src = _capture_source(builder)
+        if b_src is not None:
+            meta = {**meta, "builder_source": b_src}
+
     def _call(rendered_messages: list[dict[str, str]]) -> str:
         return (complete or _default_complete)(model, rendered_messages)
 
