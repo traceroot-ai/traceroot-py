@@ -128,6 +128,7 @@ def _default_complete(model: str, messages: list[dict[str, str]]) -> str:
 def llm_judge(
     *,
     name: str,
+    key: str | None = None,
     model: str,
     messages: list[dict[str, str]],
     version: str | None = None,
@@ -194,6 +195,7 @@ def llm_judge(
 
     judge.__name__ = name
     meta = {
+        "key": key,  # stable cross-language identity (defaults to name via scorer_metadata)
         "name": name,
         "version": version,
         "scorer_type": "llm_judge",
