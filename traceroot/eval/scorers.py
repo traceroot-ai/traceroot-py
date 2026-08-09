@@ -238,3 +238,22 @@ def _derive_required_inputs(messages: Any) -> list[str] | None:
 # The llm_judge scorer lives in its own module; re-exported here so existing imports
 # (``from traceroot.eval.scorers import llm_judge``) keep working unchanged.
 from traceroot.eval.judge import _parse_judge_output, llm_judge  # noqa: E402,F401
+
+
+class Scorer:
+    """Unified scorer-definition namespace with NAMED constructors (stronger types + autocomplete
+    than one ``Scorer(type=...)`` constructor whose parameters mostly wouldn't apply):
+
+      - ``Scorer.code(...)``       -- a code scorer. Bare/decorator (``@Scorer.code(...)``) or an
+        adapter over an existing callable (``Scorer.code(fn, threshold=1.0)``). An ordinary function
+        also works with NO wrapper at all (passed straight to ``evaluate(scorers=[...])``).
+      - ``Scorer.llm_judge(...)``  -- an LLM judge. Static (declarative config only -- no function
+        needed) or dynamic (``@Scorer.llm_judge(...)`` over a builder that returns the judge's
+        template variables / messages per case).
+
+    ``kind`` (``code`` | ``llm_judge``) stays INTERNAL on the normalized definition; there is no
+    public ``Scorer(type=...)`` constructor. ``Scorer`` is the executable definition + policy +
+    provenance; ``Score`` (separate) is one emitted result for one case."""
+
+    code = staticmethod(scorer)
+    llm_judge = staticmethod(llm_judge)

@@ -33,6 +33,7 @@ _EXPORTS = {
     "describe_scorers": "scorers",
     "llm_judge": "scorers",
     "scorer": "scorers",
+    "Scorer": "scorers",
     "dataset_latest_snippet": "snippets",
     "dataset_version_snippet": "snippets",
     "reproduce_run_snippet": "snippets",
@@ -67,7 +68,7 @@ if TYPE_CHECKING:
         UploadState,
         aggregate_scores,
     )
-    from traceroot.eval.scorers import describe_scorers, llm_judge, scorer
+    from traceroot.eval.scorers import Scorer, describe_scorers, llm_judge, scorer
     from traceroot.eval.snippets import (
         dataset_latest_snippet,
         dataset_version_snippet,
@@ -139,6 +140,7 @@ __all__ = [
     "pull_dataset_version",
     "scorer",
     "llm_judge",
+    "Scorer",
     "describe_scorers",
     "dataset_latest_snippet",
     "dataset_version_snippet",
