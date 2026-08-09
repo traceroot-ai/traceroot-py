@@ -58,6 +58,7 @@ def _validate_required_inputs(value: Any) -> list[str]:
 def scorer(
     fn: Callable | None = None,
     *,
+    key: str | None = None,
     name: str | None = None,
     version: str | None = None,
     value_type: str | None = None,
@@ -89,7 +90,8 @@ def scorer(
 
     def apply(f: Callable) -> Callable:
         meta = dict(getattr(f, _META_ATTR, {}))
-        for key, val in (
+        for mk, val in (
+            ("key", key),
             ("name", name),
             ("version", version),
             ("value_type", value_type),
@@ -101,7 +103,7 @@ def scorer(
             ("required_inputs", required_inputs),
         ):
             if val is not None:
-                meta[key] = val
+                meta[mk] = val
         setattr(f, _META_ATTR, meta)
         return f
 
@@ -151,6 +153,10 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
     one. Absent fields are ``None`` here and omitted at the reporting boundary.
     """
     name = _declared(fn, "name") or getattr(fn, "__name__", None) or fn.__class__.__name__
+    # Stable SEMANTIC identity, independent of function spelling/language. Defaults to the definition
+    # name; set an explicit `key` (identically in Python and TypeScript) to make the SAME logical
+    # scorer resolve across languages. Never derived from source; code/language/version are provenance.
+    key = _declared(fn, "key") or name
     vtype = _declared(fn, "value_type") or value_type
     direction = _declared(fn, "direction")
     if direction is None and vtype is not None:
@@ -168,6 +174,7 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
         required_inputs = _derive_required_inputs(_declared(fn, "messages"))
 
     desc: dict[str, Any] = {
+        "key": key,
         "name": name,
         "version": declared_version(fn),
         "scorer_type": scorer_type,
