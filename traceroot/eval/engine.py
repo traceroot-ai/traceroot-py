@@ -599,13 +599,11 @@ async def _run_async(
     )
 
     # Local run record keeps the combined view (user metadata + git/ci) for the artifact.
-    # The wire form is separate: typed provenance (flat RunProvenance shape) reported at
-    # registration, with the user's free-form metadata sent verbatim alongside it. Dirty
-    # state is observed here (one bounded git-status call at run start).
-    from traceroot.eval.provenance import collect_run_provenance, run_provenance
+    # A run is not identified by which SDK produced it, so no typed SDK/identity provenance
+    # is reported to the platform — only the user's free-form metadata rides the wire.
+    from traceroot.eval.provenance import collect_run_provenance
 
     run_metadata = collect_run_provenance(metadata, detect_dirty=False)
-    run_provenance_wire = run_provenance(detect_dirty=True)
 
     dataset_name = snapshot.name
     # Cloud-only: an explicit transport wins; otherwise build a reporting transport from
@@ -650,7 +648,6 @@ async def _run_async(
         dataset_name=dataset_name,
         metadata=metadata,
         client_run_id=local_run_id,
-        provenance=run_provenance_wire,
     )
     # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the runner
     # runner on SIGINT) can finalize its partial artifact under the SAME ids the run registered

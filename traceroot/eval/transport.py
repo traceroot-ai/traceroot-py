@@ -43,7 +43,6 @@ class EvalTransport(Protocol):
         dataset_name: str,
         metadata: dict[str, Any] | None,
         client_run_id: str | None = None,
-        provenance: dict[str, Any] | None = None,
     ) -> RunHandle: ...
 
     def register_item(self, run: RunHandle, case: EvalCase) -> None: ...
@@ -74,11 +73,9 @@ class FakeTransport:
         dataset_name: str,
         metadata: dict[str, Any] | None,
         client_run_id: str | None = None,
-        provenance: dict[str, Any] | None = None,
     ) -> RunHandle:
         self.calls.append(("create_run", name, dataset_name, client_run_id))
         self.last_run_metadata = metadata
-        self.last_run_provenance = provenance
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
     def register_item(self, run: RunHandle, case: EvalCase) -> None:

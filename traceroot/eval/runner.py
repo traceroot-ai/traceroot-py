@@ -376,7 +376,6 @@ def write_artifacts(
     sample_count: int | None,
     sample_seed: int | None,
     candidate_version: str | None,
-    provenance: dict[str, Any] | None,
     max_payload_bytes: int | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -419,7 +418,6 @@ def write_artifacts(
         "run_mode": run_mode,
         "is_final": is_final,
         "sample": {"count": sample_count, "seed": sample_seed},
-        "provenance": provenance,
         "dataset": result.dataset.to_dict() if result.dataset else None,
         "scorers": [
             {"name": n, "version": _scorer_versions(result).get(n)} for n in result.score_summary
@@ -501,7 +499,6 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     # An option is an OVERRIDE only when the caller actually supplied it; otherwise
     # the Evaluation's own value stands (never silently replaced with a runner default).
     candidate_version = options.get("candidate_version") or evaluation.candidate_version
-    provenance = options.get("provenance")
     created_at = _now_iso()
     identity = _dataset_identity(evaluation.dataset)
 
@@ -615,7 +612,6 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             sample_count=len(chosen) if chosen is not None else None,
             sample_seed=seed if chosen is not None else None,
             candidate_version=candidate_version,
-            provenance=provenance,
             max_payload_bytes=options.get("max_payload_bytes"),
             created_at=created_at,
         )

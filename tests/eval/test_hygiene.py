@@ -49,7 +49,6 @@ _OPTS = dict(
     sample_count=None,
     sample_seed=None,
     candidate_version="v1",
-    provenance=None,
 )
 
 
