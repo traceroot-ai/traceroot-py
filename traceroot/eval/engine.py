@@ -622,14 +622,9 @@ async def _run_async(
                 "dataset were found. Set TRACEROOT_API_KEY and pass a pulled dataset "
                 "(traceroot.pull_dataset(...)), or pass an explicit transport=."
             )
-        # A reported multi-scorer run needs an explicit headline metric: refuse to silently
-        # pick one (the old behavior guessed the first scorer's function name).
-        if main_score is None and len(scorers) > 1:
-            raise ValueError(
-                f"This run reports {len(scorers)} scorers to the platform but no main_score, so "
-                "the headline metric is ambiguous. Pass main_score='<scorer/metric name>' to "
-                "select which one drives the run's pass/fail and aggregate main score."
-            )
+        # A reported multi-scorer run does NOT require an explicit headline metric: every score is
+        # recorded and no overall pass/fail is invented when none is selected (parity with the
+        # explicit-transport path, the TypeScript engine, and the nullable backend main_score_name).
 
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
     # scorer callables when the transport accepts specs and the caller did not pre-set them.
