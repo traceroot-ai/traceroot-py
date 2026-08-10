@@ -14,7 +14,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from traceroot.eval.ids import new_dataset_id, new_test_case_id
+from traceroot.eval.ids import new_test_case_id, stable_case_id, stable_dataset_id
 from traceroot.utils import serialize_value
 
 
@@ -133,16 +133,23 @@ class DatasetSnapshot:
 class Dataset:
     """A local, mutable, ordered collection of :class:`EvalCase` keyed by stable id.
 
-    Construction and mutation perform no network I/O. A client-generated
-    ``dataset_id`` (``ds_``+ULID) is assigned at creation so local work can begin
-    without a server round-trip; ``dataset_version_id`` is set only when this
-    Dataset mirrors a pushed/pulled remote version.
+    Construction and mutation perform no network I/O. Identity is the dataset's
+    ``key`` (defaults to ``name``), NOT which SDK or process created it: the
+    ``dataset_id`` is a deterministic ``ds_``+sha256 of the key, so re-constructing
+    the same dataset -- another process, Python or TypeScript -- yields the SAME id
+    and the platform converges their runs instead of forking a new dataset each run.
+    Pass an explicit ``key`` to keep identity stable across a display-name rename.
+    ``dataset_version_id`` is set only when this Dataset mirrors a pushed/pulled
+    remote version; changed content under the same key becomes a new VERSION.
     """
 
-    def __init__(self, name: str, description: str | None = None) -> None:
+    def __init__(
+        self, name: str, description: str | None = None, *, key: str | None = None
+    ) -> None:
         self.name = name
         self.description = description
-        self.dataset_id = new_dataset_id()
+        self.key = key or name
+        self.dataset_id = stable_dataset_id(self.key)
         self.dataset_version_id: str | None = None
         self.base_version_id: str | None = None
         self._cases: dict[str, EvalCase] = {}
@@ -158,8 +165,13 @@ class Dataset:
         source_span_id: str | None = None,
         id: str | None = None,
     ) -> EvalCase:
-        """Add a new case (strict: a duplicate id raises)."""
-        cid = id or new_test_case_id()
+        """Add a new case (strict: a duplicate id raises).
+
+        Without an explicit id, the case gets a STABLE id from the dataset key + its
+        insertion position, so re-authoring the same dataset converges (the platform
+        matches by id) instead of forking new cases each run.
+        """
+        cid = id or stable_case_id(self.key, len(self._cases))
         if cid in self._cases:
             raise ValueError(f"test case id already exists: {cid!r}")
         case = EvalCase(

@@ -8,6 +8,7 @@ round-trip; the server accepts these ids idempotently on push.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import time
 
@@ -36,6 +37,33 @@ def new_id(prefix: str) -> str:
 
 def new_dataset_id() -> str:
     return new_id("ds")
+
+
+def stable_dataset_id(key: str) -> str:
+    """Deterministic dataset id derived from a semantic key (``ds_``+sha256 prefix).
+
+    A dataset's identity is its key, NOT which SDK or process created it, so this is a
+    pure function of ``key``: the SAME key -- in any process, in Python or TypeScript --
+    yields the SAME ``client_dataset_id``, which is how the platform converges runs of one
+    logical dataset (upsert on ``(project, client_dataset_id)``) instead of forking a new
+    dataset each run. Must stay byte-for-byte identical to the TypeScript ``stableDatasetId``.
+    """
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return f"ds_{digest[:26]}"
+
+
+def stable_case_id(dataset_key: str, index: int) -> str:
+    """Deterministic case id from the dataset key + insertion position.
+
+    Convergence needs case ids to be stable across runs, not random per construction:
+    the same case authored in the same position -- any process, Python or TypeScript --
+    must get the SAME ``tc_`` id so the platform matches it on re-publish (upsert keys on
+    id) instead of duplicating it, and so runs pair case-for-case. Position-based (not
+    content-based) to stay trivially identical across languages. Must match the TypeScript
+    ``stableCaseId``.
+    """
+    digest = hashlib.sha256(f"{dataset_key}\x00{index}".encode("utf-8")).hexdigest()
+    return f"tc_{digest[:20]}"
 
 
 def new_test_case_id() -> str:
