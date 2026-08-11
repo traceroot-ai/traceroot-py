@@ -411,6 +411,13 @@ class TestDatasetLifecycleIntegration:
                 return t
 
         def http_json(method, url, api_key, body=None):
+            if method == "GET" and "/api/v1/public/datasets/" in url and not url.endswith("/versions"):
+                # Existence double-check: 404 for a not-yet-created dataset, else its current version.
+                ds_id = url.rsplit("/datasets/", 1)[1]
+                cur = store["current"].get(ds_id)
+                if cur is None:
+                    raise RuntimeError(f"GET {url} -> HTTP 404: not found")
+                return {"name": ds_id, "current_dataset_version_id": cur}
             if url.endswith("/datasets"):
                 return {}
             if url.endswith("/versions") and method == "POST":

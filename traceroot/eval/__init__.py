@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 # never eagerly pulls every submodule; a symbol loads from its module on first use.
 _EXPORTS = {
     "DatasetConflictError": "dataset_sync",
+    "DatasetPublishAborted": "dataset_sync",
     "FakeDatasetSync": "dataset_sync",
     "LocalDatasetSync": "dataset_sync",
     "PlatformDatasetSync": "dataset_sync",
@@ -52,6 +53,7 @@ _EXPORTS = {
 if TYPE_CHECKING:
     from traceroot.eval.dataset_sync import (
         DatasetConflictError,
+        DatasetPublishAborted,
         FakeDatasetSync,
         LocalDatasetSync,
         PlatformDatasetSync,
@@ -148,6 +150,7 @@ __all__ = [
     "collect_run_provenance",
     "PushResult",
     "DatasetConflictError",
+    "DatasetPublishAborted",
     "LocalDatasetSync",
     "FakeDatasetSync",
     "PlatformDatasetSync",

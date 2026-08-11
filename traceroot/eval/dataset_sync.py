@@ -13,6 +13,7 @@ implemented contract (see ``offline-eval/BACKEND-REQUIREMENTS.md`` A2/A4).
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
@@ -32,6 +33,38 @@ class DatasetConflictError(Exception):
         self.current_version_id = current_version_id
 
 
+class DatasetPublishAborted(RuntimeError):
+    """Raised when publishing a new version to an ALREADY-EXISTING dataset is declined at the
+    confirmation step (the push is a no-op: no version was created)."""
+
+
+def _confirm_new_version(info: dict[str, Any]) -> bool:
+    """Default double-check before adding a version to an EXISTING dataset.
+
+    A dataset's identity is its name, so re-pushing the same name updates the SAME dataset with a
+    NEW version rather than forking. That's usually intended, but it can surprise someone who reused
+    a name by accident -- so on an interactive terminal we ask first (default ``no``: an accidental
+    Enter never publishes). Non-interactive contexts (CI, pipes) proceed silently so automation is
+    never blocked, and ``TRACEROOT_ASSUME_YES=1`` skips the prompt everywhere. Pass an explicit
+    ``on_existing`` to ``push_dataset`` to fully customize."""
+    import os
+    import sys
+
+    if os.environ.get("TRACEROOT_ASSUME_YES", "").strip().lower() in ("1", "true", "yes"):
+        return True
+    if not (getattr(sys, "stdin", None) and sys.stdin.isatty()):
+        return True
+    name = info.get("name") or info.get("dataset_id") or "?"
+    ver = info.get("current_dataset_version_id")
+    try:
+        answer = input(
+            f"Dataset {name!r} already exists (current version {ver}). Publish a NEW version? [y/N] "
+        )
+    except EOFError:
+        return True
+    return answer.strip().lower() in ("y", "yes")
+
+
 @dataclasses.dataclass
 class PushResult:
     """Outcome of ``Dataset.push`` - explicit about local vs uploaded state."""
@@ -45,14 +78,24 @@ class PushResult:
 @runtime_checkable
 class DatasetSyncTransport(Protocol):
     def push_dataset(
-        self, snapshot: DatasetSnapshot, base_version_id: str | None
+        self,
+        snapshot: DatasetSnapshot,
+        base_version_id: str | None,
+        *,
+        on_existing: Callable[[dict[str, Any]], bool] | None = None,
     ) -> PushResult: ...
 
 
 class LocalDatasetSync:
     """Default no-op: the dataset stays local; nothing is published."""
 
-    def push_dataset(self, snapshot: DatasetSnapshot, base_version_id: str | None) -> PushResult:
+    def push_dataset(
+        self,
+        snapshot: DatasetSnapshot,
+        base_version_id: str | None,
+        *,
+        on_existing: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> PushResult:
         return PushResult(status="local_only", dataset_id=snapshot.dataset_id)
 
 
@@ -87,8 +130,21 @@ class FakeDatasetSync:
             raise ValueError("force_current_version: push a dataset first, or pass a dataset_id")
         self._state_for(did)["version_id"] = version_id
 
-    def push_dataset(self, snapshot: DatasetSnapshot, base_version_id: str | None) -> PushResult:
+    def push_dataset(
+        self,
+        snapshot: DatasetSnapshot,
+        base_version_id: str | None,
+        *,
+        on_existing: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> PushResult:
+        # In-memory sync has no remote existence to double-check; on_existing is accepted for
+        # interface parity and only consulted when a prior version already exists here.
         s = self._state_for(snapshot.dataset_id)
+        if s["version_id"] is not None and on_existing is not None:
+            if not on_existing({"name": snapshot.name, "current_dataset_version_id": s["version_id"]}):
+                raise DatasetPublishAborted(
+                    f"publish to existing dataset {snapshot.name!r} declined; no new version created."
+                )
         self._last_dataset_id = snapshot.dataset_id
         # Optimistic concurrency: base must match this dataset's current version.
         if s["version_id"] is not None and base_version_id != s["version_id"]:
@@ -127,7 +183,34 @@ class PlatformDatasetSync:
 
         return _http_json(method, f"{self.host_url}{path}", self.api_key, body)
 
-    def push_dataset(self, snapshot: DatasetSnapshot, base_version_id: str | None) -> PushResult:
+    def _existing_dataset(self, dataset_id: str) -> dict[str, Any] | None:
+        """The remote dataset's metadata if it ALREADY exists with a published version, else None
+        (a fetch error is treated as 'new' so the push itself surfaces any real problem)."""
+        try:
+            meta = self._request(
+                "GET", f"/api/v1/public/datasets/{quote(dataset_id, safe='')}"
+            )
+        except RuntimeError:
+            return None
+        return meta if meta.get("current_dataset_version_id") else None
+
+    def push_dataset(
+        self,
+        snapshot: DatasetSnapshot,
+        base_version_id: str | None,
+        *,
+        on_existing: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> PushResult:
+        # A dataset's identity is its name: re-pushing the same name updates the SAME dataset with a
+        # new version. Double-check first when it already exists (default: prompt on an interactive
+        # TTY, proceed otherwise) so a name reused by accident does not silently add a version.
+        existing = self._existing_dataset(snapshot.dataset_id)
+        if existing is not None:
+            confirm = on_existing if on_existing is not None else _confirm_new_version
+            if not confirm(existing):
+                raise DatasetPublishAborted(
+                    f"publish to existing dataset {snapshot.name!r} declined; no new version created."
+                )
         self._request(
             "POST",
             "/api/v1/public/datasets",
