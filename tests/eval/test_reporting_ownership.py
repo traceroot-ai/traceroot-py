@@ -68,7 +68,14 @@ def _run():
 
 
 class TestSendsRawData:
-    def test_register_run_carries_identity_and_scorer_metadata(self):
+    def test_register_run_carries_identity_and_scorer_metadata(self, monkeypatch):
+        import traceroot.eval.provenance as prov
+
+        monkeypatch.setattr(
+            prov,
+            "_resolved_git",
+            lambda env: ("owner/repo", "0123456789abcdef0123456789abcdef01234567"),
+        )
         _, reqs = _run()
         reg = reqs[0][2]
         assert reqs[0][1] == "/api/v1/public/evaluation-runs"
@@ -85,8 +92,10 @@ class TestSendsRawData:
         assert sc["scorer_type"] == "code"
         assert sc["output_type"] == "score"  # derived from numeric
         assert sc["language"] == "python" and "def acc" in sc["source"]
-        # run metadata/provenance is NOT sent (backend registration schema is strict)
-        assert "metadata" not in reg
+        # git provenance is NON-IDENTITY reproducibility metadata and rides the wire as `metadata`
+        # (a real registration field); SDK-language identity is never sent.
+        assert reg["metadata"]["git"]["repository"] == "owner/repo"
+        assert "sdk" not in reg and "language" not in reg
 
     def test_results_carry_raw_outputs_values_errors_duration_trace(self):
         _, reqs = _run()
@@ -149,9 +158,17 @@ class TestDoesNotSendComparisonLabels:
 
 
 class TestLocalOwnership:
-    def test_run_metadata_provenance_is_local_only(self):
+    def test_git_provenance_rides_wire_never_sdk_identity(self, monkeypatch):
+        import traceroot.eval.provenance as prov
+
+        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "main"))
         result, reqs = _run()
-        # provenance lives on the LOCAL result, never on a request body
-        assert result.metadata is None or isinstance(result.metadata, dict)
+        # git/CI provenance is reproducibility metadata (non-identity): it rides the registration
+        # body AND backs the local result -- the same combined view, not local-only.
+        assert result.metadata["git"] == {"repository": "owner/repo", "ref": "main"}
+        reg = reqs[0][2]
+        assert reg["metadata"]["git"] == {"repository": "owner/repo", "ref": "main"}
+        # never SDK-language identity on any request body
         for _m, _p, body in reqs:
-            assert not body or "metadata" not in body
+            if body and isinstance(body.get("metadata"), dict):
+                assert "sdk" not in body["metadata"] and "language" not in body["metadata"]

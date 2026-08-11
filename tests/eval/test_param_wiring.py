@@ -86,8 +86,10 @@ class TestMetadata:
             metadata={"model": "gpt"},
             report_to=CapturingTransport(),
         ).run()
-        # Free-form metadata reaches registration; no SDK-identity provenance rides along.
-        assert seen["metadata"] == {"model": "gpt"}
+        # Free-form user metadata reaches registration (git/CI reproducibility provenance may ride
+        # alongside as non-identity keys); SDK-language identity never does.
+        assert seen["metadata"]["model"] == "gpt"
+        assert "sdk" not in seen["metadata"] and "language" not in seen["metadata"]
 
 
 class TestRetryRejected:

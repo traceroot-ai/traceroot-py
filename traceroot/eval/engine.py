@@ -598,9 +598,11 @@ async def _run_async(
         case_count=len(cases),
     )
 
-    # Local run record keeps the combined view (user metadata + git/ci) for the artifact.
-    # A run is not identified by which SDK produced it, so no typed SDK/identity provenance
-    # is reported to the platform — only the user's free-form metadata rides the wire.
+    # A run is not identified by which SDK produced it, so no SDK-language identity is reported.
+    # But git/CI provenance (commit/branch/dirty, CI build) is NON-IDENTITY reproducibility
+    # metadata — it rides the wire as free-form run metadata (user keys win on conflict), so the
+    # platform can tie a run to the exact commit + dataset version. Same combined view backs the
+    # local artifact.
     from traceroot.eval.provenance import collect_run_provenance
 
     run_metadata = collect_run_provenance(metadata, detect_dirty=False)
@@ -646,7 +648,7 @@ async def _run_async(
     run_handle = active_transport.create_run(
         name=name,
         dataset_name=dataset_name,
-        metadata=metadata,
+        metadata=run_metadata,
         client_run_id=local_run_id,
     )
     # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the runner

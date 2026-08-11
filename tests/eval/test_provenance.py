@@ -4,6 +4,7 @@ the test machine's real git repo or CI env)."""
 import traceroot.eval.provenance as prov
 from traceroot.eval import Dataset, EvalCase, evaluate
 from traceroot.eval.provenance import collect_run_provenance
+from traceroot.eval.transport import FakeTransport
 
 
 def echo(x):
@@ -94,3 +95,28 @@ class TestEngineAttachesProvenance:
             "ref": "0123456789abcdef0123456789abcdef01234567",
             "commit": "0123456789abcdef0123456789abcdef01234567",
         }
+
+
+class TestProvenanceReachesWire:
+    """Reproducibility metadata (git commit/branch, CI) is NON-IDENTITY but must reach the
+    platform as run metadata -- it was captured locally yet dropped from the wire alongside
+    SDK-language identity. Braintrust sends the equivalent `repo_info` for reproducibility."""
+
+    def test_git_and_ci_provenance_ride_the_run_metadata(self, monkeypatch):
+        monkeypatch.setattr(
+            prov,
+            "collect_run_provenance",
+            lambda user_metadata=None, **k: {"git": {"commit": "abc123"}, **(user_metadata or {})},
+        )
+        fake = FakeTransport()
+        evaluate(
+            name="r",
+            dataset=[{"input": {"m": 1}}],
+            task=echo,
+            scorers=[acc],
+            metadata={"team": "eval"},
+            report_to=fake,
+        )
+        # git provenance reached create_run's metadata (not just the raw user dict), user keys kept
+        assert fake.last_run_metadata["git"] == {"commit": "abc123"}
+        assert fake.last_run_metadata["team"] == "eval"
