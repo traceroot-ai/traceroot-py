@@ -47,7 +47,7 @@ def _complete(requests):
 def test_completion_carries_emitted_metric_ownership():
     t = _Capture("ds_1", api_key="tr-x", host_url="https://h", dataset_version_id="v1")
     evaluate(name="r", dataset=_ds(), task=lambda x: "out", scorers=[grade, length],
-             main_score="quality", report_to=t)
+             report_to=t)
     by = {s["name"]: s for s in _complete(t.requests)["scorers"]}
     # Definition 'grade' declares it emits metric 'quality' with grade's OWN policy -- the platform
     # can now key quality's threshold/direction on the emitted name, not the definition name.

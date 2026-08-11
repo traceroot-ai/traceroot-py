@@ -24,7 +24,7 @@ import urllib.request
 from typing import Any
 from urllib.parse import quote
 
-from traceroot.eval.results import EvalItemResult, UploadState, resolve_main_score_policy
+from traceroot.eval.results import EvalItemResult, UploadState, case_status as _case_status
 from traceroot.eval.transport import PublishResult, RunHandle
 from traceroot.eval.types import Dataset, EvalCase, Score
 from traceroot.utils import serialize_value
@@ -134,7 +134,6 @@ class PlatformTransport:
         scorer_names: list[str] | None = None,
         candidate_version: str | None = None,
         environment: str = "evaluation",
-        main_score_name: str | None = None,
         dataset_version_id: str | None = None,
         client_run_id: str | None = None,
         pass_threshold: float | None = None,
@@ -150,20 +149,6 @@ class PlatformTransport:
         self.scorer_specs = scorer_specs
         self.candidate_version = candidate_version or "sdk"
         self.environment = environment
-        # Deterministic main-metric resolution (never a silent "first scorer function name"):
-        #  - an explicit main_score wins (validated at finish against what was actually emitted);
-        #  - a single scorer resolves name-agnostically from its one score, so a scorer whose
-        #    function name differs from its emitted Score name can no longer silently zero the run;
-        #  - multiple scorers with no explicit main have no headline metric here (the engine
-        #    requires an explicit main_score for a reported multi-scorer run).
-        # Registration reports main_score_name ONLY when the user configured it. A single
-        # scorer's metric is late-bound (resolved from what it actually emits) and reported at
-        # completion -- never fabricated from the scorer's function name here.
-        self.main_score_name = main_score_name
-        # NB: `_name_agnostic_main` is a COMPUTED property (below), never cached here. The engine
-        # injects `scorer_specs` AFTER construction (and callers may build the transport explicitly
-        # with no scorer_names), so a value frozen from the empty constructor would leave a single
-        # scorer unresolved and make every case report not_scored / null main.
         self.dataset_version_id = dataset_version_id
         self.client_run_id = client_run_id
         self.pass_threshold = pass_threshold
@@ -180,22 +165,6 @@ class PlatformTransport:
         self._scored = 0
         self._task_errors = 0
         self._scorer_errors = 0
-        self._main_sum = 0.0  # aggregate of the main-score values for run.mainScore
-        self._main_count = 0
-
-    @property
-    def _name_agnostic_main(self) -> bool:
-        """A single scorer resolves its emitted metric name-agnostically (its one numeric/boolean
-        score IS the main metric, even when the fn name differs from the emitted Score name).
-
-        Derived from the CURRENT config on every access -- deliberately NOT cached at __init__ --
-        so it reflects `scorer_specs` the engine injects after construction. An explicit
-        `main_score_name` opts out (the configured metric owns it); zero or multiple scorers have
-        no single headline metric here (a reported multi-scorer run requires an explicit main)."""
-        if self.main_score_name is not None:
-            return False
-        n_scorers = len(self.scorer_names) or (len(self.scorer_specs) if self.scorer_specs else 0)
-        return n_scorers == 1
 
     # --- HTTP seam (overridable in tests) ---
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
@@ -218,8 +187,6 @@ class PlatformTransport:
         }
         if self.dataset_version_id is not None:
             body["dataset_version_id"] = self.dataset_version_id
-        if self.main_score_name is not None:
-            body["main_score_name"] = self.main_score_name
         # Idempotency key: prefer the one the caller drives with, else our own.
         effective_crun = client_run_id or self.client_run_id
         if effective_crun is not None:
@@ -272,37 +239,19 @@ class PlatformTransport:
             return refs
         return [{"name": n, "version": _UNVERSIONED_SCORER} for n in self.scorer_names]
 
-    def _effective_threshold(self) -> float:
-        """The pass threshold for status: an explicit pass_threshold wins; else the OWNING
-        scorer's declared threshold (a single scorer's declaration governs its emitted metric,
-        even when its function name differs from the emitted Score name); else the default.
-        Uses the SAME policy resolver as the local result -- one rule, not two."""
-        if self.pass_threshold is not None:
-            return self.pass_threshold
-        threshold, _ = resolve_main_score_policy(self.scorer_specs, self.main_score_name)
-        return threshold
-
-    def _effective_direction(self) -> str:
-        """The OWNING scorer's declared comparison direction (higher_is_better by default);
-        lower_is_better inverts the threshold comparison; none -> not_scored. Same resolver as
-        the local result."""
-        _, direction = resolve_main_score_policy(self.scorer_specs, self.main_score_name)
-        return direction
-
     def register_item(self, run: RunHandle, case: EvalCase) -> None:
         # The item->trace link is folded into the result upsert (contract), so no-op.
         return None
 
     def record_item_result(self, run: RunHandle, item_result: EvalItemResult) -> None:
-        status, main_score = self._status_and_main(item_result)
-        if status == "errored":
+        status = _case_status(item_result)
+        if item_result.error is not None:
             self._task_errors += 1
-        elif status in ("passed", "failed"):
-            self._scored += 1
-        if main_score is not None:
-            self._main_sum += main_score
-            self._main_count += 1
         self._scorer_errors += len(item_result.scorer_errors)
+        # A case that produced at least one score (and no task error) counts toward scored_count;
+        # the SDK no longer derives a case-level pass/fail (every score carries its own `passed`).
+        if item_result.error is None and item_result.scores:
+            self._scored += 1
         self._request(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/results",
@@ -316,7 +265,6 @@ class PlatformTransport:
                 "expected_output": _as_text(item_result.expected),
                 "candidate_output": _as_text(item_result.output),
                 "status": status,
-                "main_score": main_score,
                 "task_error": item_result.error,
                 # Total wall-clock for this case (task + its scorers); nonneg int ms, null
                 # when unknown. Run duration is NOT summed from cases (they run concurrently).
@@ -354,11 +302,9 @@ class PlatformTransport:
         self,
         run: RunHandle,
         status: str | None = None,
-        main_score_name: str | None = None,
         emitted_metrics: dict[str, list[str]] | None = None,
     ) -> UploadState:
-        # Pure reporter: the engine owns the ONE main-score resolution and passes the terminal
-        # ``status`` (e.g. "failed" on a misconfiguration) and the resolved ``main_score_name``.
+        # Pure reporter: the engine passes the terminal ``status`` (else derived from error counts).
         effective = status or (
             "completed_with_errors" if (self._task_errors or self._scorer_errors) else "completed"
         )
@@ -368,15 +314,6 @@ class PlatformTransport:
             "task_error_count": self._task_errors,
             "scorer_error_count": self._scorer_errors,
         }
-        # The run's aggregate main score -> run.mainScore. Without it the UI shows the
-        # main metric and the baseline delta as "-" (change = run.mainScore - baseline).
-        if self._main_count:
-            body["main_score"] = self._main_sum / self._main_count
-        # The resolved headline metric NAME, late-bound for a single scorer. Requires the
-        # backend addition that accepts an optional main_score_name at completion (coordinated
-        # dependency: deploy that before this SDK, or completion 400s on the unknown key).
-        if main_score_name is not None:
-            body["main_score_name"] = main_score_name
         # The RESOLVED scorer->emitted-metric manifest, discovered during execution. The platform
         # merges it (by definition name) into the stored manifest so each emitted metric's policy is
         # keyed on the metric name for reconciliation, read-back, and comparison. Additive.
@@ -443,8 +380,8 @@ class PlatformTransport:
         without guessing. A single scorer's declared policy owns whatever metric it emits, even
         when the function name differs from the emitted Score name (name-agnostic). With multiple
         scorers the emitted name must match a declared scorer; an unmatched metric returns None so
-        the platform is told 'unknown', never a fabricated pass/fail. Mirrors the OWNING-scorer
-        rule of ``resolve_main_score_policy`` at per-score granularity."""
+        the platform is told 'unknown', never a fabricated pass/fail. Applies the OWNING-scorer
+        rule at per-score granularity."""
         specs = self.scorer_specs or []
         owner = specs[0] if len(specs) == 1 else next(
             (s for s in specs if s.get("name") == name), None
@@ -479,41 +416,6 @@ class PlatformTransport:
         if direction == "lower_is_better":
             return n <= threshold
         return n >= threshold  # higher_is_better (the default)
-
-    def _main_value(self, scores: list[Score]) -> float | None:
-        """The run's main-metric value for one case, or None when unresolved.
-
-        Name-agnostic for a single unconfigured scorer (its one numeric/boolean score);
-        matched by ``main_score_name`` when an explicit main is set; None when multiple
-        scorers have no configured main (genuinely no headline metric)."""
-        if self._name_agnostic_main:
-            for s in scores:
-                v = _numeric_score(s.value)
-                if v is not None:
-                    return v
-            return None
-        if self.main_score_name is None:
-            return None
-        for s in scores:
-            if s.name == self.main_score_name:
-                return _numeric_score(s.value)  # numeric, or None for a categorical main
-        return None
-
-    def _status_and_main(self, item_result: EvalItemResult) -> tuple[str, float | None]:
-        if item_result.error is not None:
-            return "errored", None
-        main = self._main_value(item_result.scores)
-        if main is None:
-            return "not_scored", None
-        threshold = self._effective_threshold()
-        direction = self._effective_direction()
-        if direction == "lower_is_better":
-            passed = main <= threshold
-        elif direction == "none":
-            return "not_scored", main
-        else:  # higher_is_better (the default)
-            passed = main >= threshold
-        return ("passed" if passed else "failed"), main
 
 
 def _dataset_from_version(snapshot: dict, name: str) -> Dataset:

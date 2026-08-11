@@ -1,8 +1,8 @@
-"""Phase 2 — primary-metric behavior.
+"""Multi-metric recording without a headline metric.
 
-Recording multiple metrics must NOT require a primary. When none is selected the run still completes
-with every score stored; no overall pass-rate/verdict is invented. A numeric metric with no declared
-threshold is scored but carries no fabricated pass/fail. `primary_metric` is an alias for `main_score`.
+Recording multiple metrics must NOT require any selection. Every score is stored; no overall
+pass-rate/verdict is invented at the case level. A numeric metric with no declared threshold is
+scored but carries no fabricated per-score pass/fail.
 """
 
 from traceroot.eval import Dataset, Score, evaluate, scorer
@@ -32,27 +32,20 @@ def two_metrics(ctx):
     return {"accuracy": 1.0, "coverage": 0.5}  # two numeric metrics from one scorer
 
 
-def test_multiple_metrics_without_primary_does_not_error():
-    """Multiple numeric metrics + no main_score completes (no MainScoreError) and stores all."""
+def test_multiple_metrics_does_not_error():
+    """Multiple numeric metrics complete and store all scores."""
     run = evaluate(name="r", dataset=_ds(), task=lambda x: "hi",
                    scorers=[two_metrics], transport=FakeTransport())
     scores = {s.name: s.value for s in run.item_results[0].scores}
     assert scores == {"accuracy": 1.0, "coverage": 0.5}
 
 
-def test_no_primary_invents_no_pass_rate():
-    """With no primary metric, no case is marked passed/failed (no invented verdict)."""
+def test_invents_no_case_level_pass_rate():
+    """No case is marked passed/failed at the case level (no invented headline verdict)."""
     run = evaluate(name="r", dataset=_ds(), task=lambda x: "hi",
                    scorers=[two_metrics], transport=FakeTransport())
     from traceroot.eval.results import case_status
     assert case_status(run.item_results[0]) == "not_scored"
-
-
-def test_primary_metric_alias():
-    """`primary_metric` selects the headline metric just like `main_score`."""
-    run = evaluate(name="r", dataset=_ds(), task=lambda x: "hi",
-                   scorers=[two_metrics], primary_metric="accuracy", transport=FakeTransport())
-    assert run.main_score_name == "accuracy"
 
 
 @scorer(value_type="numeric")  # numeric, NO threshold declared

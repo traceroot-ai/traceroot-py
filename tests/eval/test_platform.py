@@ -133,18 +133,17 @@ class TestPlatformTransport:
         assert body["scorers"] == [{"name": "acc", "version": "unversioned"}]
         assert t.run_id == "run_1"
 
-    def test_create_run_sends_main_score_and_never_a_baseline(self):
+    def test_create_run_never_sends_main_score_or_a_baseline(self):
         t = RecordingTransport(
             "ds_1",
             scorer_names=["acc", "helpful"],
-            main_score_name="acc",  # multiple scorers now require an explicit main
             candidate_version="sonnet",
             api_key="tr-x",
             host_url="https://h",
         )
         t.create_run("routing", "d", None)
         body = t.requests[0][2]
-        assert body["main_score_name"] == "acc"  # the explicitly selected headline metric
+        assert "main_score_name" not in body  # no run-level headline metric on the wire
         assert body["candidate_version"] == "sonnet"
         # Comparison is the backend's job; the SDK sends no baseline linkage.
         assert "baseline_run_id" not in body
@@ -169,7 +168,9 @@ class TestPlatformTransport:
         assert path == "/api/v1/public/evaluation-runs/run_1/results"
         assert body["test_case_id"] == "tc0"
         assert body["trace_id"] == "abc123"
-        assert body["status"] == "passed"
+        # No task/scorer error -> not_scored at the case level (per-score verdicts ride each score).
+        assert body["status"] == "not_scored"
+        assert "main_score" not in body
         # backend requires string input/output (z.string()); dicts -> JSON text
         assert body["input"] == '{"m": 0}'
         assert body["candidate_output"] == '{"r": 0}'
@@ -186,36 +187,6 @@ class TestPlatformTransport:
             "scorer_version": "unversioned",
             "string_value": "billing",
         } in body["scores"]
-
-    def test_explicit_transport_resolves_single_scorer_after_specs_injected(self):
-        """Regression: an explicitly-constructed transport (no scorer_names at __init__) whose
-        scorer_specs are injected AFTER construction — exactly what the engine does — must still
-        resolve the single scorer's emitted metric name-agnostically. Freezing the name-agnostic
-        flag from the empty constructor makes every case report not_scored / null main. A fn named
-        'grade' emitting Score(name='quality') under lower_is_better must SCORE the case."""
-        from traceroot.eval.results import EvalItemResult
-
-        t = RecordingTransport("ds_1", api_key="tr-x", host_url="https://h")  # no scorer_names
-        # Engine injects specs after construction (engine._run: active_transport.scorer_specs = ...).
-        t.scorer_specs = [
-            {
-                "name": "grade",
-                "version": "v1",
-                "threshold": 0.2,
-                "direction": "lower_is_better",
-                "value_type": "numeric",
-            }
-        ]
-        t.create_run("r", "d", None)
-        item = EvalItemResult(
-            "tc0", "i", "o", "e",
-            [Score("quality", 0.3)],  # emitted 'quality' != fn 'grade'; 0.3 > 0.2 (lower better) -> fail
-            {}, None, "t",
-        )
-        t.record_item_result(None, item)
-        body = t.requests[-1][2]
-        assert body["status"] == "failed"
-        assert body["main_score"] == 0.3
 
     def test_scores_payload_includes_per_score_passed(self):
         """Each emitted score carries an SDK-computed `passed` (contract ScoreInput.passed) so the
@@ -324,12 +295,11 @@ class TestPlatformTransport:
         t.record_item_result(None, item)
         assert t.requests[-1][2]["status"] == "errored"
 
-    def test_finish_run_sends_aggregate_main_score(self):
+    def test_finish_run_sends_counts_and_no_main_score(self):
         from traceroot.eval.results import EvalItemResult
 
         t = RecordingTransport("ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h")
         t.create_run("r", "d", None)
-        # main score (acc) = 1.0 and 0.0 -> run mainScore should be their mean 0.5
         t.record_item_result(
             None, EvalItemResult("a", {}, {}, {}, [Score("acc", 1.0)], {}, None, None)
         )
@@ -338,7 +308,8 @@ class TestPlatformTransport:
         )
         t.finish_run(None)
         complete_body = t.requests[-1][2]
-        assert complete_body["main_score"] == 0.5  # -> run.mainScore, powers the UI Change delta
+        assert "main_score" not in complete_body  # no run-level headline metric
+        # scored_count = cases that produced a score with no task error.
         assert complete_body["scored_count"] == 2
 
     def test_finish_run_returns_uploaded(self):

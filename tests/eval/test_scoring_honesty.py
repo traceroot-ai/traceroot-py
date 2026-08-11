@@ -20,12 +20,14 @@ def echo(x):
 
 
 class TestErrorVocabulary:
-    def test_quality_failure_is_failed_not_errored(self):
-        # scorer ran and judged poorly -> a real 0 score -> "failed" (a genuine judgment).
+    def test_quality_failure_is_not_scored_at_case_level_not_errored(self):
+        # scorer ran and judged poorly -> a real 0 score, no error. Case status carries no
+        # headline pass/fail (that lives per-score); with no error the case is "not_scored".
         run = evaluate(name="r", dataset=_one(expected=999), task=echo, scorers=[lambda c: 0.0])
         item = run.item_results[0]
         assert item.error is None
-        assert case_status(item) == "failed"
+        assert item.scores[0].value == 0.0  # a genuine 0, not coerced away
+        assert case_status(item) == "not_scored"
 
     def test_task_error_is_errored_with_no_scores(self):
         def boom(x):
@@ -45,14 +47,14 @@ class TestErrorVocabulary:
             raise RuntimeError("judge down")
 
         run = evaluate(
-            name="r", dataset=_one(), task=echo, scorers=[good, broken], main_score="good"
+            name="r", dataset=_one(), task=echo, scorers=[good, broken]
         )
         item = run.item_results[0]
         # the good score survives; the broken scorer is recorded as an error, not a 0.
         assert [s.name for s in item.scores] == ["good"]
         assert item.scores[0].value == 1.0
         assert "judge down" in item.scorer_errors["broken"]
-        assert case_status(item) == "passed"  # judged by the score that DID run
+        assert case_status(item) == "errored"  # a scorer error makes the case errored
 
     def test_abstain_none_is_not_scored_not_zero(self):
         run = evaluate(name="r", dataset=_one(), task=echo, scorers=[lambda c: None])
@@ -100,7 +102,7 @@ class TestAggregateHonesty:
         ds = Dataset(name="d")
         for i in range(4):
             ds.upsert(EvalCase(input=i, id=f"c{i}", expected=i))
-        run = evaluate(name="r", dataset=ds, task=echo, scorers=[acc, flaky], main_score="acc")
+        run = evaluate(name="r", dataset=ds, task=echo, scorers=[acc, flaky])
 
         summary = aggregate_scores(run.item_results)
         assert summary["acc"].mean == 1.0 and summary["acc"].count == 4

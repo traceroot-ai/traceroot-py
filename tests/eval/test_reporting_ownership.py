@@ -104,8 +104,10 @@ class TestSendsRawData:
 
         ok = by_id["c0"]
         assert ok["candidate_output"] == "ok"  # raw candidate output
-        assert ok["status"] == "passed"
-        assert ok["main_score"] == 1.0
+        # No case-level headline verdict: a clean case with no error is "not_scored" (the
+        # pass/fail signal lives per-score, below), and no run-level main_score is sent.
+        assert ok["status"] == "not_scored"
+        assert "main_score" not in ok
         assert "duration_ms" in ok  # measurement present (int or null)
         assert "trace_id" in ok  # trace identity link
         assert ok["scores"] == [
@@ -124,12 +126,12 @@ class TestSendsRawData:
         assert te["status"] == "errored"
         assert "task boom" in te["task_error"]
 
-    def test_complete_carries_counts_and_main_score(self):
+    def test_complete_carries_counts_and_no_main_score(self):
         _, reqs = _run()
         comp = next(b for _m, p, b in reqs if p.endswith("/complete"))
         assert comp["status"] in ("completed", "completed_with_errors")
         assert "scored_count" in comp and "task_error_count" in comp
-        assert "main_score" in comp
+        assert "main_score" not in comp  # no run-level headline metric on the wire
 
 
 class TestDoesNotSendComparisonLabels:

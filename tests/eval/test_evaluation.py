@@ -125,13 +125,13 @@ class TestRunResultSurface:
     def test_counts(self):
         run = self._run()
         assert run.case_count == 3
-        assert run.passed == 1  # 'ok'
-        assert run.failed == 1  # 'bad'
+        # 'ok' and 'bad' ran cleanly (no error) -> not_scored; 'err' task-errored -> errored.
+        assert run.not_scored == 2
+        assert run.errored == 1
         assert run.task_error_count == 1  # 'err'
 
-    def test_failures_and_errors(self):
+    def test_errors(self):
         run = self._run()
-        assert [it.case_id for it in run.failures()] == ["bad"]
         assert [it.case_id for it in run.errors()] == ["err"]
 
     def test_results_property_and_summary(self):

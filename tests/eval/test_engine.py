@@ -47,7 +47,7 @@ class TestBasicRuns:
             return 1.0
 
         result = evaluate(
-            name="r", data=_ds(2), task=echo_task, scorers=[exact, ascore], main_score="exact"
+            name="r", data=_ds(2), task=echo_task, scorers=[exact, ascore]
         )
         assert result.score_summary["exact"].mean == 1.0
         assert result.score_summary["ascore"].mean == 1.0
@@ -113,7 +113,7 @@ class TestFailureIsolation:
             raise RuntimeError("scorer boom")
 
         result = evaluate(
-            name="r", data=_ds(2), task=echo_task, scorers=[exact, bad], main_score="exact"
+            name="r", data=_ds(2), task=echo_task, scorers=[exact, bad]
         )
         it = result.item_results[0]
         assert "bad" in it.scorer_errors
@@ -130,9 +130,9 @@ class TestFailureIsolation:
 
 
 class TestScoreNormalization:
-    def _one(self, scorer, main_score=None):
+    def _one(self, scorer):
         return evaluate(
-            name="r", data=_ds(1), task=echo_task, scorers=[scorer], main_score=main_score
+            name="r", data=_ds(1), task=echo_task, scorers=[scorer]
         ).item_results[0]
 
     def test_scalar(self):
@@ -171,8 +171,8 @@ class TestScoreNormalization:
         def s(ctx):
             return [Score("a", 1.0), Score("b", 0.0)]
 
-        # Two emitted metrics -> the run needs an explicit main_score (else it fails clearly).
-        names = {sc.name for sc in self._one(s, main_score="a").scores}
+        # Two emitted metrics -> both scores are recorded (no headline metric is required).
+        names = {sc.name for sc in self._one(s).scores}
         assert names == {"a", "b"}
 
     def test_none_abstains(self):

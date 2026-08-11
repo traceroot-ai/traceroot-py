@@ -55,7 +55,6 @@ class EvalTransport(Protocol):
         self,
         run: RunHandle,
         status: str | None = None,
-        main_score_name: str | None = None,
         emitted_metrics: dict[str, list[str]] | None = None,
     ) -> UploadState: ...
 
@@ -91,11 +90,9 @@ class FakeTransport:
         self,
         run: RunHandle,
         status: str | None = None,
-        main_score_name: str | None = None,
         emitted_metrics: dict[str, list[str]] | None = None,
     ) -> UploadState:
         self.calls.append(("finish_run", status))
-        self.last_main_score_name = main_score_name
         self.last_emitted_metrics = emitted_metrics
         return UploadState(status="uploaded", dashboard_url=None)
 

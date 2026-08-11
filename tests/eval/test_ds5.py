@@ -36,9 +36,9 @@ class TestDeferredScore:
         pending = [s for s in item.scores if s.metadata and s.metadata.get("deferred")]
         assert len(pending) == 1
         assert pending[0].value != 0  # never coerced to zero
-        # a deferred-only case is not_scored, not failed
+        # a deferred-only case is not_scored, and never errored
         assert run.not_scored == len(run.item_results)
-        assert run.failed == 0
+        assert run.errored == 0
 
 
 class TestRunScorers:
