@@ -49,3 +49,5 @@ def test_case_ids_match_cross_language_fixture():
     cases = [d.add(input=c["input"]) for c in _CASE_FIX["cases"]]
     for produced, expected in zip(cases, _CASE_FIX["cases"]):
         assert produced.id == expected["id"], f"{produced.input!r}: {produced.id} != {expected['id']}"
+    # the local content revision is ALSO byte-identical across Python and TypeScript
+    assert d.snapshot().revision == _CASE_FIX["revision"]
