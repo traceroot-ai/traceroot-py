@@ -90,3 +90,49 @@ class TestDatasetToDict:
         case_dict = ds.to_dict()["cases"][0]
         assert case_dict["source_trace_id"] == "t1"
         assert case_dict["source_span_id"] == "s1"
+
+
+class TestContentBasedCaseIds:
+    """Case ids are derived from the case INPUT (not position): inserting/removing/reordering
+    other cases must not shift a case's id, and duplicate inputs stay collision-free."""
+
+    def test_insert_does_not_shift_other_case_ids(self):
+        a = Dataset("k")
+        a.add(input={"q": "a"})
+        a.add(input={"q": "b"})
+        base = {c.input["q"]: c.id for c in a.cases()}
+
+        b = Dataset("k")
+        b.add(input={"q": "z"})  # a new case inserted BEFORE a and b
+        b.add(input={"q": "a"})
+        b.add(input={"q": "b"})
+        after = {c.input["q"]: c.id for c in b.cases()}
+
+        assert after["a"] == base["a"]  # unchanged despite z inserted first (positional would shift)
+        assert after["b"] == base["b"]
+
+    def test_reorder_yields_same_revision(self):
+        a = Dataset("k")
+        a.add(input=1)
+        a.add(input=2)
+        b = Dataset("k")
+        b.add(input=2)
+        b.add(input=1)
+        assert a.snapshot().revision == b.snapshot().revision  # order-independent content address
+
+    def test_duplicate_inputs_get_distinct_ids_collision_safe(self):
+        d = Dataset("k")
+        x0 = d.add(input={"q": "x"})
+        x1 = d.add(input={"q": "x"})
+        assert x0.id != x1.id
+        # removing the first then re-adding the same input must not collide with the survivor
+        d.remove(x0.id)
+        x2 = d.add(input={"q": "x"})
+        assert x2.id not in (x1.id,)
+
+    def test_editing_expected_keeps_case_id(self):
+        d = Dataset("k")
+        c = d.add(input={"q": "a"}, expected="old")
+        d2 = Dataset("k")
+        c2 = d2.add(input={"q": "a"}, expected="new")
+        assert c.id == c2.id  # identity is the input; editing expected is the SAME case (an update)

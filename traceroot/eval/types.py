@@ -91,8 +91,20 @@ _CONTENT_FIELDS = (
 )
 
 
+def _canonical_json(value: Any) -> str:
+    """Canonical JSON (sorted keys, compact) — the byte-identical form used for content hashing
+    both here and in TypeScript (``canonicalJson``)."""
+    return json.dumps(
+        serialize_value(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+
+
 def _content_revision(cases: tuple[EvalCase, ...]) -> str:
-    content = [{k: getattr(c, k) for k in _CONTENT_FIELDS} for c in cases]
+    # Content-addressed and ORDER-INDEPENDENT: sort by id so re-authoring the same set of cases in
+    # a different order yields the SAME revision (with content-based ids, reordering is not a content
+    # change). Only a real content change (add/remove/edit a case) advances the revision.
+    ordered = sorted(cases, key=lambda c: c.id or "")
+    content = [{k: getattr(c, k) for k in _CONTENT_FIELDS} for c in ordered]
     canonical = json.dumps(
         serialize_value(content), sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
@@ -167,11 +179,21 @@ class Dataset:
     ) -> EvalCase:
         """Add a new case (strict: a duplicate id raises).
 
-        Without an explicit id, the case gets a STABLE id from the dataset key + its
-        insertion position, so re-authoring the same dataset converges (the platform
-        matches by id) instead of forking new cases each run.
+        Without an explicit id, the case gets a STABLE id from the dataset key + its INPUT
+        content (not its position), so re-authoring the same dataset converges (the platform
+        matches by id) and inserting/removing/reordering other cases does not shift this case's
+        id. Duplicate inputs are disambiguated by occurrence (the first free slot), which also
+        keeps ids collision-free across removes.
         """
-        cid = id or stable_case_id(self.key, len(self._cases))
+        if id:
+            cid = id
+        else:
+            canonical = _canonical_json(input)
+            occurrence = 0
+            cid = stable_case_id(self.key, canonical, occurrence)
+            while cid in self._cases:
+                occurrence += 1
+                cid = stable_case_id(self.key, canonical, occurrence)
         if cid in self._cases:
             raise ValueError(f"test case id already exists: {cid!r}")
         case = EvalCase(

@@ -35,3 +35,17 @@ def test_key_defaults_to_definition_name_when_unset():
 
     md = scorer_metadata(scorer(fresh_scorer, threshold=1.0))
     assert md["key"] == "fresh_scorer"  # no explicit key -> the definition name (diverges by language)
+
+
+# --- Content-based case ids: byte-identical across Python/TypeScript ------------------------
+_CASE_FIX = json.loads((Path(__file__).parent / "fixtures" / "case_id_parity.json").read_text())
+
+
+def test_case_ids_match_cross_language_fixture():
+    from traceroot.eval import Dataset
+
+    d = Dataset(_CASE_FIX["dataset_key"])
+    assert d.dataset_id == _CASE_FIX["dataset_id"]
+    cases = [d.add(input=c["input"]) for c in _CASE_FIX["cases"]]
+    for produced, expected in zip(cases, _CASE_FIX["cases"]):
+        assert produced.id == expected["id"], f"{produced.input!r}: {produced.id} != {expected['id']}"

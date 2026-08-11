@@ -52,17 +52,22 @@ def stable_dataset_id(key: str) -> str:
     return f"ds_{digest[:26]}"
 
 
-def stable_case_id(dataset_key: str, index: int) -> str:
-    """Deterministic case id from the dataset key + insertion position.
+def stable_case_id(dataset_key: str, input_canonical: str, occurrence: int = 0) -> str:
+    """Deterministic case id from the dataset key + the case's INPUT content.
 
-    Convergence needs case ids to be stable across runs, not random per construction:
-    the same case authored in the same position -- any process, Python or TypeScript --
-    must get the SAME ``tc_`` id so the platform matches it on re-publish (upsert keys on
-    id) instead of duplicating it, and so runs pair case-for-case. Position-based (not
-    content-based) to stay trivially identical across languages. Must match the TypeScript
-    ``stableCaseId``.
+    Convergence needs case ids to be stable across runs, not random per construction: the
+    same case -- any process, Python or TypeScript -- must get the SAME ``tc_`` id so the
+    platform matches it on re-publish (upsert keys on id) and runs pair case-for-case.
+
+    CONTENT-based (the case's canonical input), NOT positional: inserting, removing, or
+    reordering cases must not shift other cases' ids -- a case is identified by its input,
+    so its identity survives edits elsewhere in the dataset and across versions. ``occurrence``
+    disambiguates duplicate inputs (0 for the first case with a given input, 1 for the next,
+    ...). ``input_canonical`` is the canonical-JSON of the input (sorted keys), so this stays
+    byte-for-byte identical to the TypeScript ``stableCaseId``.
     """
-    digest = hashlib.sha256(f"{dataset_key}\x00{index}".encode("utf-8")).hexdigest()
+    material = f"{dataset_key}\x00{input_canonical}\x00{occurrence}"
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()
     return f"tc_{digest[:20]}"
 
 
