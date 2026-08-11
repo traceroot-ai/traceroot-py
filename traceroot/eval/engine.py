@@ -606,14 +606,32 @@ async def _run_async(
     if transport is not None:
         active_transport: EvalTransport = transport
     else:
+        # Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
+        # server-side version to attach to -- the user never writes a manual "sync then run" step
+        # (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses
+        # the current version; a changed dataset under an existing name prompts to confirm the new
+        # version (TTY) before publishing. Only for a local Dataset with credentials; a pulled
+        # dataset (already synced), an explicit dataset_id, or an explicit transport skip this.
+        if (
+            isinstance(data, Dataset)
+            and data.dataset_version_id is None
+            and dataset_id is None
+        ):
+            from traceroot.eval.platform import _resolve_credentials
+
+            api_key, _ = _resolve_credentials(None, None)
+            if api_key:
+                from traceroot.eval.dataset_sync import PlatformDatasetSync
+
+                data.push(PlatformDatasetSync())  # stamps dataset_version_id (may prompt / abort)
         active_transport = _auto_transport(
             data, scorers, dataset_id, candidate_version, environment
         )
         if active_transport is None:
             raise RuntimeError(
-                "evaluate() reports to the TraceRoot platform, but no credentials or synced "
-                "dataset were found. Set TRACEROOT_API_KEY and pass a pulled dataset "
-                "(traceroot.pull_dataset(...)), or pass an explicit transport=."
+                "evaluate() reports to the TraceRoot platform, but no credentials were found. "
+                "Set TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an "
+                "explicit transport= (e.g. FakeTransport() to run offline)."
             )
 
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual

@@ -194,6 +194,19 @@ class PlatformDatasetSync:
             return None
         return meta if meta.get("current_dataset_version_id") else None
 
+    def _published_revision(self, dataset_id: str, version_id: str) -> str | None:
+        """The content revision of the dataset's current published version, for change detection.
+        None when it can't be fetched (then we fall through to confirm rather than assume unchanged)."""
+        try:
+            from traceroot.eval.platform import pull_dataset_version
+
+            current = pull_dataset_version(
+                version_id, dataset_id=dataset_id, api_key=self.api_key, host_url=self.host_url
+            )
+            return current.snapshot().revision
+        except Exception:
+            return None
+
     def push_dataset(
         self,
         snapshot: DatasetSnapshot,
@@ -202,10 +215,15 @@ class PlatformDatasetSync:
         on_existing: Callable[[dict[str, Any]], bool] | None = None,
     ) -> PushResult:
         # A dataset's identity is its name: re-pushing the same name updates the SAME dataset with a
-        # new version. Double-check first when it already exists (default: prompt on an interactive
-        # TTY, proceed otherwise) so a name reused by accident does not silently add a version.
+        # new version. If the content is UNCHANGED from the current version, this is a no-op (reuse
+        # it, no prompt). If it CHANGED, double-check before creating a new version (default: prompt
+        # on an interactive TTY, proceed otherwise) so a reused name never silently adds a version.
         existing = self._existing_dataset(snapshot.dataset_id)
         if existing is not None:
+            current_version = existing["current_dataset_version_id"]
+            if self._published_revision(snapshot.dataset_id, current_version) == snapshot.revision:
+                # Identical content -> idempotent no-op; keep the current version, never prompt.
+                return PushResult("uploaded", snapshot.dataset_id, current_version)
             confirm = on_existing if on_existing is not None else _confirm_new_version
             if not confirm(existing):
                 raise DatasetPublishAborted(

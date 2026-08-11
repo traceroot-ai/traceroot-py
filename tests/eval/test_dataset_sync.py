@@ -174,7 +174,7 @@ class TestExistingDatasetConfirmation:
     """Re-pushing an existing dataset name adds a NEW version to the SAME dataset; before doing so
     the SDK double-checks (default: interactive prompt; overridable via on_existing)."""
 
-    def _sync(self, exists: bool):
+    def _sync(self, exists: bool, published_rev: str | None = "rev_different"):
         from traceroot.eval.dataset_sync import PlatformDatasetSync
 
         sync = PlatformDatasetSync.__new__(PlatformDatasetSync)
@@ -193,6 +193,8 @@ class TestExistingDatasetConfirmation:
             return {}
 
         sync._request = _request  # type: ignore[assignment]
+        # Stub the published-revision fetch: `published_rev` drives changed-vs-unchanged detection.
+        sync._published_revision = lambda ds, v: published_rev  # type: ignore[assignment]
         return sync
 
     def _snap(self):
@@ -200,13 +202,27 @@ class TestExistingDatasetConfirmation:
         d.add(input={"q": "a"})
         return d.snapshot()
 
+    def test_unchanged_content_is_a_noop_without_prompting(self):
+        seen = {"called": False}
+
+        def confirm(info):
+            seen["called"] = True
+            return True
+
+        snap = self._snap()
+        sync = self._sync(exists=True, published_rev=snap.revision)  # content matches current version
+        res = sync.push_dataset(snap, None, on_existing=confirm)
+        assert res.dataset_version_id == "dsv_9"  # reuses the current version
+        assert seen["called"] is False  # unchanged -> never prompts
+        assert not any(p.endswith("/versions") for _m, p in sync.calls)  # no new version published
+
     def test_existing_declined_aborts_without_publishing(self):
         from traceroot.eval.dataset_sync import DatasetPublishAborted
 
-        sync = self._sync(exists=True)
+        sync = self._sync(exists=True)  # published_rev differs -> content changed
         with pytest.raises(DatasetPublishAborted):
             sync.push_dataset(self._snap(), None, on_existing=lambda info: False)
-        # only the existence GET happened; NO version was published
+        # NO version was published
         assert not any(p.endswith("/versions") for _m, p in sync.calls)
 
     def test_existing_accepted_publishes_new_version(self):
@@ -237,3 +253,28 @@ class TestExistingDatasetConfirmation:
 
         monkeypatch.setattr("sys.stdin", _FakeStdin())
         assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is True
+
+
+def test_evaluate_auto_syncs_a_local_dataset(monkeypatch):
+    """evaluate() provisions a locally-authored Dataset automatically (no manual push/ensure_synced):
+    when it has no server version and credentials resolve, it pushes and attaches the version."""
+    from traceroot.eval import Dataset, evaluate
+    import traceroot.eval.platform as platform
+    import traceroot.eval.dataset_sync as ds
+
+    monkeypatch.setattr(platform, "_resolve_credentials", lambda a, b: ("k", "https://h"))
+    pushed = {"n": 0}
+
+    class _FakeSync:
+        def push_dataset(self, snapshot, base, *, on_existing=None):
+            pushed["n"] += 1
+            return ds.PushResult("uploaded", snapshot.dataset_id, "dsv_1")
+
+    monkeypatch.setattr(ds, "PlatformDatasetSync", lambda *a, **k: _FakeSync())
+
+    d = Dataset("auto")
+    d.add(input={"m": 1})
+    assert d.dataset_version_id is None  # local, unsynced
+    evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+    assert pushed["n"] == 1  # auto-synced inside evaluate()
+    assert d.dataset_version_id == "dsv_1"  # version attached
