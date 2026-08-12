@@ -632,6 +632,17 @@ async def _run_async(
             data, scorers, dataset_id, candidate_version, environment
         )
         if active_transport is None:
+            # _auto_transport returns None for two unrelated reasons; saying "no credentials" for
+            # both misdirects a user who HAS a key but passed inline cases or an unsynced snapshot.
+            from traceroot.eval.platform import _resolve_credentials as _creds
+
+            if _creds(None, None)[0]:
+                raise RuntimeError(
+                    "evaluate() reports to the TraceRoot platform, but this run has no synced "
+                    "dataset to report against. Pass a Dataset that was pulled or pushed "
+                    "(pull_dataset(...) / Dataset.push(...)), or pass dataset_id=..., or pass an "
+                    "explicit transport= (e.g. FakeTransport() to run offline)."
+                )
             raise RuntimeError(
                 "evaluate() reports to the TraceRoot platform, but no credentials were found. "
                 "Set TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an "
