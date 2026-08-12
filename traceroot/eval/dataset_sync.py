@@ -43,10 +43,10 @@ def _confirm_new_version(info: dict[str, Any]) -> bool:
 
     A dataset's identity is its name, so re-pushing the same name updates the SAME dataset with a
     NEW version rather than forking. That's usually intended, but it can surprise someone who reused
-    a name by accident -- so on an interactive terminal we ask first (default ``no``: an accidental
-    Enter never publishes). Non-interactive contexts (CI, pipes) proceed silently so automation is
-    never blocked, and ``TRACEROOT_ASSUME_YES=1`` skips the prompt everywhere. Pass an explicit
-    ``on_existing`` to ``push_dataset`` to fully customize."""
+    a name by accident -- so on an interactive terminal we ask first (default ``no``: neither an
+    accidental Enter nor an EOF ever publishes). Non-interactive contexts (CI, pipes) proceed
+    silently so automation is never blocked, and ``TRACEROOT_ASSUME_YES=1`` skips the prompt
+    everywhere. Pass an explicit ``on_existing`` to ``push_dataset`` to fully customize."""
     import os
     import sys
 
@@ -61,7 +61,7 @@ def _confirm_new_version(info: dict[str, Any]) -> bool:
             f"Dataset {name!r} already exists (current version {ver}). Publish a NEW version? [y/N] "
         )
     except EOFError:
-        return True
+        return False  # no answer at all (^D / stream closed) -> the same default no
     return answer.strip().lower() in ("y", "yes")
 
 

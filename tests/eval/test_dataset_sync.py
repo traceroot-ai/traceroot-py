@@ -254,6 +254,39 @@ class TestExistingDatasetConfirmation:
         monkeypatch.setattr("sys.stdin", _FakeStdin())
         assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is True
 
+    def _interactive_eof(self, monkeypatch):
+        """An interactive terminal whose input is at EOF (^D, or the stream closed under us)."""
+        from traceroot.eval.dataset_sync import _confirm_new_version  # noqa: F401
+
+        monkeypatch.delenv("TRACEROOT_ASSUME_YES", raising=False)
+
+        class _FakeStdin:
+            def isatty(self):
+                return True
+
+        def _eof(*_a, **_k):
+            raise EOFError
+
+        monkeypatch.setattr("sys.stdin", _FakeStdin())
+        monkeypatch.setattr("builtins.input", _eof)
+
+    def test_default_confirmer_declines_on_eof(self, monkeypatch):
+        # The prompt defaults to NO; EOF is no answer at all, so it must decline too. Answering
+        # "yes" to a question nobody read is exactly the accidental publish the prompt prevents.
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        self._interactive_eof(monkeypatch)
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is False
+
+    def test_eof_at_the_prompt_publishes_nothing(self, monkeypatch):
+        from traceroot.eval.dataset_sync import DatasetPublishAborted
+
+        self._interactive_eof(monkeypatch)
+        sync = self._sync(exists=True)  # content changed -> the default confirmer is consulted
+        with pytest.raises(DatasetPublishAborted):
+            sync.push_dataset(self._snap(), None)
+        assert not any(p.endswith("/versions") for _m, p in sync.calls)
+
 
 def test_evaluate_auto_syncs_a_local_dataset(monkeypatch):
     """evaluate() provisions a locally-authored Dataset automatically (no manual push/ensure_synced):
