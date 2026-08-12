@@ -70,6 +70,13 @@ class TestCollectRunProvenance:
         monkeypatch.setattr(prov, "_resolved_git", lambda env: (None, None))
         assert collect_run_provenance(env={}, detect_dirty=False) is None
 
+    def test_no_orphaned_provenance_helpers(self):
+        # A run is not identified by which SDK produced it and the branch name is not reported
+        # as provenance -- the helpers that did both were removed with their only caller. Left
+        # behind they read as a contract that still exists.
+        for gone in ("_SDK_LANGUAGE", "_CI_BRANCH_VARS", "_sdk_version", "_git_branch"):
+            assert not hasattr(prov, gone), f"{gone} is dead code"
+
     def test_never_raises_on_git_failure(self, monkeypatch):
         # _git_dirty must degrade to None rather than raise, even if git blows up.
         def boom(*a, **k):
