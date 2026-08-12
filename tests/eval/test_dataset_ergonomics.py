@@ -118,8 +118,39 @@ class TestAnonymousUpsertConverges:
         assert a.id != b.id
 
 
+class TestAutoProvisionPinsTheBaseVersion:
+    """``evaluate()``'s auto-provision must leave the dataset FULLY pinned, not just versioned:
+    ``base_version_id`` is the optimistic-concurrency base for the NEXT push, so leaving it None
+    makes a later explicit ``push()`` send ``base_version_id: null`` against a dataset that now
+    has a version -- a spurious conflict."""
+
+    @pytest.mark.no_default_transport
+    def test_base_version_is_advanced(self, monkeypatch):
+        import traceroot.eval.dataset_sync as sync_mod
+        import traceroot.eval.engine as engine
+        import traceroot.eval.platform as platform
+        from traceroot.eval import evaluate
+        from traceroot.eval.transport import FakeTransport
+
+        monkeypatch.setattr(platform, "_resolve_credentials", lambda a, b: ("k", "https://h"))
+
+        class _FakeSync:
+            def push_dataset(self, snapshot, base, *, on_existing=None):
+                return sync_mod.PushResult("uploaded", snapshot.dataset_id, "dsv_1")
+
+        monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: _FakeSync())
+        monkeypatch.setattr(engine, "_auto_transport", lambda *a, **k: FakeTransport())
+
+        d = Dataset("auto")
+        d.add(input={"m": 1})
+        evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+
+        assert d.dataset_version_id == "dsv_1"
+        assert d.base_version_id == "dsv_1"
+
+
 class TestCloudOnlyErrorIsAccurate:
-    """"No credentials" must only be said when there are no credentials."""
+    """ "No credentials" must only be said when there are no credentials."""
 
     @pytest.mark.no_default_transport
     def test_credentials_present_but_data_is_not_synced(self, monkeypatch):

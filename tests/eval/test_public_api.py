@@ -42,14 +42,11 @@ def test_dunder_all_is_fully_resolvable():
 
 
 def test_documented_exceptions_are_catchable_from_top_level():
+    import traceroot.eval.dataset_sync as dataset_sync
     from traceroot import DatasetConflictError, DatasetPublishAborted
-    from traceroot.eval.dataset_sync import (
-        DatasetConflictError as _Conflict,
-        DatasetPublishAborted as _Aborted,
-    )
 
-    assert DatasetConflictError is _Conflict
-    assert DatasetPublishAborted is _Aborted
+    assert DatasetConflictError is dataset_sync.DatasetConflictError
+    assert DatasetPublishAborted is dataset_sync.DatasetPublishAborted
 
 
 def test_end_to_end_via_top_level():
