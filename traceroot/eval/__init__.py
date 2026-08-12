@@ -110,7 +110,6 @@ def capabilities() -> dict[str, bool]:
         "compare": True,
         "dataset_push": True,
         "sampling": True,
-        "provenance": True,
         "cancellation": True,
     }
 
