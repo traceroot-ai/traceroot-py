@@ -53,7 +53,17 @@ _INLINE_DATASET = "<inline>"
 _CASE_FIELDS = {f.name for f in dataclasses.fields(EvalCase)}
 
 
+class _CaseTimeoutError(Exception):
+    """A per-case deadline expiry. A distinct type so the scorer loop can tell a budget overrun
+    (which errors the whole case) apart from an ordinary per-scorer failure (which is isolated),
+    and so a task/scorer raising ``TimeoutError`` itself is never mistaken for one."""
+
+
 def _fmt_error(exc: BaseException) -> str:
+    # A deadline expiry reads as a TimeoutError (same wording as the TS engine), not as the
+    # internal marker class.
+    if isinstance(exc, _CaseTimeoutError):
+        return f"TimeoutError: {exc}"
     return f"{type(exc).__name__}: {exc}"
 
 
@@ -171,6 +181,21 @@ async def _await_or_run(
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+async def _bounded(coro: Any, deadline: float | None, timeout: float | None) -> Any:
+    """Await ``coro`` within the case's SHARED deadline (one budget for task + scorers, so a
+    hung judge cannot outlive ``timeout=``). ``deadline`` is an absolute ``time.monotonic()``
+    mark; expiry raises ``_CaseTimeoutError``. The awaitable is raced rather than wrapped in
+    ``wait_for`` so a TimeoutError the user's own code raises stays their error."""
+    if deadline is None:
+        return await coro
+    fut = asyncio.ensure_future(coro)
+    done, _pending = await asyncio.wait({fut}, timeout=max(0.0, deadline - time.monotonic()))
+    if not done:
+        fut.cancel()  # an uncancellable sync call keeps its bounded pool slot until it returns
+        raise _CaseTimeoutError(f"case exceeded {timeout}s")
+    return fut.result()
 
 
 _PLAIN_FIELDS = ("input", "output", "expected", "metadata")
@@ -327,6 +352,8 @@ async def _run_case(
     tracer = _eval_tracer()
     async with semaphore:
         started = time.perf_counter()
+        # ONE deadline for the whole case (task + scorers), so a hung scorer cannot outlive it.
+        deadline = time.monotonic() + timeout if timeout is not None else None
         output: Any = None
         error: str | None = None
         scores: list[Score] = []
@@ -366,12 +393,9 @@ async def _run_case(
                     task_span, SpanAttributes.SPAN_INPUT, serialize_value(case.input)
                 )
                 try:
-                    if timeout is not None:
-                        output = await asyncio.wait_for(
-                            _await_or_run(task, (case.input,), executor=executor), timeout
-                        )
-                    else:
-                        output = await _await_or_run(task, (case.input,), executor=executor)
+                    output = await _bounded(
+                        _await_or_run(task, (case.input,), executor=executor), deadline, timeout
+                    )
                     set_span_attribute(
                         task_span, SpanAttributes.SPAN_OUTPUT, serialize_value(output)
                     )
@@ -392,6 +416,7 @@ async def _run_case(
                 ctx = ScorerContext(
                     input=case.input, output=output, expected=case.expected, metadata=case.metadata
                 )
+                case_timeout: _CaseTimeoutError | None = None
                 for scorer in scorers:
                     # The DECLARED name (same resolver the manifest uses) -- the emitted Score,
                     # the ownership key and the registered definition must agree or the platform
@@ -419,7 +444,9 @@ async def _run_case(
                         )
                         try:
                             s_args, s_kwargs = _bind_scorer_args(scorer, ctx)
-                            raw = await _await_or_run(scorer, s_args, s_kwargs, executor)
+                            raw = await _bounded(
+                                _await_or_run(scorer, s_args, s_kwargs, executor), deadline, timeout
+                            )
                             produced = _stamp_scorer_version(
                                 _normalize_score_like(raw, name), scorer
                             )
@@ -435,6 +462,18 @@ async def _run_case(
                                     SpanAttributes.SPAN_OUTPUT,
                                     serialize_value(_scorer_output_repr(produced)),
                                 )
+                        except _CaseTimeoutError as exc:
+                            # A deadline hit is a case-level budget overrun, not an isolated
+                            # scorer failure: record it on the span, stop scoring, and error the
+                            # whole case below.
+                            case_timeout = exc
+                            scorer_span.set_status(Status(StatusCode.ERROR, str(exc)))
+                            scorer_span.set_attribute(
+                                SpanAttributes.EVAL_ERROR, _fmt_error(exc)
+                            )
+                            set_span_attribute(
+                                scorer_span, SpanAttributes.SPAN_OUTPUT, _fmt_error(exc)
+                            )
                         except Exception as exc:  # per-scorer isolation
                             scorer_errors[name] = _fmt_error(exc)
                             scorer_span.set_status(Status(StatusCode.ERROR, str(exc)))
@@ -445,6 +484,19 @@ async def _run_case(
                             set_span_attribute(
                                 scorer_span, SpanAttributes.SPAN_OUTPUT, scorer_errors[name]
                             )
+                    if case_timeout is not None:
+                        break  # (outside the span 'with' so the scorer span still closes)
+
+                if case_timeout is not None:
+                    # Scoring exceeded the case deadline -> the same isolated per-case error path
+                    # as a task timeout (errored case, not scored). Scores collected before the
+                    # timeout are dropped so a timed-out case is truly "not scored" and cannot
+                    # contaminate the summaries.
+                    error = _fmt_error(case_timeout)
+                    scores.clear()
+                    root.set_status(Status(StatusCode.ERROR, error))
+                    root.set_attribute(SpanAttributes.EVAL_ERROR, error)
+                    set_span_attribute(root, SpanAttributes.SPAN_OUTPUT, error)
 
         item_result = EvalItemResult(
             case_id=case.id,  # type: ignore[arg-type]  (id assigned in _normalize_data)
