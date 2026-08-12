@@ -1,8 +1,10 @@
 """Cross-language normalized-definition parity + source/config provenance (Python side).
 
-Equivalent Python and TypeScript definitions normalize to the SAME descriptor fields (identity +
-policy); provenance (language/source) and the config-hash version are language-specific. The TS
-counterpart (eval-definition-parity.test.ts) asserts the same fixture.
+Equivalent Python and TypeScript definitions normalize to the SAME descriptor fields -- identity,
+policy, AND the config-hash ``version`` (the fixture pins the exact ``cfg_``, so a judge does not
+look edited just because it was re-authored in the other language). Only provenance
+(language/source) stays language-specific. The TS counterpart (eval-definition-parity.test.ts)
+asserts the same fixture.
 """
 
 import json

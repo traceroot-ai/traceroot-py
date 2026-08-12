@@ -1,30 +1,248 @@
 {
-  "_comment": "Cross-SDK case-id parity vectors. Building Dataset(dataset_key) and add()-ing these inputs in order MUST yield these exact ids in BOTH Python and TypeScript (content-based ids; the 3rd is a duplicate of the 1st -> occurrence 1).",
+  "_comment": "Cross-SDK canonicalization + case-id parity vectors. Building Dataset(dataset_key) and add()-ing these inputs IN ORDER must yield these exact ids, these exact canonical-JSON strings, and this exact revision in BOTH Python and TypeScript. `input` uses a fixture-only tagged encoding for values JSON cannot express: {$date}, {$nan}, {$inf:1|-1}, {$set}, {$bytes}, {$map} -- each test suite decodes them to its native value before feeding the SDK.",
   "dataset_key": "weather",
   "dataset_id": "ds_e5e72beb4e3c6926d3dc9e3e2e",
   "cases": [
     {
+      "_comment": "plain object",
       "input": {
         "q": "a",
         "n": 1
       },
-      "id": "tc_0d4a8155fd3d8a4615da"
+      "id": "tc_0d4a8155fd3d8a4615da",
+      "canonical_json": "{\"n\":1,\"q\":\"a\"}"
     },
     {
+      "_comment": "array",
       "input": [
         1,
         2,
         3
       ],
-      "id": "tc_9dc099ff66e00c2888e2"
+      "id": "tc_9dc099ff66e00c2888e2",
+      "canonical_json": "[1,2,3]"
     },
     {
+      "_comment": "duplicate of the first input (occurrence 1)",
       "input": {
         "q": "a",
         "n": 1
       },
-      "id": "tc_8066f7118c4649807c19"
+      "id": "tc_8066f7118c4649807c19",
+      "canonical_json": "{\"n\":1,\"q\":\"a\"}"
+    },
+    {
+      "_comment": "integral float collapses to an integer",
+      "input": {
+        "score": 1.0
+      },
+      "id": "tc_4a15edfa5a7b9ce61c3b",
+      "canonical_json": "{\"score\":1}"
+    },
+    {
+      "_comment": "negative zero renders as 0",
+      "input": {
+        "a": -0.0
+      },
+      "id": "tc_29c2fedf5b31cc205373",
+      "canonical_json": "{\"a\":0}"
+    },
+    {
+      "_comment": "non-integral float",
+      "input": {
+        "a": 2.5
+      },
+      "id": "tc_2e3d48d5036a628da770",
+      "canonical_json": "{\"a\":2.5}"
+    },
+    {
+      "_comment": "exponent threshold: 1e-7 stays exponential",
+      "input": {
+        "a": 1e-07
+      },
+      "id": "tc_05c8278510f16bf312e6",
+      "canonical_json": "{\"a\":1e-7}"
+    },
+    {
+      "_comment": "exponent threshold: 1e-5 is fixed-point",
+      "input": {
+        "a": 1e-05
+      },
+      "id": "tc_b7e2369d46cdc878c03e",
+      "canonical_json": "{\"a\":0.00001}"
+    },
+    {
+      "_comment": "1e16 is fixed-point (n <= 21)",
+      "input": {
+        "a": 1e+16
+      },
+      "id": "tc_b2c299d63e147a1c74cc",
+      "canonical_json": "{\"a\":10000000000000000}"
+    },
+    {
+      "_comment": "1e21 is exponential (n > 21)",
+      "input": {
+        "a": 1e+21
+      },
+      "id": "tc_a3cfd7b825555f31d95e",
+      "canonical_json": "{\"a\":1e+21}"
+    },
+    {
+      "_comment": "negative small float",
+      "input": {
+        "a": -1.5e-09
+      },
+      "id": "tc_4abbc789165ded5fb805",
+      "canonical_json": "{\"a\":-1.5e-9}"
+    },
+    {
+      "_comment": "int and float that render identically",
+      "input": {
+        "i": 7,
+        "f": 7.0
+      },
+      "id": "tc_a3f3d1129def3b43d8aa",
+      "canonical_json": "{\"f\":7,\"i\":7}"
+    },
+    {
+      "_comment": "numeric-string keys must sort as strings",
+      "input": {
+        "10": "a",
+        "2": "b",
+        "1": "c"
+      },
+      "id": "tc_8d0abd1fa71a2dad83d3",
+      "canonical_json": "{\"1\":\"c\",\"10\":\"a\",\"2\":\"b\"}"
+    },
+    {
+      "_comment": "astral-plane key sorts by code point, not UTF-16 unit",
+      "input": {
+        "\ud834\udd1e": 1,
+        "\ue000": 2
+      },
+      "id": "tc_fecdc4d7e7fc93fd45d0",
+      "canonical_json": "{\"\ue000\":2,\"\ud834\udd1e\":1}"
+    },
+    {
+      "_comment": "unicode string value",
+      "input": {
+        "s": "h\u00e9llo \ud834\udd1e \u00fcn\u00efc\u00f8d\u00e9"
+      },
+      "id": "tc_900732cd2aea48ba274e",
+      "canonical_json": "{\"s\":\"h\u00e9llo \ud834\udd1e \u00fcn\u00efc\u00f8d\u00e9\"}"
+    },
+    {
+      "_comment": "date renders as toISOString()",
+      "input": {
+        "$date": "2020-01-01T00:00:00.000Z"
+      },
+      "id": "tc_7edf45f9589f403f0b4c",
+      "canonical_json": "\"2020-01-01T00:00:00.000Z\""
+    },
+    {
+      "_comment": "date with millisecond precision",
+      "input": {
+        "d": {
+          "$date": "2021-06-30T23:59:59.123Z"
+        }
+      },
+      "id": "tc_2dee231a75aa266ac648",
+      "canonical_json": "{\"d\":\"2021-06-30T23:59:59.123Z\"}"
+    },
+    {
+      "_comment": "NaN / Infinity / -Infinity sentinels",
+      "input": {
+        "nan": {
+          "$nan": true
+        },
+        "pinf": {
+          "$inf": 1
+        },
+        "ninf": {
+          "$inf": -1
+        }
+      },
+      "id": "tc_9ddb24ea17182a9de720",
+      "canonical_json": "{\"nan\":\"NaN\",\"ninf\":\"-Infinity\",\"pinf\":\"Infinity\"}"
+    },
+    {
+      "_comment": "set becomes an array ordered by canonical JSON",
+      "input": {
+        "set": {
+          "$set": [
+            3,
+            1,
+            2,
+            "a",
+            "B"
+          ]
+        }
+      },
+      "id": "tc_b556e08d750de24d3ba7",
+      "canonical_json": "{\"set\":[\"B\",\"a\",1,2,3]}"
+    },
+    {
+      "_comment": "bytes become an array of byte integers",
+      "input": {
+        "bytes": {
+          "$bytes": [
+            104,
+            105,
+            0,
+            255
+          ]
+        }
+      },
+      "id": "tc_3aa49e6430e3db870720",
+      "canonical_json": "{\"bytes\":[104,105,0,255]}"
+    },
+    {
+      "_comment": "empty containers",
+      "input": {
+        "o": {},
+        "a": [],
+        "s": {
+          "$set": []
+        }
+      },
+      "id": "tc_98a5857d91772c37e809",
+      "canonical_json": "{\"a\":[],\"o\":{},\"s\":[]}"
+    },
+    {
+      "_comment": "nested mixture",
+      "input": {
+        "outer": {
+          "list": [
+            {
+              "z": 1,
+              "a": [
+                true,
+                null,
+                "x"
+              ]
+            },
+            [
+              2.0,
+              -0.0
+            ]
+          ],
+          "m": {
+            "$map": [
+              [
+                "k2",
+                2
+              ],
+              [
+                "k10",
+                10.5
+              ]
+            ]
+          }
+        }
+      },
+      "id": "tc_875b69560cf7aa8f3485",
+      "canonical_json": "{\"outer\":{\"list\":[{\"a\":[true,null,\"x\"],\"z\":1},[2,0]],\"m\":{\"k10\":10.5,\"k2\":2}}}"
     }
   ],
-  "revision": "rev_e57a9e456fd28050"
+  "revision": "rev_81c01b664f75255e"
 }

@@ -131,13 +131,13 @@ _ANY_PLACEHOLDER = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 def _config_revision(**config: Any) -> str:
     """Deterministic revision of a judge's DECLARATIVE configuration (model/messages/policy/...): its
-    versioned 'source'. Canonical JSON (sorted keys) -> sha256, so the same config always hashes the
-    same across processes and languages that canonicalize identically."""
-    import hashlib
-    import json
+    versioned 'source'. The SHARED canonical JSON (snake_case keys) -> sha256, so the same config
+    always hashes to the same ``cfg_`` in every process AND in both SDKs -- the version must change
+    only when the rubric changes, never when the authoring language changes. Non-canonicalizable
+    ``metadata`` raises here rather than being ``repr``'d into a per-process hash."""
+    from traceroot.eval.canonical import canonical_hash
 
-    canon = json.dumps(config, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
-    return "cfg_" + hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+    return "cfg_" + canonical_hash(config, 16)
 
 
 def _render_vars(messages: list[dict[str, str]], variables: dict[str, str]) -> list[dict[str, str]]:

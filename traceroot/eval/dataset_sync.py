@@ -17,8 +17,8 @@ from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
+from traceroot.eval.canonical import normalize
 from traceroot.eval.types import DatasetSnapshot
-from traceroot.utils import serialize_value
 
 
 class DatasetConflictError(Exception):
@@ -241,20 +241,24 @@ class PlatformDatasetSync:
         changes: list[dict[str, Any]] = []
         for c in snapshot.cases:
             # Native JSON at the HTTP boundary: input/expected/metadata are sent as
-            # their real Python values. The backend owns the single JSON-encode into
-            # its storage column (input/expected schema is z.unknown()); the SDK does
-            # NOT pre-encode -- doing so would double-encode. serialize_value only
-            # normalizes non-JSON-native objects (datetime, dataclasses, ...) to
-            # JSON-safe values; a dict stays a dict, "42" stays the string "42".
+            # their real values. The backend owns the single JSON-encode into its
+            # storage column (input/expected schema is z.unknown()); the SDK does NOT
+            # pre-encode -- doing so would double-encode.
+            #
+            # The value SENT is the SAME canonical form that was HASHED into the
+            # revision, so a pulled version re-hashes to the revision that published
+            # it. Sending a differently-shaped value (a datetime here, an ISO string
+            # in storage) would make publishedRevision != snapshot.revision forever,
+            # and every push would publish a no-change version.
             change: dict[str, Any] = {
                 "op": "upsert",
                 "test_case_id": c.id,
-                "input": serialize_value(c.input),
+                "input": normalize(c.input),
             }
             if c.expected is not None:
-                change["expected"] = serialize_value(c.expected)
+                change["expected"] = normalize(c.expected)
             if c.metadata is not None:
-                change["metadata"] = serialize_value(c.metadata)
+                change["metadata"] = normalize(c.metadata)
             if c.source_trace_id is not None:
                 change["source_trace_id"] = c.source_trace_id
             if c.source_span_id is not None:

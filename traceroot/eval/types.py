@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import hashlib
 import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from traceroot.eval.canonical import (
+    CanonicalizationError,
+    canonical_hash,
+    canonical_json,
+    normalize,
+)
 from traceroot.eval.ids import new_test_case_id, stable_case_id, stable_dataset_id
-from traceroot.utils import serialize_value
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,6 +84,10 @@ class ScorerContext:
 
 
 # Content fields that define a snapshot's identity (archived + volatile excluded).
+# Every field here MUST also travel on the wire and come back on a pull -- a field that is hashed
+# but not stored makes the published revision permanently unequal to the local one, so every push
+# publishes a no-change version. ``score_target_span_id`` is a reserved hook that the platform does
+# not persist yet, so it is deliberately NOT part of the identity.
 _CONTENT_FIELDS = (
     "id",
     "input",
@@ -87,16 +95,23 @@ _CONTENT_FIELDS = (
     "metadata",
     "source_trace_id",
     "source_span_id",
-    "score_target_span_id",
 )
 
 
-def _canonical_json(value: Any) -> str:
-    """Canonical JSON (sorted keys, compact) — the byte-identical form used for content hashing
-    both here and in TypeScript (``canonicalJson``)."""
-    return json.dumps(
-        serialize_value(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    )
+def _validate_payload(input: Any, expected: Any, metadata: Any) -> None:
+    """Reject a case payload the canonicalizer cannot represent, AT AUTHORING TIME.
+
+    Identity (case id + dataset revision) and the wire form are both the canonical form, so a
+    value with no canonical form has no stable identity. Failing here names the offending field
+    instead of surfacing as a mystery hash difference between the two SDKs later.
+    """
+    for field, value in (("input", input), ("expected", expected), ("metadata", metadata)):
+        if value is None:
+            continue
+        try:
+            normalize(value)
+        except CanonicalizationError as e:
+            raise CanonicalizationError(f"test case {field}: {e}") from None
 
 
 def _content_revision(cases: tuple[EvalCase, ...]) -> str:
@@ -105,10 +120,7 @@ def _content_revision(cases: tuple[EvalCase, ...]) -> str:
     # change). Only a real content change (add/remove/edit a case) advances the revision.
     ordered = sorted(cases, key=lambda c: c.id or "")
     content = [{k: getattr(c, k) for k in _CONTENT_FIELDS} for c in ordered]
-    canonical = json.dumps(
-        serialize_value(content), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    )
-    return "rev_" + hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    return "rev_" + canonical_hash(content, 16)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -185,10 +197,11 @@ class Dataset:
         id. Duplicate inputs are disambiguated by occurrence (the first free slot), which also
         keeps ids collision-free across removes.
         """
+        _validate_payload(input, expected, metadata)
         if id:
             cid = id
         else:
-            canonical = _canonical_json(input)
+            canonical = canonical_json(input)
             occurrence = 0
             cid = stable_case_id(self.key, canonical, occurrence)
             while cid in self._cases:
@@ -209,6 +222,7 @@ class Dataset:
 
     def upsert(self, case: EvalCase) -> EvalCase:
         """Add or replace by id; anonymous cases get a stable ULID id."""
+        _validate_payload(case.input, case.expected, case.metadata)
         if case.id is None:
             case = dataclasses.replace(case, id=new_test_case_id())
         self._cases[case.id] = case
@@ -293,7 +307,7 @@ class Dataset:
         return ds
 
     def to_json(self) -> str:
-        return json.dumps(serialize_value(self.to_dict()), ensure_ascii=False)
+        return json.dumps(normalize(self.to_dict()), ensure_ascii=False)
 
     @classmethod
     def from_json(cls, text: str) -> Dataset:
@@ -311,10 +325,10 @@ class Dataset:
                 "dataset_version_id": self.dataset_version_id,
                 "schema": 1,
             }
-            lines = [json.dumps(serialize_value(header), ensure_ascii=False)]
+            lines = [json.dumps(normalize(header), ensure_ascii=False)]
             for c in self._cases.values():
                 lines.append(
-                    json.dumps(serialize_value({"type": "case", **c.to_dict()}), ensure_ascii=False)
+                    json.dumps(normalize({"type": "case", **c.to_dict()}), ensure_ascii=False)
                 )
             Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
         else:
