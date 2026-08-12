@@ -239,6 +239,25 @@ class TestPlatformTransport:
         assert "passed" not in by_name["route"]
         assert "passed" not in by_name["mystery"]
 
+    def test_lower_is_better_threshold_is_inclusive(self):
+        """Both directions are INCLUSIVE at the threshold: `latency_ms <= 200` passes at exactly
+        200 and fails at 200.1, mirroring higher_is_better's `1.0 >= 1.0` above. A budget stated as
+        'at most 200ms' is met by a 200ms answer -- an exclusive boundary would fail it."""
+        from traceroot.eval.results import EvalItemResult
+
+        t = RecordingTransport("ds_1", api_key="tr-x", host_url="https://h")
+        t.scorer_specs = [
+            {"name": "latency_ms", "version": "v1", "threshold": 200.0,
+             "direction": "lower_is_better", "value_type": "numeric"}
+        ]
+        t.create_run("r", "d", None)
+        for value, expected in ((200.0, True), (200.1, False), (199.9, True)):
+            item = EvalItemResult(
+                "tc0", "i", "o", "e", [Score("latency_ms", value)], {}, None, "t"
+            )
+            t.record_item_result(None, item)
+            assert t.requests[-1][2]["scores"][0]["passed"] is expected, value
+
     def test_result_reports_duration_ms_as_nonneg_int(self):
         from traceroot.eval.results import EvalItemResult
 
