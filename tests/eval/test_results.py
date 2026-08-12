@@ -105,6 +105,36 @@ class TestEvalRunResult:
     def test_upload_status_is_explicit(self):
         assert self._run().upload_state.status == "uploaded"
 
+    def test_counts_block_is_the_cross_sdk_shape(self):
+        """The saved artifact's counts block must be cross-loadable with the TS SDK's, and must
+        carry no case-level passed/failed (the SDK derives no such verdict)."""
+        items = [
+            _item("ok", [Score("acc", 1.0)]),
+            _item("taskerr", [], error="boom"),
+            _item("scorererr", [], scorer_errors={"grade": "kaboom"}),
+        ]
+        run = EvalRunResult(
+            name="r",
+            item_results=items,
+            score_summary=aggregate_scores(items),
+            upload_state=UploadState(),
+        )
+        counts = run.to_dict()["counts"]
+        assert list(counts) == [
+            "case_count",
+            "errored",
+            "not_scored",
+            "task_errors",
+            "scorer_errors",
+        ]
+        assert counts == {
+            "case_count": 3,
+            "errored": 2,
+            "not_scored": 1,
+            "task_errors": 1,
+            "scorer_errors": 1,
+        }
+
     def test_save_load_round_trip(self, tmp_path):
         r = self._run()
         p = tmp_path / "run.json"
@@ -115,6 +145,49 @@ class TestEvalRunResult:
         assert loaded.score_summary["acc"].mean == 0.5
         assert loaded.upload_state.status == r.upload_state.status
         assert not (tmp_path / "run.json.tmp").exists()  # atomic save leaves no temp file behind
+
+
+class TestReuploadRegistration:
+    """The transport a re-upload builds must register every scorer the run saw — including one
+    that errored on every case (absent from score_summary). Cross-SDK: the TS results.ts
+    upload() must union the same three sources."""
+
+    def test_all_erroring_scorer_is_registered(self, monkeypatch):
+        from traceroot.eval import platform as platform_mod
+        from traceroot.eval.results import RunDatasetRef
+
+        captured: dict = {}
+
+        class _Capture:
+            def __init__(self, dataset_id, **kwargs):
+                captured["dataset_id"] = dataset_id
+                captured.update(kwargs)
+                self.run_id = "run_1"
+
+            def create_run(self, name, dataset_name, metadata=None, client_run_id=None):
+                return None
+
+            def record_item_result(self, run, item):
+                pass
+
+            def record_scores(self, run, case_id, scores):
+                pass
+
+            def finish_run(self, run, status=None):
+                return UploadState()
+
+        monkeypatch.setattr(platform_mod, "PlatformTransport", _Capture)
+        items = [_item("c0", [Score("acc", 1.0)], scorer_errors={"flaky": "boom"})]
+        run = EvalRunResult(
+            name="r",
+            item_results=items,
+            score_summary=aggregate_scores(items),
+            upload_state=UploadState(),
+            local_run_id="run_local_1",
+            dataset=RunDatasetRef("ds_1", "rev_x", "dsv_1", 1),
+        )
+        run.upload()
+        assert captured["scorer_names"] == ["acc", "flaky"]
 
 
 class TestScoreSummary:
