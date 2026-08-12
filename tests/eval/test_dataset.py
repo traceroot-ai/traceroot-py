@@ -20,15 +20,17 @@ class TestDatasetUpsert:
         assert returned.id == "a"
         assert returned.input == 1
 
-    def test_anonymous_gets_stable_ulid(self):
-        # DS-1: anonymous cases get a stable ULID tc_ id (not positional case-{n}),
-        # so ids survive serialization and remote push.
+    def test_anonymous_gets_stable_content_id(self):
+        # DS-1: anonymous cases get a stable content-derived tc_ id (not positional case-{n}),
+        # so ids survive serialization and remote push. Content-derived, not random: a ULID here
+        # would fork the same case into a new server case on every process.
         ds = Dataset(name="d")
         r0 = ds.upsert(EvalCase(input="a"))
         r1 = ds.upsert(EvalCase(input="b"))
         assert r0.id.startswith("tc_") and r1.id.startswith("tc_")
         assert r0.id != r1.id
         assert len(ds) == 2
+        assert Dataset(name="d").upsert(EvalCase(input="a")).id == r0.id
 
     def test_reupsert_returned_case_is_idempotent(self):
         ds = Dataset(name="d")
