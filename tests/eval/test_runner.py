@@ -56,28 +56,6 @@ ds.add(input="boom", id="err", expected="boom")
 mixed_eval = Evaluation(name="mixed", dataset=ds, task=task, scorers=[good, bad])
 """
 
-RUN_SCORER_EVAL = """
-from traceroot import Dataset, Evaluation
-from traceroot.eval import FakeTransport
-
-def task(x):
-    return x
-
-def good(ctx):
-    return 1.0
-
-def overall(run):
-    raise RuntimeError("run scorer kaboom")
-
-ds = Dataset("d")
-ds.add(input="ok", id="ok", expected="ok")
-
-run_scored_eval = Evaluation(
-    name="run-scored", dataset=ds, task=task, scorers=[good],
-    run_scorers=[overall], report_to=FakeTransport(),
-)
-"""
-
 INSTRUMENTED_EVAL = """
 import traceroot
 # The evaluated app already configured TraceRoot instrumentation:
@@ -226,16 +204,6 @@ class TestIndependentErrorFields:
         assert done["status"] == "completed_with_errors"
         assert done["counts"]["task_errors"] == 1
         assert done["counts"]["scorer_errors"] == 1
-
-    def test_failing_run_scorer_alone_is_completed_with_errors(self, tmp_path):
-        """A whole-run scorer error is a real quality error: every case is clean, so nothing
-        else would surface it. Cross-SDK: the TS runner must derive the same status."""
-        d = _write_eval(tmp_path, "run_scored_eval.py", RUN_SCORER_EVAL)
-        events = _collect([d], {"reporting": True, "no_artifact": True})
-        done = next(e for e in events if e["type"] == "evaluation_completed")
-        assert done["counts"]["task_errors"] == 0
-        assert done["counts"]["scorer_errors"] == 0
-        assert done["status"] == "completed_with_errors"
 
     def test_completed_counts_keys_are_the_cross_sdk_protocol(self, tmp_path):
         """The counts block is the JSONL protocol traceroot-cli parses; both SDKs emit these

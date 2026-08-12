@@ -1,10 +1,8 @@
-"""DS-5: run-level scorers, deferred/human scores. (Comparison is the backend's job.)"""
+"""DS-5: deferred/human scores. (Comparison is the backend's job.)"""
 
 from traceroot.eval import (
     Dataset,
     DeferredScore,
-    Score,
-    ScorerContext,
     evaluate,
 )
 
@@ -16,10 +14,6 @@ def _ds(extra=False):
     if extra:
         ds.add(input=3, id="c", expected=3)
     return ds
-
-
-def acc(ctx: ScorerContext):
-    return 1.0 if ctx.output == ctx.expected else 0.0
 
 
 def good(x):
@@ -39,22 +33,3 @@ class TestDeferredScore:
         # a deferred-only case is not_scored, and never errored
         assert run.not_scored == len(run.item_results)
         assert run.errored == 0
-
-
-class TestRunScorers:
-    def test_run_level_scorer_produces_run_score(self):
-        def pass_rate(view):
-            passed = sum(1 for it in view.item_results if it.scores and it.scores[0].value == 1.0)
-            return Score("pass_rate", passed / len(view.item_results))
-
-        run = evaluate(name="q", dataset=_ds(), task=good, scorers=[acc], run_scorers=[pass_rate])
-        names = {s.name for s in run.run_scores}
-        assert "pass_rate" in names
-        assert next(s for s in run.run_scores if s.name == "pass_rate").value == 1.0
-
-    def test_run_scorer_error_isolated(self):
-        def boom(view):
-            raise ValueError("nope")
-
-        run = evaluate(name="q", dataset=_ds(), task=good, scorers=[acc], run_scorers=[boom])
-        assert "boom" in run.run_scorer_errors

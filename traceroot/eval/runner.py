@@ -301,9 +301,7 @@ def _case_metadata(item: EvalItemResult) -> dict[str, Any]:
 def _run_status(result: EvalRunResult, cancelled: bool) -> str:
     if cancelled:
         return "incomplete"
-    # A failed whole-run scorer is a real quality error too, so surface it rather than reporting a
-    # clean "completed" that hides it from the caller and artifact consumers.
-    if result.task_error_count or result.scorer_error_count or result.run_scorer_errors:
+    if result.task_error_count or result.scorer_error_count:
         return "completed_with_errors"
     return "completed"
 

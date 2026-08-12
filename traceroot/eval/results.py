@@ -112,15 +112,6 @@ class RunDatasetRef:
         }
 
 
-@dataclasses.dataclass
-class RunView:
-    """The read-only view passed to a whole-run scorer."""
-
-    name: str
-    item_results: list[EvalItemResult]
-    score_summary: dict[str, ScoreSummary]
-
-
 def case_status(item: EvalItemResult) -> str:
     """Derive ``errored`` | ``not_scored`` for one item.
 
@@ -176,8 +167,6 @@ class EvalRunResult:
     candidate_version: str | None = None
     dataset: RunDatasetRef | None = None
     run_id: str | None = None  # server-assigned id when uploaded
-    run_scores: list[Score] = dataclasses.field(default_factory=list)  # whole-run scores
-    run_scorer_errors: dict[str, str] = dataclasses.field(default_factory=dict)
     metadata: dict[str, Any] | None = None  # run context (model, prompt, branch, CI, ...)
 
     # --- inspection ---
@@ -229,8 +218,6 @@ class EvalRunResult:
             },
             "item_results": [it.to_dict() for it in self.item_results],
             "score_summary": {k: v.to_dict() for k, v in self.score_summary.items()},
-            "run_scores": [dataclasses.asdict(s) for s in self.run_scores],
-            "run_scorer_errors": self.run_scorer_errors,
             "metadata": self.metadata,
             "upload": self.upload_state.to_dict(),
         }
@@ -258,8 +245,6 @@ class EvalRunResult:
             candidate_version=d.get("candidate_version"),
             dataset=RunDatasetRef(**ds) if ds else None,
             run_id=d.get("run_id"),
-            run_scores=[Score(**s) for s in d.get("run_scores", [])],
-            run_scorer_errors=d.get("run_scorer_errors", {}),
             metadata=d.get("metadata"),
         )
 

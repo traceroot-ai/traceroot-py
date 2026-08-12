@@ -26,10 +26,9 @@ class Evaluation:
     Mutable in user code; changing it affects the next ``run()``. Evaluation is cloud-only:
     every run reports to the platform, which needs credentials and a synced dataset
     (pulled/pushed, or an explicit ``dataset_id``); pass ``report_to=`` to supply an explicit
-    transport. ``timeout`` bounds each case; ``metadata`` is attached to the run record;
-    ``run_scorers`` run whole-run scorers. Candidate-vs-baseline comparison is the backend's
-    job (the SDK reports raw runs; it does not compare). ``retry`` is not implemented and is
-    rejected rather than silently ignored.
+    transport. ``timeout`` bounds each case; ``metadata`` is attached to the run record.
+    Candidate-vs-baseline comparison is the backend's job (the SDK reports raw runs; it does
+    not compare). ``retry`` is not implemented and is rejected rather than silently ignored.
     """
 
     def __init__(
@@ -39,7 +38,6 @@ class Evaluation:
         dataset: DataSource,
         task: Callable[[Any], Any],
         scorers: Sequence[Callable[[ScorerContext], Any]],
-        run_scorers: Sequence[Callable[[Any], Any]] | None = None,
         candidate_version: str | None = None,
         metadata: dict[str, Any] | None = None,
         max_concurrency: int = 10,
@@ -62,7 +60,6 @@ class Evaluation:
         self.dataset = dataset
         self.task = task
         self.scorers = scorers
-        self.run_scorers = run_scorers
         self.candidate_version = candidate_version
         self.metadata = metadata
         self.max_concurrency = max_concurrency
@@ -86,7 +83,6 @@ class Evaluation:
             candidate_version=self.candidate_version,
             environment=self.environment,
             select=self.select,
-            run_scorers=self.run_scorers,
             timeout=self.timeout,
             metadata=self.metadata,
             progress=self.progress,
@@ -122,7 +118,6 @@ def evaluate(
     candidate_version: str | None = None,
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
-    run_scorers: Sequence[Callable[[Any], Any]] | None = None,
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
     progress: bool | None = None,
@@ -140,7 +135,6 @@ def evaluate(
         candidate_version=candidate_version,
         environment=environment,
         select=select,
-        run_scorers=run_scorers,
         metadata=metadata,
         timeout=timeout,
         progress=progress,
@@ -162,7 +156,6 @@ async def evaluate_async(
     candidate_version: str | None = None,
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
-    run_scorers: Sequence[Callable[[Any], Any]] | None = None,
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
     progress: bool | None = None,
@@ -180,7 +173,6 @@ async def evaluate_async(
         candidate_version=candidate_version,
         environment=environment,
         select=select,
-        run_scorers=run_scorers,
         metadata=metadata,
         timeout=timeout,
         progress=progress,

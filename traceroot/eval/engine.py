@@ -29,7 +29,6 @@ from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
     RunDatasetRef,
-    RunView,
     UploadState,
     aggregate_scores,
 )
@@ -635,7 +634,6 @@ async def _run_async(
     candidate_version: str | None = None,
     environment: str = "evaluation",
     select: Callable[[EvalCase], bool] | None = None,
-    run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
     timeout: float | None = None,
     metadata: dict[str, Any] | None = None,
     progress: bool | None = None,
@@ -857,8 +855,6 @@ async def _run_async(
                     upload, failed_result_count=len(dropped_results)
                 )
 
-    run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
-
     result = EvalRunResult(
         name=name,
         item_results=results_list,
@@ -868,8 +864,6 @@ async def _run_async(
         candidate_version=candidate_version,
         dataset=dataset_ref,
         run_id=getattr(active_transport, "run_id", None),
-        run_scores=run_scores,
-        run_scorer_errors=run_scorer_errors,
         metadata=run_metadata,
     )
 
@@ -882,30 +876,6 @@ async def _run_async(
         print_run_url(upload.dashboard_url)
 
     return result
-
-
-async def _run_run_scorers(
-    run_scorers: Sequence[Callable[[RunView], Any]] | None,
-    name: str,
-    item_results: list[EvalItemResult],
-    summary: Any,
-) -> tuple[list[Score], dict[str, str]]:
-    """Run whole-run scorers over the completed items. Errors are isolated per scorer."""
-    run_scores: list[Score] = []
-    run_scorer_errors: dict[str, str] = {}
-    if not run_scorers:
-        return run_scores, run_scorer_errors
-    view = RunView(name=name, item_results=item_results, score_summary=summary)
-    for rs in run_scorers:
-        rname = scorer_name(rs, "run_scorer")
-        try:
-            raw = rs(view)
-            if inspect.iscoroutine(raw):
-                raw = await raw
-            run_scores.extend(_stamp_scorer_version(_normalize_score_like(raw, rname), rs))
-        except Exception as exc:  # per-run-scorer isolation
-            run_scorer_errors[rname] = _fmt_error(exc)
-    return run_scores, run_scorer_errors
 
 
 def _run(**kwargs: Any) -> EvalRunResult:
