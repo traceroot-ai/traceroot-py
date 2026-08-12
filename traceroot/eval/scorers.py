@@ -118,6 +118,18 @@ def _declared(fn: Callable, key: str) -> Any:
     return getattr(fn, key, None)
 
 
+def scorer_name(fn: Callable, fallback: str = "scorer") -> str:
+    """The ONE place a scorer's reported name is resolved: declared name -> ``__name__`` ->
+    the callable's class name -> ``fallback``.
+
+    Every site that names a scorer (the emitted Score, the scorer->metric ownership map, the span,
+    the registration/completion manifest) must route through this. When they disagree -- e.g.
+    ``@scorer(name="quality")`` over ``def grade`` -- the platform cannot attribute the metric to
+    its definition and drops both ``emitted_metrics`` and the metric's pass/fail policy.
+    """
+    return _declared(fn, "name") or getattr(fn, "__name__", None) or type(fn).__name__ or fallback
+
+
 def declared_version(fn: Callable) -> str | None:
     """The scorer's explicitly declared version, or None (never fabricated)."""
     return _declared(fn, "version")
@@ -152,7 +164,7 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
     messages. ``value_type`` is a runtime hint used only when the scorer did not declare
     one. Absent fields are ``None`` here and omitted at the reporting boundary.
     """
-    name = _declared(fn, "name") or getattr(fn, "__name__", None) or fn.__class__.__name__
+    name = scorer_name(fn)
     # Stable SEMANTIC identity, independent of function spelling/language. Defaults to the definition
     # name; set an explicit `key` (identically in Python and TypeScript) to make the SAME logical
     # scorer resolve across languages. Never derived from source; code/language/version are provenance.
@@ -211,12 +223,13 @@ def describe_scorers(
     hints = value_types or {}
     out: list[dict[str, Any]] = []
     for s in scorers:
-        base_name = getattr(s, "__name__", None) or s.__class__.__name__
+        # Key the hint lookup by the DECLARED name (what the rendered descriptor uses), not the raw
+        # implementation function name -- otherwise a @scorer(name=...) never receives its hint.
         # Honor the omitted-fields contract for direct consumers too: drop keys the scorer did not
         # declare (None) instead of exposing fabricated null schema fields.
         desc = {
             k: v
-            for k, v in scorer_metadata(s, value_type=hints.get(base_name)).items()
+            for k, v in scorer_metadata(s, value_type=hints.get(scorer_name(s))).items()
             if v is not None
         }
         out.append(desc)

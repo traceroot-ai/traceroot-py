@@ -32,6 +32,7 @@ from traceroot.eval.results import (
     RunView,
     aggregate_scores,
 )
+from traceroot.eval.scorers import scorer_name
 from traceroot.eval.tracer import eval_tracer as _eval_tracer  # span-export tracer (own module)
 from traceroot.eval.transport import EvalTransport, RunHandle
 from traceroot.eval.types import (
@@ -199,7 +200,7 @@ def _scorer_call_plan(scorer: Any) -> tuple[str, tuple[str, ...]]:
     names = [p.name for p in pos]
     has_kwargs = any(p.kind == p.VAR_KEYWORD for p in params)
     has_varargs = any(p.kind == p.VAR_POSITIONAL for p in params)
-    label = getattr(scorer, "__name__", type(scorer).__name__)
+    label = scorer_name(scorer)
     if "input" in names or "output" in names:
         unsupported = [p.name for p in pos if p.default is p.empty and p.name not in _PLAIN_FIELDS]
         if unsupported and not has_kwargs:
@@ -390,7 +391,10 @@ async def _run_case(
                     input=case.input, output=output, expected=case.expected, metadata=case.metadata
                 )
                 for scorer in scorers:
-                    name = getattr(scorer, "__name__", scorer.__class__.__name__)
+                    # The DECLARED name (same resolver the manifest uses) -- the emitted Score,
+                    # the ownership key and the registered definition must agree or the platform
+                    # drops the metric's policy.
+                    name = scorer_name(scorer)
                     # Record scorer->metric ownership AT THE POINT OF PRODUCTION (never inferred
                     # afterward by matching names). Seed the definition now so a scorer that errors
                     # before emitting still appears in the completion manifest with no metrics.
@@ -495,7 +499,7 @@ def _auto_transport(
     key, _host = _resolve_credentials(None, None)
     if not key:  # no credentials
         return None
-    names = [getattr(s, "__name__", s.__class__.__name__) for s in scorers]
+    names = [scorer_name(s) for s in scorers]
     return PlatformTransport(
         effective_id,
         scorer_names=names,
@@ -777,7 +781,7 @@ async def _run_run_scorers(
         return run_scores, run_scorer_errors
     view = RunView(name=name, item_results=item_results, score_summary=summary)
     for rs in run_scorers:
-        rname = getattr(rs, "__name__", rs.__class__.__name__)
+        rname = scorer_name(rs, "run_scorer")
         try:
             raw = rs(view)
             if inspect.iscoroutine(raw):
