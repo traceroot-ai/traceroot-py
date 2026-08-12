@@ -578,6 +578,21 @@ def _validate_config(name, task, scorers, max_concurrency) -> None:
         if not callable(s):
             raise TypeError(f"scorer {s!r} is not callable")
         _scorer_call_plan(s)  # fail fast on an unsupported scorer signature (not a per-case error)
+    # A Score row's identity IS its emitted-metric name, and the platform keys that metric's
+    # direction/threshold on the name. Two scorers resolving to the same name make the policy
+    # ambiguous, so the platform drops the metric to non-directional. Catch the static case here,
+    # before a single case runs.
+    seen: dict[str, int] = {}
+    for s in scorers:
+        n = scorer_name(s)
+        seen[n] = seen.get(n, 0) + 1
+    duplicated = sorted(n for n, count in seen.items() if count > 1)
+    if duplicated:
+        listed = ", ".join(repr(n) for n in duplicated)
+        raise ValueError(
+            f"two or more scorers report the same metric name ({listed}); metric names must be "
+            "unique within a run. Give each scorer a distinct name (or key)."
+        )
     if max_concurrency < 1:
         raise ValueError("'max_concurrency' must be >= 1")
 

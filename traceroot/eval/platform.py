@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
+import warnings
 from typing import Any
 from urllib.parse import quote
 
@@ -159,6 +160,29 @@ def _http_json(method: str, url: str, api_key: str, body: dict | None = None) ->
 
 def _http_get_json(url: str, api_key: str) -> dict:
     return _http_json("GET", url, api_key)
+
+
+def _warn_on_metric_name_collisions(contributors: dict[str, list[str]]) -> None:
+    """Warn once per metric name emitted by more than one scorer DEFINITION.
+
+    The engine already rejects two scorers resolving to the same name before the run. What survives
+    to here is the dynamic case: a metric-map scorer whose emitted names are only known once it has
+    run. The platform keys a metric's direction/threshold on the metric name, so a name owned by two
+    definitions has ambiguous policy and is compared non-directionally. Never raises -- the run has
+    already succeeded and the platform degrades gracefully; failing the completion would be worse.
+    """
+    for metric in sorted(contributors):
+        owners = contributors[metric]
+        if len(owners) < 2:
+            continue
+        listed = ", ".join(repr(o) for o in sorted(owners))
+        warnings.warn(
+            f"scorers {listed} all emit the metric name {metric!r}; the platform keys a metric's "
+            f"direction and threshold on its name, so {metric!r} will be compared "
+            "non-directionally. Give each scorer a distinct metric name (or key).",
+            UserWarning,
+            stacklevel=2,
+        )
 
 
 class PlatformTransport:
@@ -332,6 +356,8 @@ class PlatformTransport:
         declaration governs whatever metric it emits). Rebuilt from the SAME refs registration sent,
         so completion merges by definition name without dropping the definition's detail."""
         out: list[dict] = []
+        # metric name -> the definitions that contributed it, for the uniqueness check below.
+        contributors: dict[str, list[str]] = {}
         for ref in self._scorer_refs():
             metrics = emitted.get(ref["name"])
             if metrics:
@@ -341,7 +367,10 @@ class PlatformTransport:
                     if ref.get(k) is not None
                 }
                 ref = {**ref, "emitted_metrics": [{"name": m, **policy} for m in metrics]}
+                for m in metrics:
+                    contributors.setdefault(m, []).append(ref["name"])
             out.append(ref)
+        _warn_on_metric_name_collisions(contributors)
         return out
 
     def finish_run(
