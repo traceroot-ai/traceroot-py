@@ -55,6 +55,16 @@ class TestCollectRunProvenance:
         meta = collect_run_provenance(env={}, detect_dirty=True)
         assert meta["git"]["dirty"] is True
 
+    def test_dirty_detection_is_off_by_default(self, monkeypatch):
+        # Same default as the TS helper: dirty detection spawns a synchronous `git status`,
+        # so a direct caller never pays for it (or blocks) unless it opts in.
+        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "abc123"))
+        calls = []
+        monkeypatch.setattr(prov, "_git_dirty", lambda: calls.append(1) or True)
+        meta = collect_run_provenance(env={})
+        assert calls == []
+        assert "dirty" not in meta["git"]
+
     def test_user_metadata_preserved_and_wins(self, monkeypatch):
         monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "abc123"))
         meta = collect_run_provenance(

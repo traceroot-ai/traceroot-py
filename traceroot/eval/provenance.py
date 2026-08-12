@@ -125,7 +125,9 @@ def collect_run_provenance(
     user_metadata: dict[str, Any] | None = None,
     *,
     env: dict[str, str] | None = None,
-    detect_dirty: bool = True,
+    # Default OFF: dirty detection spawns a synchronous `git status`, so a direct caller
+    # shouldn't pay that (and block) unless it explicitly opts in.
+    detect_dirty: bool = False,
 ) -> dict[str, Any] | None:
     """Build run metadata = user metadata + auto git/ci provenance (when available).
 
