@@ -38,6 +38,7 @@ _EXPORTS = {
     "dataset_latest_snippet": "snippets",
     "dataset_version_snippet": "snippets",
     "reproduce_run_snippet": "snippets",
+    "EvalCompletionError": "transport",
     "EvalTransport": "transport",
     "FakeTransport": "transport",
     "PublishResult": "transport",
@@ -76,7 +77,13 @@ if TYPE_CHECKING:
         dataset_version_snippet,
         reproduce_run_snippet,
     )
-    from traceroot.eval.transport import EvalTransport, FakeTransport, PublishResult, RunHandle
+    from traceroot.eval.transport import (
+        EvalCompletionError,
+        EvalTransport,
+        FakeTransport,
+        PublishResult,
+        RunHandle,
+    )
     from traceroot.eval.types import (
         Dataset,
         DatasetSnapshot,
@@ -132,6 +139,7 @@ __all__ = [
     "ScoreSummary",
     "UploadState",
     "aggregate_scores",
+    "EvalCompletionError",
     "EvalTransport",
     "FakeTransport",
     "RunHandle",

@@ -34,7 +34,7 @@ from traceroot.eval.results import (
 )
 from traceroot.eval.scorers import scorer_name
 from traceroot.eval.tracer import eval_tracer as _eval_tracer  # span-export tracer (own module)
-from traceroot.eval.transport import EvalTransport, RunHandle
+from traceroot.eval.transport import EvalCompletionError, EvalTransport, RunHandle
 from traceroot.eval.types import (
     Dataset,
     DatasetSnapshot,
@@ -717,6 +717,7 @@ async def _run_async(
     # definition name -> the metric names it emitted, accumulated across cases (union: a metric
     # emitted by only some cases still counts). Recorded during execution, sent at completion.
     emitted_ownership: dict[str, set[str]] = {}
+    body_error: BaseException | None = None
     try:
         item_results = await asyncio.gather(
             *[
@@ -739,18 +740,40 @@ async def _run_async(
         )
         results_list = list(item_results)
         summary = aggregate_scores(results_list)
+    except BaseException as exc:  # remembered, then re-raised untouched
+        body_error = exc
+        raise
     finally:
         # The shared executor is intentionally NOT shut down here — it's reused across runs so
         # orphaned timed-out threads stay bounded to its fixed worker count.
         if reporter is not None:
             reporter.finish()
         # Finish inside finally so a mid-run failure never leaves the run open; a registered run
-        # is never left orphaned in 'running'.
-        upload = active_transport.finish_run(
-            run_handle,
-            status=None,
-            emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
-        )
+        # is never left orphaned in 'running'. Completion is the LAST thing to run, so it must
+        # never become the story: if the run already failed, the original error keeps propagating
+        # and the completion failure rides along as a note (it used to REPLACE the real cause --
+        # a /complete 400 buried the actual exception under a second traceback).
+        try:
+            upload = active_transport.finish_run(
+                run_handle,
+                status=None,
+                emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
+            )
+        except BaseException as completion_exc:
+            if body_error is None:
+                # The run itself succeeded: one clear error naming the completion failure, with
+                # the transport exception carried as data (`from None`) rather than chained into
+                # a double traceback.
+                raise EvalCompletionError(
+                    "the evaluation ran but the run could not be finalized on the platform: "
+                    f"{_fmt_error(completion_exc)}. The run stays 'running' until a retry "
+                    "completes it.",
+                    completion_exc,
+                ) from None
+            body_error.add_note(
+                f"run completion also failed: {_fmt_error(completion_exc)} "
+                "(the run may stay 'running' on the platform)"
+            )
 
     run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
 

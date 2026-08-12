@@ -176,6 +176,7 @@ __all__ = [
     # Publish-time errors users are told to catch around Dataset.push()/evaluate().
     "DatasetConflictError",
     "DatasetPublishAborted",
+    "EvalCompletionError",
 ]
 
 # Offline-evaluation symbols are re-exported lazily so importing ``traceroot`` never
@@ -188,6 +189,7 @@ _EVAL_EXPORTS = frozenset(
         "DatasetSnapshot",
         "DeferredScore",
         "EvalCase",
+        "EvalCompletionError",
         "Score",
         "Scorer",
         "ScorerContext",
