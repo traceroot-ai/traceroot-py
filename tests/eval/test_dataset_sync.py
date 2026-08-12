@@ -254,21 +254,31 @@ class TestExistingDatasetConfirmation:
         monkeypatch.setattr("sys.stdin", _FakeStdin())
         assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is True
 
-    def _interactive_eof(self, monkeypatch):
-        """An interactive terminal whose input is at EOF (^D, or the stream closed under us)."""
-        from traceroot.eval.dataset_sync import _confirm_new_version  # noqa: F401
-
+    def _interactive(self, monkeypatch, answer):
+        """An interactive terminal that types `answer` at the prompt (EOFError = ^D / closed
+        stream). Returns the list the prompt text is recorded into, so a test can assert the
+        prompt was -- or was not -- actually shown."""
         monkeypatch.delenv("TRACEROOT_ASSUME_YES", raising=False)
 
         class _FakeStdin:
             def isatty(self):
                 return True
 
-        def _eof(*_a, **_k):
-            raise EOFError
+        prompts: list[str] = []
+
+        def _input(prompt=""):
+            prompts.append(prompt)
+            if isinstance(answer, type) and issubclass(answer, BaseException):
+                raise answer
+            return answer
 
         monkeypatch.setattr("sys.stdin", _FakeStdin())
-        monkeypatch.setattr("builtins.input", _eof)
+        monkeypatch.setattr("builtins.input", _input)
+        return prompts
+
+    def _interactive_eof(self, monkeypatch):
+        """An interactive terminal whose input is at EOF (^D, or the stream closed under us)."""
+        return self._interactive(monkeypatch, EOFError)
 
     def test_default_confirmer_declines_on_eof(self, monkeypatch):
         # The prompt defaults to NO; EOF is no answer at all, so it must decline too. Answering
@@ -286,6 +296,67 @@ class TestExistingDatasetConfirmation:
         with pytest.raises(DatasetPublishAborted):
             sync.push_dataset(self._snap(), None)
         assert not any(p.endswith("/versions") for _m, p in sync.calls)
+
+    @pytest.mark.parametrize(
+        "typed,accepted",
+        [
+            ("", False),  # a bare Enter is the [y/N] default: decline
+            ("n", False),
+            ("N", False),
+            ("no", False),
+            ("garbage", False),  # anything that isn't yes is not a yes
+            ("y", True),
+            ("Y", True),
+            ("YES", True),  # case-insensitive
+            ("  y  ", True),  # surrounding whitespace is trimmed
+        ],
+    )
+    def test_default_confirmer_reads_the_real_prompt(self, monkeypatch, typed, accepted):
+        """Drive `_confirm_new_version` through its ACTUAL `input()` path on a fake TTY (every other
+        confirmation test injects `on_existing` and never exercises the prompt itself). Only an
+        explicit yes publishes; everything else -- including a bare Enter -- declines."""
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        prompts = self._interactive(monkeypatch, typed)
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is accepted
+        assert len(prompts) == 1 and "[y/N]" in prompts[0]  # the prompt was actually shown
+
+    def test_assume_yes_publishes_without_ever_prompting(self, monkeypatch):
+        """`TRACEROOT_ASSUME_YES=1` is the documented escape hatch: it must skip the prompt
+        ENTIRELY -- not read stdin and override it -- so it holds on an interactive terminal whose
+        next keystroke would decline."""
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        prompts = self._interactive(monkeypatch, "n")  # a TTY that would say no
+        monkeypatch.setenv("TRACEROOT_ASSUME_YES", "1")
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is True
+        assert prompts == []  # stdin was never consulted
+
+    @pytest.mark.parametrize("value", ["1", "true", "YES", " yes "])
+    def test_assume_yes_accepted_spellings(self, monkeypatch, value):
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        self._interactive(monkeypatch, "n")
+        monkeypatch.setenv("TRACEROOT_ASSUME_YES", value)
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", ""])
+    def test_assume_yes_off_still_honours_the_prompt(self, monkeypatch, value):
+        # An unset-like value must not silently arm the bypass: the TTY's "n" still decides.
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        self._interactive(monkeypatch, "n")
+        monkeypatch.setenv("TRACEROOT_ASSUME_YES", value)
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is False
+
+    def test_assume_yes_publishes_a_new_version_end_to_end(self, monkeypatch):
+        # The bypass must reach the real push: an existing dataset with changed content publishes.
+        self._interactive(monkeypatch, "n")  # a TTY that would decline
+        monkeypatch.setenv("TRACEROOT_ASSUME_YES", "1")
+        sync = self._sync(exists=True)  # content changed -> the default confirmer is consulted
+        res = sync.push_dataset(self._snap(), None)
+        assert res.dataset_version_id == "dsv_10"
+        assert any(p.endswith("/versions") for _m, p in sync.calls)
 
 
 def test_evaluate_auto_syncs_a_local_dataset(monkeypatch):
