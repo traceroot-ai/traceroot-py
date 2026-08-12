@@ -30,6 +30,7 @@ from traceroot.eval.results import (
     EvalRunResult,
     RunDatasetRef,
     RunView,
+    UploadState,
     aggregate_scores,
 )
 from traceroot.eval.scorers import scorer_name
@@ -321,6 +322,7 @@ async def _run_case(
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
     executor: ThreadPoolExecutor | None = None,
     emitted_ownership: dict[str, set[str]] | None = None,
+    dropped_results: list[str] | None = None,
 ) -> EvalItemResult:
     tracer = _eval_tracer()
     async with semaphore:
@@ -458,8 +460,12 @@ async def _run_case(
         try:
             transport.record_item_result(run, item_result)
             transport.record_scores(run, item_result.case_id, item_result.scores)
-        except Exception:
-            pass  # reporting is best-effort; the computed result is still returned
+        except Exception as exc:
+            # Reporting is best-effort; the computed result is still returned. But a dropped
+            # result must not be invisible -- it is counted onto the run's upload state, so a
+            # run that completes "uploaded" with missing results can be told from a clean one.
+            if dropped_results is not None:
+                dropped_results.append(_fmt_error(exc))
         if on_case_complete is not None:
             on_case_complete(item_result, item_result.duration_ms)
         return item_result
@@ -717,6 +723,9 @@ async def _run_async(
     # definition name -> the metric names it emitted, accumulated across cases (union: a metric
     # emitted by only some cases still counts). Recorded during execution, sent at completion.
     emitted_ownership: dict[str, set[str]] = {}
+    # Per-case result POSTs the transport dropped (best-effort reporting), surfaced on the
+    # upload state so a green run with silently-missing results is detectable.
+    dropped_results: list[str] = []
     body_error: BaseException | None = None
     try:
         item_results = await asyncio.gather(
@@ -734,6 +743,7 @@ async def _run_async(
                     on_case_complete=case_complete_hook,
                     executor=sync_executor,
                     emitted_ownership=emitted_ownership,
+                    dropped_results=dropped_results,
                 )
                 for c in cases
             ]
@@ -774,6 +784,11 @@ async def _run_async(
                 f"run completion also failed: {_fmt_error(completion_exc)} "
                 "(the run may stay 'running' on the platform)"
             )
+        else:
+            if dropped_results and isinstance(upload, UploadState):
+                upload = dataclasses.replace(
+                    upload, failed_result_count=len(dropped_results)
+                )
 
     run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
 

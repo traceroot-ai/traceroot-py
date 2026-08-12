@@ -64,9 +64,22 @@ class UploadState:
 
     status: Literal["uploaded"] = "uploaded"
     dashboard_url: str | None = None
+    # Per-case result POSTs that failed and were dropped (reporting is best-effort so the run
+    # still completes). Counted so a run that reports "uploaded" with silently-missing results
+    # is detectable instead of looking green.
+    failed_result_count: int = 0
+
+    @property
+    def partial(self) -> bool:
+        """True when the run was completed but some per-case results never reached the platform."""
+        return self.failed_result_count > 0
 
     def to_dict(self) -> dict[str, Any]:
-        return {"status": self.status, "dashboard_url": self.dashboard_url}
+        return {
+            "status": self.status,
+            "dashboard_url": self.dashboard_url,
+            "failed_result_count": self.failed_result_count,
+        }
 
 
 @dataclasses.dataclass
