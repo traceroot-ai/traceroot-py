@@ -184,14 +184,21 @@ class PlatformDatasetSync:
         return _http_json(method, f"{self.host_url}{path}", self.api_key, body)
 
     def _existing_dataset(self, dataset_id: str) -> dict[str, Any] | None:
-        """The remote dataset's metadata if it ALREADY exists with a published version, else None
-        (a fetch error is treated as 'new' so the push itself surfaces any real problem)."""
+        """The remote dataset's metadata if it ALREADY exists with a published version, else None.
+
+        ONLY a 404 means "no such dataset". Any other failure (401/403/5xx/timeout) says nothing
+        about whether the dataset exists, and reading it as "new" would skip BOTH the idempotent
+        no-op and the confirmation -- publishing an unprompted version off a transient error. So
+        everything but a 404 propagates.
+        """
         try:
             meta = self._request(
                 "GET", f"/api/v1/public/datasets/{quote(dataset_id, safe='')}"
             )
-        except RuntimeError:
-            return None
+        except RuntimeError as exc:
+            if " HTTP 404:" in str(exc):
+                return None
+            raise
         return meta if meta.get("current_dataset_version_id") else None
 
     def _published_revision(self, dataset_id: str, version_id: str) -> str | None:
@@ -206,6 +213,18 @@ class PlatformDatasetSync:
             return current.snapshot().revision
         except Exception:
             return None
+
+    def _upsert_dataset(self, snapshot: DatasetSnapshot) -> None:
+        """Upsert the dataset's un-versioned metadata (name/description). Not a version."""
+        self._request(
+            "POST",
+            "/api/v1/public/datasets",
+            {
+                "dataset_id": snapshot.dataset_id,
+                "name": snapshot.name,
+                "description": snapshot.description,
+            },
+        )
 
     def push_dataset(
         self,
@@ -223,21 +242,19 @@ class PlatformDatasetSync:
             current_version = existing["current_dataset_version_id"]
             if self._published_revision(snapshot.dataset_id, current_version) == snapshot.revision:
                 # Identical content -> idempotent no-op; keep the current version, never prompt.
+                # ``name``/``description`` are dataset metadata, NOT part of the content revision,
+                # so an edit to either lands here with an unchanged revision. Returning without the
+                # upsert would make ``ds.description = ...; ds.push()`` a silent no-op, so send the
+                # metadata first and only skip the VERSION.
+                self._upsert_dataset(snapshot)
                 return PushResult("uploaded", snapshot.dataset_id, current_version)
             confirm = on_existing if on_existing is not None else _confirm_new_version
             if not confirm(existing):
+                # A declined publish leaves the remote entirely untouched -- metadata included.
                 raise DatasetPublishAborted(
                     f"publish to existing dataset {snapshot.name!r} declined; no new version created."
                 )
-        self._request(
-            "POST",
-            "/api/v1/public/datasets",
-            {
-                "dataset_id": snapshot.dataset_id,
-                "name": snapshot.name,
-                "description": snapshot.description,
-            },
-        )
+        self._upsert_dataset(snapshot)
         changes: list[dict[str, Any]] = []
         for c in snapshot.cases:
             # Native JSON at the HTTP boundary: input/expected/metadata are sent as
