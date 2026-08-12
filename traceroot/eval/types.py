@@ -19,7 +19,7 @@ from traceroot.eval.canonical import (
     canonical_json,
     normalize,
 )
-from traceroot.eval.ids import new_test_case_id, stable_case_id, stable_dataset_id
+from traceroot.eval.ids import stable_case_id, stable_dataset_id
 
 
 @dataclasses.dataclass(frozen=True)
@@ -179,6 +179,17 @@ class Dataset:
         self._cases: dict[str, EvalCase] = {}
 
     # --- authoring / mutation (network-free) ---
+    def _content_id(self, input: Any) -> str:
+        """The stable content id for ``input``: dataset key + canonical input + first free
+        occurrence. Shared by ``add`` and ``upsert`` so both converge on the same id."""
+        canonical = canonical_json(input)
+        occurrence = 0
+        cid = stable_case_id(self.key, canonical, occurrence)
+        while cid in self._cases:
+            occurrence += 1
+            cid = stable_case_id(self.key, canonical, occurrence)
+        return cid
+
     def add(
         self,
         input: Any,
@@ -198,15 +209,7 @@ class Dataset:
         keeps ids collision-free across removes.
         """
         _validate_payload(input, expected, metadata)
-        if id:
-            cid = id
-        else:
-            canonical = canonical_json(input)
-            occurrence = 0
-            cid = stable_case_id(self.key, canonical, occurrence)
-            while cid in self._cases:
-                occurrence += 1
-                cid = stable_case_id(self.key, canonical, occurrence)
+        cid = id if id else self._content_id(input)
         if cid in self._cases:
             raise ValueError(f"test case id already exists: {cid!r}")
         case = EvalCase(
@@ -221,10 +224,15 @@ class Dataset:
         return case
 
     def upsert(self, case: EvalCase) -> EvalCase:
-        """Add or replace by id; anonymous cases get a stable ULID id."""
+        """Add or replace by id.
+
+        An anonymous case gets the SAME content-derived id ``add()`` would give it, not a fresh
+        random one: a random id would fork the case into a new server case on every process, which
+        is exactly what content-addressed ids exist to prevent.
+        """
         _validate_payload(case.input, case.expected, case.metadata)
         if case.id is None:
-            case = dataclasses.replace(case, id=new_test_case_id())
+            case = dataclasses.replace(case, id=self._content_id(case.input))
         self._cases[case.id] = case
         return case
 
@@ -289,6 +297,10 @@ class Dataset:
         return {
             "dataset_id": self.dataset_id,
             "name": self.name,
+            # The key is what every case id is derived from, so it must survive save/load:
+            # without it a reloaded dataset falls back to `name` and every case added
+            # afterwards gets an id that no longer converges with locally authored ones.
+            "key": self.key,
             "description": self.description,
             "base_version_id": self.base_version_id,
             "dataset_version_id": self.dataset_version_id,  # keep the remote binding through save/load
@@ -297,7 +309,7 @@ class Dataset:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Dataset:
-        ds = cls(name=d["name"], description=d.get("description"))
+        ds = cls(name=d["name"], description=d.get("description"), key=d.get("key"))
         ds.dataset_id = d.get("dataset_id", ds.dataset_id)
         ds.base_version_id = d.get("base_version_id")
         ds.dataset_version_id = d.get("dataset_version_id")
@@ -320,6 +332,7 @@ class Dataset:
                 "type": "dataset",
                 "dataset_id": self.dataset_id,
                 "name": self.name,
+                "key": self.key,
                 "description": self.description,
                 "base_version_id": self.base_version_id,
                 "dataset_version_id": self.dataset_version_id,
@@ -345,6 +358,7 @@ class Dataset:
                 for k in (
                     "dataset_id",
                     "name",
+                    "key",
                     "description",
                     "base_version_id",
                     "dataset_version_id",

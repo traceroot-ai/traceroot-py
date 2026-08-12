@@ -24,6 +24,7 @@ import urllib.request
 from typing import Any
 from urllib.parse import quote
 
+from traceroot.eval.ids import stable_dataset_id
 from traceroot.eval.results import EvalItemResult, UploadState, case_status as _case_status
 from traceroot.eval.transport import PublishResult, RunHandle
 from traceroot.eval.types import Dataset, EvalCase, Score
@@ -480,10 +481,25 @@ class PlatformTransport:
         return n >= threshold  # higher_is_better (the default)
 
 
+def _recovered_key(name: str, dataset_id: str | None) -> str | None:
+    """The dataset's authoring key, when it can be PROVEN from what the platform returned.
+
+    The key is only ever hashed into the dataset id, never sent, so it is recoverable exactly
+    when the display name still hashes to that id (the default ``key = name`` case). A dataset
+    published under an explicit key, or renamed since, is not recoverable -- and guessing would
+    hand every subsequently added case a divergent id, so the caller falls back to the dataset
+    id (unambiguous and stable) instead of a plausible lie.
+    """
+    if dataset_id and stable_dataset_id(name) == dataset_id:
+        return name
+    return None
+
+
 def _dataset_from_version(snapshot: dict, name: str) -> Dataset:
     """Build a local Dataset pinned to the exact version described by ``snapshot``."""
-    ds = Dataset(name=name)
-    ds.dataset_id = snapshot.get("dataset_id")  # type: ignore[assignment]
+    dataset_id = snapshot.get("dataset_id")
+    ds = Dataset(name=name, key=_recovered_key(name, dataset_id) or dataset_id)
+    ds.dataset_id = dataset_id  # type: ignore[assignment]
     ds.dataset_version_id = snapshot.get("dataset_version_id")
     for item in snapshot.get("items", []):
         # Native JSON at the HTTP boundary: the backend already JSON-decodes
