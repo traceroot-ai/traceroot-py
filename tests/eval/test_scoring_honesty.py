@@ -74,6 +74,20 @@ def test_summary_shows_per_metric_pass_rate():
     assert "count=2" in line
 
 
+def test_summary_pass_rate_is_name_agnostic_for_a_lone_scorer():
+    # A lone scorer emitting a lone metric owns it even when the emitted Score name differs from the
+    # scorer's declared name — the SAME resolution PlatformTransport uses, so local pass-rate == the
+    # platform's. (Regression: a by-name-only lookup would miss this and show no pass-rate.)
+    ds = Dataset(name="agnostic")
+    ds.upsert(EvalCase(input=1, id="a", expected=1))
+    s = Scorer.code(key="x", value_type="numeric", direction="higher_is_better", threshold=1.0)(
+        lambda ctx: Score("differently_named", 1.0)
+    )
+    run = evaluate(name="r", dataset=ds, task=echo, scorers=[s], local=True)
+    line = next(ln for ln in run.summary().splitlines() if "mean=" in ln)
+    assert "pass=1/1" in line
+
+
 def test_summary_omits_pass_rate_when_no_threshold_declared():
     ds = Dataset(name="nopolicy")
     ds.upsert(EvalCase(input=1, id="a", expected=1))

@@ -161,19 +161,22 @@ def aggregate_scores(item_results: list[EvalItemResult]) -> dict[str, ScoreSumma
     return summary
 
 
-def _score_verdict(value: Any, spec: dict[str, Any] | None) -> bool | None:
-    """Whether one score passes — the same rule the platform applies. A bool value IS its verdict;
-    a numeric value passes iff it clears the owning scorer's declared threshold in its declared
-    direction. None (no verdict) when there is no declared policy or the value isn't numeric."""
+def _score_verdict(value: Any, owner: dict[str, Any] | None) -> bool | None:
+    """Whether one score passes, given its ALREADY-RESOLVED owning scorer spec. Parity with
+    ``PlatformTransport._score_passed``: a bool value IS its verdict; a numeric value passes iff it
+    clears the owner's declared threshold in its declared direction (defaulting to higher_is_better).
+    None (no verdict) for a non-finite value, no owner, or an owner with no threshold / 'none'
+    direction — the SDK never fabricates a pass/fail."""
     if isinstance(value, bool):
         return value
-    if not isinstance(value, (int, float)):
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
         return None
-    if not spec:
+    if owner is None:
         return None
-    threshold = spec.get("threshold")
-    direction = spec.get("direction")
-    if threshold is None or direction in (None, "none"):
+    threshold = owner.get("threshold")
+    direction = owner.get("direction")
+    direction = direction if direction is not None else "higher_is_better"
+    if threshold is None or direction == "none":
         return None
     return value <= threshold if direction == "lower_is_better" else value >= threshold
 
@@ -416,16 +419,20 @@ class EvalRunResult:
         return "\n".join(lines)
 
     def _pass_tally(self) -> tuple[dict[str, int], dict[str, int]]:
-        """(passed, judged) counts per metric for ``summary()``. A score is JUDGED when it has a
-        bool value, or a numeric value AND its owning scorer declared a threshold + direction — the
-        SAME rule the platform uses for per-score ``passed`` (see PlatformTransport). Metrics the
-        SDK cannot judge (no declared policy) contribute no pass-rate, only a count."""
-        policy = {s.get("name"): s for s in (self.scorer_specs or [])}
+        """(passed, judged) counts per metric for ``summary()``. Resolves each score's owning scorer
+        EXACTLY as ``PlatformTransport._score_policy`` does — a lone scorer emitting a lone metric
+        owns it name-agnostically (single emission), otherwise the emitted name must match a declared
+        scorer name — so the local pass-rate equals the platform's. Metrics with no resolvable policy
+        contribute no pass-rate, only a count."""
+        specs = self.scorer_specs or []
+        by_name = {s.get("name"): s for s in specs}
         passed: dict[str, int] = {}
         judged: dict[str, int] = {}
         for item in self.item_results:
+            single = len(item.scores) == 1
             for score in item.scores:
-                verdict = _score_verdict(score.value, policy.get(score.name))
+                owner = specs[0] if (len(specs) == 1 and single) else by_name.get(score.name)
+                verdict = _score_verdict(score.value, owner)
                 if verdict is None:
                     continue
                 judged[score.name] = judged.get(score.name, 0) + 1
