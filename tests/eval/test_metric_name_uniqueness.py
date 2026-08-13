@@ -65,7 +65,9 @@ def test_duplicate_scorer_names_raise_before_the_run_starts():
     msg = str(exc.value)
     assert "'accuracy'" in msg
     assert "metric names must be unique within a run" in msg
-    assert "distinct name (or key)" in msg
+    # The fix is a distinct NAME; a distinct `key` cannot resolve this, so it must not be offered.
+    assert "distinct name" in msg
+    assert "key" not in msg
     # Fail fast: the run never started, so nothing was executed or reported.
     assert ran == []
 

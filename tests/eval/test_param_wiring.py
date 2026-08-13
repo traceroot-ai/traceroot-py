@@ -83,22 +83,28 @@ class TestTimeout:
 
     def test_shared_deadline_is_not_restarted_per_scorer(self):
         # The budget is per CASE, not per call: a task that spends most of it leaves the
-        # scorer only the remainder.
-        async def half(x):
-            await asyncio.sleep(0.05)
+        # scorer only the remainder. The scorer's sleep is deliberately chosen to sit BETWEEN
+        # the remaining budget (~0.05s) and a full fresh one (0.5s): it must time out under the
+        # shared deadline, and would have completed had the deadline restarted per scorer.
+        async def most_of_the_budget(x):
+            await asyncio.sleep(0.45)
             return x
 
-        started = time.perf_counter()
+        async def scorer_within_a_fresh_budget(ctx):
+            await asyncio.sleep(0.2)
+            return 1.0
+
         run = Evaluation(
             name="r",
             dataset=_ds(1),
-            task=half,
-            scorers=[slow_scorer],
-            timeout=0.1,
+            task=most_of_the_budget,
+            scorers=[scorer_within_a_fresh_budget],
+            timeout=0.5,
             report_to=FakeTransport(),
         ).run()
-        assert time.perf_counter() - started < 0.9
-        assert run.item_results[0].error is not None
+        item = run.item_results[0]
+        assert item.error is not None and "TimeoutError" in item.error
+        assert item.scores == []
 
     def test_no_timeout_completes(self):
         run = Evaluation(

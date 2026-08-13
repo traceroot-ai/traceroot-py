@@ -432,3 +432,108 @@ class TestLlmJudgeTrace:
         assert "llm_judge:conciseness" in by  # a custom complete is self-instrumented
         assert "conciseness" in by  # the scorer span still exists
         assert result.item_results[0].scores[0].value == 0.8  # judge still ran + scored
+
+
+class TestLlmJudgeTokenCounts:
+    """On the default-dispatch path the judge's own span is the ONLY record of the model
+    call, so it must carry the token counts the backend prices from -- otherwise that call shows
+    up costless. The SDK reports the provider's counts; it never computes cost, and never
+    fabricates counts it wasn't given."""
+
+    PROMPT = "llm.token_count.prompt"
+    COMPLETION = "llm.token_count.completion"
+    TOTAL = "llm.token_count.total"
+    CACHE_READ = "llm.token_count.prompt_details.cache_read"
+    CACHE_CREATION = "llm.token_count.prompt_details.cache_creation"
+
+    @staticmethod
+    def _judge(**kw):
+        from traceroot.eval import llm_judge
+
+        return llm_judge(
+            name="conciseness",
+            model="claude-sonnet-5",
+            messages=[{"role": "user", "content": "ANSWER:\n{{output}}"}],
+            **kw,
+        )
+
+    @staticmethod
+    def _stub_default(monkeypatch, usage):
+        """Stub the provider dispatch -- injecting ``complete=`` cannot exercise this, because a
+        user-supplied complete has no usage to report by construction."""
+        from traceroot.eval import judge as judge_mod
+
+        monkeypatch.setattr(
+            judge_mod, "_default_complete", lambda model, messages: ("0.8", usage)
+        )
+
+    def _run(self, judge, memory_exporter):
+        result = evaluate(
+            name="r", data=_ds(1), task=echo, scorers=[judge], report_to=_reported()
+        )
+        return result, _by_name(memory_exporter.get_finished_spans())
+
+    def test_judge_span_carries_the_provider_token_counts(self, memory_exporter, monkeypatch):
+        self._stub_default(monkeypatch, {"prompt": 120, "completion": 7, "total": 127})
+        result, by = self._run(self._judge(), memory_exporter)
+
+        attrs = by["llm_judge:conciseness"].attributes
+        assert attrs[self.PROMPT] == 120
+        assert attrs[self.COMPLETION] == 7
+        assert attrs[self.TOTAL] == 127
+        assert result.item_results[0].scores[0].value == 0.8  # and the judge still scored
+
+    def test_cache_counts_are_recorded_when_reported(self, memory_exporter, monkeypatch):
+        self._stub_default(
+            monkeypatch,
+            {"prompt": 120, "completion": 7, "total": 127, "cache_read": 90, "cache_creation": 10},
+        )
+        _, by = self._run(self._judge(), memory_exporter)
+
+        attrs = by["llm_judge:conciseness"].attributes
+        assert attrs[self.CACHE_READ] == 90
+        assert attrs[self.CACHE_CREATION] == 10
+
+    def test_a_provider_reporting_no_usage_records_no_token_attrs(
+        self, memory_exporter, monkeypatch
+    ):
+        # Honest absence beats a fabricated zero: nothing is recorded rather than "0 tokens".
+        self._stub_default(monkeypatch, None)
+        result, by = self._run(self._judge(), memory_exporter)
+
+        keys = set(by["llm_judge:conciseness"].attributes or {})
+        assert not any(k.startswith("llm.token_count") for k in keys), keys
+        assert result.item_results[0].scores[0].value == 0.8
+
+    def test_custom_complete_records_no_token_attrs(self, memory_exporter):
+        # ``complete=`` returns text only -- there are no tokens to report, so none are invented.
+        result, by = self._run(
+            self._judge(complete=lambda model, messages: "0.8"), memory_exporter
+        )
+
+        keys = set(by["llm_judge:conciseness"].attributes or {})
+        assert not any(k.startswith("llm.token_count") for k in keys), keys
+        assert result.item_results[0].scores[0].value == 0.8
+
+    def test_the_integration_traced_path_is_unchanged(self, memory_exporter, monkeypatch):
+        # The integration emits the LLM span (with its own tokens) for the underlying request, so
+        # the judge opens no span of its own -- and must not copy the counts onto the scorer span.
+        import traceroot
+        from traceroot.instrumentation import Integration
+
+        class _FakeClient:
+            _instrumented = (Integration.ANTHROPIC,)
+
+            def shutdown(self):  # teardown (reset_traceroot) calls these
+                pass
+
+            def flush(self):
+                pass
+
+        monkeypatch.setattr(traceroot, "_client", _FakeClient(), raising=False)
+        self._stub_default(monkeypatch, {"prompt": 120, "completion": 7, "total": 127})
+        _, by = self._run(self._judge(), memory_exporter)
+
+        assert "llm_judge:conciseness" not in by
+        keys = set(by["conciseness"].attributes or {})
+        assert not any(k.startswith("llm.token_count") for k in keys), keys

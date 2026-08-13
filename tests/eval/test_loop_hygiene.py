@@ -38,10 +38,18 @@ class _SlowTransport(FakeTransport):
         super().__init__()
         self.delay = delay
         self.threads: list[int] = []
+        self._lock = threading.Lock()
+        self._in_flight = 0
+        self.peak_in_flight = 0
 
     def _block(self) -> None:
-        self.threads.append(threading.get_ident())
+        with self._lock:
+            self.threads.append(threading.get_ident())
+            self._in_flight += 1
+            self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
         time.sleep(self.delay)
+        with self._lock:
+            self._in_flight -= 1
 
     def create_run(self, *args, **kwargs):
         self._block()
@@ -59,9 +67,7 @@ class _SlowTransport(FakeTransport):
 class TestReportingRunsOffTheLoop:
     def test_per_case_reporting_does_not_serialize_the_run(self):
         cases = 4
-        delay = 0.2
-        t = _SlowTransport(delay)
-        started = time.perf_counter()
+        t = _SlowTransport(0.2)
         _run(
             name="r",
             data=_ds(cases),
@@ -70,11 +76,11 @@ class TestReportingRunsOffTheLoop:
             transport=t,
             max_concurrency=cases,
         )
-        elapsed = time.perf_counter() - started
-        # Serialized on the loop this is create + 4 * results + finish = 6 delays; concurrent it
-        # is create + one round of results + finish = 3. The midpoint separates them with room to
-        # spare on a loaded machine.
-        assert elapsed < delay * 4.5, f"reporting serialized the run ({elapsed:.2f}s)"
+        # Overlap, not elapsed time, is the property: called on the loop thread the blocking POSTs
+        # can only ever be one-in-flight, so any concurrency at all proves they were dispatched to
+        # workers. Asserting a wall-clock budget instead is just a slow proxy that a loaded machine
+        # can break.
+        assert t.peak_in_flight > 1, "per-case reporting never overlapped -- it serialized"
 
     def test_reporting_never_runs_on_the_loop_thread(self):
         t = _SlowTransport(0.0)

@@ -699,7 +699,9 @@ def _validate_config(name, task, scorers, max_concurrency) -> None:
         listed = ", ".join(repr(n) for n in duplicated)
         raise ValueError(
             f"two or more scorers report the same metric name ({listed}); metric names must be "
-            "unique within a run. Give each scorer a distinct name (or key)."
+            # Only the NAME resolves this -- the check and the emitted metric both key off it, so
+            # suggesting a distinct `key` would send the author down a path that cannot help.
+            "unique within a run. Give each scorer a distinct name."
         )
     if max_concurrency < 1:
         raise ValueError("'max_concurrency' must be >= 1")
