@@ -189,6 +189,34 @@ async def _await_or_run(
     return result
 
 
+# How long a cancelled, overrunning future is given to actually settle before the timeout error
+# is raised anyway. Cancellation is delivered on the NEXT loop tick, so a well-behaved future
+# settles far inside this; the bound only exists so code that swallows its own cancellation
+# cannot hold the run hostage.
+_CANCEL_GRACE_S = 5.0
+
+
+def _observe(fut: Any) -> None:
+    """Retrieve a settled future's outcome so asyncio doesn't report it as never-retrieved."""
+    if not fut.cancelled():
+        fut.exception()
+
+
+async def _off_loop(call: Callable[[], Any]) -> Any:
+    """Run one BLOCKING transport call off the event loop.
+
+    The reporting transport is synchronous (urllib, 30s timeout). Awaited straight from a per-case
+    coroutine it blocks the loop THREAD, so per-case POSTs serialize behind one another, one slow
+    backend inflates every other case's wall clock, and the ``asyncio.wait`` that enforces their
+    deadlines can't run. Dispatch it to a worker the same way task/scorer code is -- but to the
+    loop's default executor rather than the bounded sync pool, so reporting never queues behind an
+    orphaned timed-out task that is still holding a slot there.
+    """
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(None, lambda: ctx.run(call))
+
+
 async def _bounded(coro: Any, deadline: float | None, timeout: float | None) -> Any:
     """Await ``coro`` within the case's SHARED deadline (one budget for task + scorers, so a
     hung judge cannot outlive ``timeout=``). ``deadline`` is an absolute ``time.monotonic()``
@@ -200,6 +228,16 @@ async def _bounded(coro: Any, deadline: float | None, timeout: float | None) -> 
     done, _pending = await asyncio.wait({fut}, timeout=max(0.0, deadline - time.monotonic()))
     if not done:
         fut.cancel()  # an uncancellable sync call keeps its bounded pool slot until it returns
+        # Cancelling only REQUESTS cancellation; the task settles on a later tick. Raising here
+        # without waiting for that leaves a live task nobody observes -- "Task exception was never
+        # retrieved" on every timed-out case, and worse noise when the coroutine turns its own
+        # cancellation into a different error. Wait for it to settle (it does so immediately in
+        # the ordinary case) and read its outcome.
+        settled, unsettled = await asyncio.wait({fut}, timeout=_CANCEL_GRACE_S)
+        for f in settled:
+            _observe(f)
+        for f in unsettled:  # ignoring its cancellation: observe it whenever it does finish
+            f.add_done_callback(_observe)
         raise _CaseTimeoutError(f"case exceeded {timeout}s")
     return fut.result()
 
@@ -369,7 +407,7 @@ async def _run_case(
             on_case_start(case)
         # Pre-register the item (before execution) so a future live UI can show it.
         try:
-            transport.register_item(run, case)
+            await _off_loop(lambda: transport.register_item(run, case))
         except Exception:
             pass  # reporting is best-effort; a transport blip must not drop the case
 
@@ -516,8 +554,10 @@ async def _run_case(
             duration_ms=(time.perf_counter() - started) * 1000.0,
         )
         try:
-            transport.record_item_result(run, item_result)
-            transport.record_scores(run, item_result.case_id, item_result.scores)
+            await _off_loop(lambda: transport.record_item_result(run, item_result))
+            await _off_loop(
+                lambda: transport.record_scores(run, item_result.case_id, item_result.scores)
+            )
         except Exception as exc:
             # Reporting is best-effort; the computed result is still returned. But a dropped
             # result must not be invisible -- it is counted onto the run's upload state, so a
@@ -793,11 +833,13 @@ async def _run_async(
 
     # Register the run up front so scorer descriptors + the run_id are available before the
     # per-case traces are stamped.
-    run_handle = active_transport.create_run(
-        name=name,
-        dataset_name=dataset_name,
-        metadata=run_metadata,
-        client_run_id=local_run_id,
+    run_handle = await _off_loop(
+        lambda: active_transport.create_run(
+            name=name,
+            dataset_name=dataset_name,
+            metadata=run_metadata,
+            client_run_id=local_run_id,
+        )
     )
     # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the runner
     # runner on SIGINT) can finalize its partial artifact under the SAME ids the run registered
@@ -887,10 +929,12 @@ async def _run_async(
         # and the completion failure rides along as a note (it used to REPLACE the real cause --
         # a /complete 400 buried the actual exception under a second traceback).
         try:
-            upload = active_transport.finish_run(
-                run_handle,
-                status=None,
-                emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
+            upload = await _off_loop(
+                lambda: active_transport.finish_run(
+                    run_handle,
+                    status=None,
+                    emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
+                )
             )
         except BaseException as completion_exc:
             if body_error is None:
