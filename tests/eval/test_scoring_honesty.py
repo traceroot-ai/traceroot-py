@@ -5,6 +5,8 @@ outcomes -- quality failure, task error, scorer error, not-scored, pending revie
 must stay separable.
 """
 
+import json
+
 from traceroot.eval import Dataset, DeferredScore, EvalCase, Score, Scorer, ScorerContext, evaluate
 from traceroot.eval.results import aggregate_scores, case_status
 
@@ -17,6 +19,44 @@ def _one(expected=1, **kw):
 
 def echo(x):
     return x
+
+
+def test_non_finite_score_does_not_poison_the_summary_mean():
+    # H1 makes a non-finite score `errored` on the wire, but the LOCAL aggregate must agree: a NaN
+    # folded into the mean makes run.json contain a bare `NaN` (invalid per the JSON spec — strict
+    # parsers reject it) and disagrees with .summary() and the platform. It must be excluded.
+    import math
+
+    ds = Dataset(name="nan-agg")
+    ds.upsert(EvalCase(input=1, id="c0", expected=1))
+    run = evaluate(name="r", dataset=ds, task=echo, scorers=[lambda ctx: float("nan")], local=True)
+    metric = next(iter(run.score_summary.values()))
+    assert metric.mean is None  # excluded from the mean, not NaN
+    assert metric.count == 1  # still counts as a produced score
+    # And the saved artifact is valid JSON — no bare NaN/Infinity token that a strict parser rejects.
+    import os
+    import tempfile
+
+    path = os.path.join(tempfile.mkdtemp(), "run.json")
+    run.save(path)
+
+    def _reject(token):
+        raise AssertionError(f"artifact has a bare {token} token (invalid JSON)")
+
+    json.loads(open(path).read(), parse_constant=_reject)
+
+
+def test_aggregate_excludes_non_finite_but_keeps_finite_values():
+    from traceroot.eval.results import EvalItemResult, aggregate_scores
+
+    def _item(cid, value):
+        return EvalItemResult(cid, value, value, value, [Score("m", value)], {}, None, None)
+
+    summary = aggregate_scores(
+        [_item("a", 1.0), _item("b", float("nan")), _item("c", float("inf"))]
+    )
+    assert summary["m"].mean == 1.0  # only the finite value contributes
+    assert summary["m"].count == 3  # all three still count as produced
 
 
 def test_evaluate_retains_the_declared_scorer_policy_on_the_result():

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -143,7 +144,12 @@ def aggregate_scores(item_results: list[EvalItemResult]) -> dict[str, ScoreSumma
                 order.append(score.name)
                 total_counts[score.name] = 0
             total_counts[score.name] += 1
-            if isinstance(score.value, (int, float)):  # bool -> 1.0/0.0
+            # A non-finite value (NaN/inf) must not fold into the mean: it would make the local
+            # aggregate and run.json disagree with the wire (where a non-finite score is errored)
+            # and .summary(), and a bare `NaN` token makes the artifact invalid per the JSON spec
+            # (strict parsers, including JS `JSON.parse`, reject it). Exclude it from the numeric
+            # aggregate; it still counts as a produced score.
+            if isinstance(score.value, (int, float)) and math.isfinite(float(score.value)):
                 numeric_sums[score.name] = numeric_sums.get(score.name, 0.0) + float(score.value)
                 numeric_counts[score.name] = numeric_counts.get(score.name, 0) + 1
 
