@@ -46,9 +46,7 @@ class TestErrorVocabulary:
         def broken(c):
             raise RuntimeError("judge down")
 
-        run = evaluate(
-            name="r", dataset=_one(), task=echo, scorers=[good, broken]
-        )
+        run = evaluate(name="r", dataset=_one(), task=echo, scorers=[good, broken])
         item = run.item_results[0]
         # the good score survives; the broken scorer is recorded as an error, not a 0.
         assert [s.name for s in item.scores] == ["good"]
@@ -140,12 +138,13 @@ class TestScorerVersionHonesty:
 
     def test_runner_events_do_not_invent_version(self):
         from traceroot.eval.results import EvalItemResult
-        from traceroot.eval.runner import _score_event, _scorer_error_events
+        from traceroot.eval.runner import ScorePolicy, _score_event, _scorer_error_events
 
         item = EvalItemResult(
             "c", None, None, None, [Score("acc", 1.0)], {"bad": "boom"}, None, None
         )
-        assert _score_event(item.scores[0])["scorer_version"] is None
+        event = _score_event(item.scores[0], ScorePolicy(None), single_emission=True)
+        assert event["scorer_version"] is None
         assert _scorer_error_events(item)[0]["scorer_version"] is None
         # scorer NAME and independent error are still preserved
         assert _scorer_error_events(item)[0]["scorer_name"] == "bad"

@@ -44,6 +44,7 @@ import traceroot.eval as ev
 from traceroot.constants import SDK_VERSION
 from traceroot.eval.evaluation import Evaluation
 from traceroot.eval.ids import new_run_id
+from traceroot.eval.platform import PlatformTransport
 from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
@@ -52,6 +53,7 @@ from traceroot.eval.results import (
     aggregate_scores,
     case_status,
 )
+from traceroot.eval.scorers import describe_scorers
 from traceroot.eval.transport import FakeTransport
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase
 from traceroot.utils import serialize_value
@@ -72,9 +74,36 @@ class Emitter:
         self._lock = threading.Lock()
 
     def emit(self, event: dict[str, Any]) -> None:
-        line = json.dumps(event, default=str, ensure_ascii=False) + "\n"
-        with self._lock:
-            self._write(line)
+        """Best-effort: emitting is reporting, never control flow.
+
+        The channel can die under us (the harness went away -> EPIPE) and the sink is caller-
+        supplied. Emitting happens inside per-case hooks the engine calls UNGUARDED, so letting a
+        write error out of here would abort the remaining cases over a reporting failure. Report
+        the breakage on stderr and keep running.
+        """
+        try:
+            line = json.dumps(event, default=str, ensure_ascii=False) + "\n"
+            with self._lock:
+                self._write(line)
+        except Exception as exc:
+            print(
+                f"traceroot-eval: dropped a {event.get('type')} event: {_fmt(exc)}", file=sys.stderr
+            )
+
+
+def _isolated(fn: Callable[..., None]) -> Callable[..., None]:
+    """Make a per-case hook non-fatal: the engine invokes these hooks unguarded, so a failure
+    inside one (a dead event channel, a payload that resists shaping) would abort every case
+    still to run. Report it on stderr and carry on. Cancellation (KeyboardInterrupt) is a
+    BaseException and still propagates - stopping is exactly what it means."""
+
+    def guarded(*args: Any, **kwargs: Any) -> None:
+        try:
+            fn(*args, **kwargs)
+        except Exception as exc:
+            print(f"traceroot-eval: {fn.__name__} hook failed: {_fmt(exc)}", file=sys.stderr)
+
+    return guarded
 
 
 def _open_channel() -> Callable[[str], None]:
@@ -248,22 +277,49 @@ def _dataset_identity(data: Any) -> dict[str, Any]:
 # =============================================================================
 # Event / artifact shaping
 # =============================================================================
-def _score_passed(value: Any) -> bool | None:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return value >= 1.0
-    return None
+class ScorePolicy:
+    """Resolves a score's pass/fail from the owning scorer's DECLARED threshold + direction.
+
+    The resolution itself is PlatformTransport's, reused verbatim: its two methods read nothing
+    but ``scorer_specs``, so rebinding them here keeps one implementation instead of a second,
+    divergent one (constructing a PlatformTransport is impossible in a local run - it demands
+    credentials). That is the point: the local artifact and the platform UI must never disagree
+    about whether the same score passed.
+    """
+
+    _score_policy = PlatformTransport._score_policy
+    _score_passed = PlatformTransport._score_passed
+
+    def __init__(self, scorer_specs: list[dict[str, Any]] | None = None) -> None:
+        self.scorer_specs = scorer_specs
+
+    def passed(self, score: Any, *, single_emission: bool) -> bool | None:
+        return self._score_passed(score, single_emission=single_emission)
 
 
-def _score_event(score: Any) -> dict[str, Any]:
+def _evaluation_policy(evaluation: Evaluation) -> ScorePolicy:
+    """The declared policy of the evaluation's own scorers - the SAME descriptors the engine
+    hands the transport at registration, so both sides resolve verdicts from identical input."""
+    try:
+        return ScorePolicy(describe_scorers(evaluation.scorers))
+    except Exception:
+        # A scorer that resists introspection costs us verdicts, never the run.
+        return ScorePolicy(None)
+
+
+def _score_event(score: Any, policy: ScorePolicy, *, single_emission: bool) -> dict[str, Any]:
     return {
         "scorer_name": score.name,
         "scorer_version": score.version,
         "value": score.value,
-        "passed": _score_passed(score.value),
+        "passed": policy.passed(score, single_emission=single_emission),
         "explanation": score.comment,
     }
+
+
+def _score_events(item: EvalItemResult, policy: ScorePolicy) -> list[dict[str, Any]]:
+    single = len(item.scores) == 1
+    return [_score_event(s, policy, single_emission=single) for s in item.scores]
 
 
 def _scorer_error_events(item: EvalItemResult) -> list[dict[str, Any]]:
@@ -286,11 +342,11 @@ def _scorer_versions(result: EvalRunResult) -> dict[str, str | None]:
     return versions
 
 
-def _case_metadata(item: EvalItemResult) -> dict[str, Any]:
+def _case_metadata(item: EvalItemResult, policy: ScorePolicy) -> dict[str, Any]:
     return {
         "case_id": item.case_id,
         "status": case_status(item),
-        "scores": [_score_event(s) for s in item.scores],
+        "scores": _score_events(item, policy),
         "task_error": item.error,
         "scorer_errors": _scorer_error_events(item),
         "trace_id": item.trace_id,
@@ -350,10 +406,25 @@ def _atomic_write(path: Path, text: str) -> None:
         pass
 
 
+def _safe_payload(value: Any) -> Any:
+    """A case payload reduced to something JSON can hold.
+
+    Task output is arbitrary user data: a reference cycle (or anything else the serializer
+    chokes on) would otherwise raise while writing the artifact and take the WHOLE run down
+    after every case had already succeeded. Degrade that one payload to an explicit marker
+    instead - the case, its scores and the rest of the run survive, and nobody mistakes the
+    marker for real data.
+    """
+    try:
+        return serialize_value(value)
+    except Exception as exc:
+        return {"unserializable": True, "reason": _fmt(exc)}
+
+
 def _truncate(value: Any, limit: int | None) -> tuple[Any, bool]:
     if limit is None:
         return value, False
-    text = json.dumps(serialize_value(value), ensure_ascii=False)
+    text = json.dumps(value, ensure_ascii=False, default=str)
     if len(text.encode()) <= limit:
         return value, False
     return {"truncated": True, "preview": text[:limit]}, True
@@ -372,14 +443,16 @@ def write_artifacts(
     candidate_version: str | None,
     max_payload_bytes: int | None = None,
     created_at: str | None = None,
+    policy: ScorePolicy | None = None,
 ) -> dict[str, Any]:
     """Write the two-file artifact. Returns the artifact descriptor."""
+    policy = policy or ScorePolicy(None)
     truncated_any = False
     case_lines: list[str] = []
     for item in result.item_results:
-        inp, t1 = _truncate(item.input, max_payload_bytes)
-        out, t2 = _truncate(item.output, max_payload_bytes)
-        exp, t3 = _truncate(item.expected, max_payload_bytes)
+        inp, t1 = _truncate(_safe_payload(item.input), max_payload_bytes)
+        out, t2 = _truncate(_safe_payload(item.output), max_payload_bytes)
+        exp, t3 = _truncate(_safe_payload(item.expected), max_payload_bytes)
         truncated_any = truncated_any or t1 or t2 or t3
         record = {
             "schema_version": "1",
@@ -388,7 +461,7 @@ def write_artifacts(
             "input": inp,
             "output": out,
             "expected": exp,
-            "scores": [_score_event(s) for s in item.scores],
+            "scores": _score_events(item, policy),
             "scorer_errors": _scorer_error_events(item),
             "task_error": item.error,
             "trace_id": item.trace_id,
@@ -419,7 +492,7 @@ def write_artifacts(
         "scores": {k: v.to_dict() for k, v in result.score_summary.items()},
         "upload": result.upload_state.to_dict(),
         "artifact": artifact,
-        "cases": [_case_metadata(it) for it in result.item_results],
+        "cases": [_case_metadata(it, policy) for it in result.item_results],
     }
     _atomic_write(run_path, json.dumps(serialize_value(run_doc), ensure_ascii=False, indent=2))
     return artifact
@@ -494,6 +567,7 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     candidate_version = options.get("candidate_version") or evaluation.candidate_version
     created_at = _now_iso()
     identity = _dataset_identity(evaluation.dataset)
+    policy = _evaluation_policy(evaluation)
 
     chosen, run_mode, is_final = _subset(evaluation.dataset, first, sample, seed)
     base_select = evaluation.select
@@ -536,16 +610,21 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     # ids the run registered with (reconcilable with the cloud run), not a fresh local id.
     registered: dict[str, str | None] = {}
 
+    @_isolated
     def on_run_start(local_run_id: str, run_id: str | None) -> None:
         registered["local_run_id"] = local_run_id
         registered["run_id"] = run_id
 
+    # The engine calls these hooks UNGUARDED, so anything they raise would abort the remaining
+    # cases. Reporting a case must never cost us the run: isolate both bodies.
+    @_isolated
     def on_start(case: EvalCase) -> None:
         emitter.emit({"type": "case_started", "case_id": case.id})
 
+    @_isolated
     def on_complete(item: EvalItemResult, _dur: float) -> None:
         collected.append(item)
-        emitter.emit({"type": "case_completed", **_case_metadata(item)})
+        emitter.emit({"type": "case_completed", **_case_metadata(item, policy)})
 
     # Only override the Evaluation's own concurrency/timeout when the option is present;
     # an absent option must NOT replace the definition's value with a runner default.
@@ -598,6 +677,7 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             candidate_version=candidate_version,
             max_payload_bytes=options.get("max_payload_bytes"),
             created_at=created_at,
+            policy=policy,
         )
 
     emitter.emit(
@@ -670,6 +750,16 @@ def _fmt(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _flush_spans() -> None:
+    """Drain the span exporter before the process goes away. A no-op in local-only mode (no
+    client, export disabled); best-effort otherwise - a flush that fails is a lost trace, not
+    a failed run."""
+    try:
+        traceroot.flush()
+    except Exception as exc:
+        print(f"traceroot-eval: span flush failed: {_fmt(exc)}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Runner entry point. Exit-code contract (coordinated with the caller):
 
@@ -680,6 +770,9 @@ def main(argv: list[str] | None = None) -> int:
       harness failure, so the caller reads the stream as authoritative.
     - Cancellation (SIGINT): finalize a partial ``incomplete`` artifact and exit 130
       (the one code that corroborates the ``fatal``/cancelled signal).
+
+    Every return path flushes first: each result carries a ``trace_id``, so a span left
+    unbatched at exit is a run whose trace drill-down is permanently empty.
     """
     paths = list(argv if argv is not None else sys.argv[1:])
     emitter = Emitter(_open_channel())
@@ -702,6 +795,8 @@ def main(argv: list[str] | None = None) -> int:
                 "traceback": traceback.format_exc(),
             }
         )
+    finally:
+        _flush_spans()
     return 0
 
 
