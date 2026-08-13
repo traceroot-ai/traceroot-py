@@ -122,6 +122,26 @@ def test_large_int_renders_as_the_double_it_becomes_on_the_wire():
     assert canonical_json(10**21) == canonical_json(1e21) == "1e+21"
 
 
+def test_wire_value_of_a_big_int_is_the_double_that_was_hashed():
+    """``normalize()`` is the WIRE form and ``canonical_json()`` is the HASHED form. An int beyond
+    2**53 renders as the double it becomes, so the wire value must be that same double -- shipping
+    the exact int would push content that no longer hashes to its own revision."""
+    assert normalize(2**53) == 2**53  # still exact: representable
+    assert isinstance(normalize(2**53), int)
+    big = 2**53 + 1
+    assert normalize(big) == float(big)
+    assert isinstance(normalize(big), float)
+    # what goes on the wire re-hashes to the revision that was published
+    assert canonical_json(normalize(big)) == canonical_json(big)
+    # bool is an int subclass and must not fall into the number branch
+    assert normalize(True) is True and normalize(False) is False
+
+
+def test_int_with_no_double_representation_is_rejected():
+    with pytest.raises(CanonicalizationError, match="too large to canonicalize"):
+        normalize(10**400)
+
+
 # --- normalization rules ------------------------------------------------------------------
 
 

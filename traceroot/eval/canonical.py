@@ -161,7 +161,17 @@ def _norm(value: Any, path: list[int]) -> Any:
         _reject_lone_surrogate(value)
         return value
     if isinstance(value, int):
-        return value
+        if -_MAX_EXACT_INT <= value <= _MAX_EXACT_INT:
+            return value
+        # Beyond 2**53 the number IS a double (see _int_token / JS). Normalize to it here too, or
+        # the WIRE would carry the exact int while the HASH was taken over the rounded double —
+        # pushed content that doesn't match its own revision.
+        try:
+            return float(value)
+        except OverflowError as e:
+            raise CanonicalizationError(
+                f"integer {value} is too large to canonicalize (no IEEE-754 double representation)"
+            ) from e
     if isinstance(value, float):
         if math.isnan(value):
             return "NaN"

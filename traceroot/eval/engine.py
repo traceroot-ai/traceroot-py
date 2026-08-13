@@ -392,8 +392,11 @@ async def _run_case(
     executor: ThreadPoolExecutor | None = None,
     emitted_ownership: dict[str, set[str]] | None = None,
     dropped_results: list[str] | None = None,
+    local: bool = False,
 ) -> EvalItemResult:
-    tracer = _eval_tracer()
+    # A local run gets a NON-EXPORTING tracer: swapping the transport alone would still ship the
+    # case input/output out of the process on the per-case spans.
+    tracer = _eval_tracer(local=local)
     async with semaphore:
         started = time.perf_counter()
         # ONE deadline for the whole case (task + scorers), so a hung scorer cannot outlive it.
@@ -916,6 +919,7 @@ async def _run_async(
                     executor=sync_executor,
                     emitted_ownership=emitted_ownership,
                     dropped_results=dropped_results,
+                    local=local,
                 )
                 for c in cases
             ]
@@ -982,10 +986,12 @@ async def _run_async(
         run_id=getattr(active_transport, "run_id", None),
         metadata=run_metadata,
         # Retain the declared scorer policy so an explicit result.upload() can re-declare each
-        # metric's threshold/direction rather than re-register policy-less. Captured from the
-        # scorers directly (not the transport) so a local/Fake run — "run now, upload later" — keeps
-        # it too.
-        scorer_specs=resolved_scorer_specs,
+        # metric's threshold/direction rather than re-register policy-less. It must be the policy
+        # the run ACTUALLY registered under: a caller who pre-set transport.scorer_specs declared
+        # that one, and a re-upload under the callable-derived specs would silently flip per-score
+        # `passed`. Transports without the field (FakeTransport, i.e. a local "run now, upload
+        # later" run) fall back to the specs derived from the scorers.
+        scorer_specs=getattr(active_transport, "scorer_specs", None) or resolved_scorer_specs,
     )
 
     # When the bar was shown (interactive), surface the clickable run link if the

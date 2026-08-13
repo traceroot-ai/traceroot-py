@@ -55,3 +55,13 @@ class TestRunArtifactReader:
         # scores are preserved (what row-matched comparison needs)
         assert loaded.item_results[0].scores[0].name == "acc"
         assert loaded.item_results[0].scores[0].value == 1.0
+
+    def test_runner_artifact_round_trips_the_scorer_policy(self, tmp_path):
+        # A run loaded from run.json is re-uploadable; without the retained policy the re-upload
+        # re-registers thresholds-less and its per-score `passed` disagrees with the original run.
+        specs = [{"name": "acc", "value_type": "numeric", "threshold": 0.8}]
+        run = evaluate(name="billing", dataset=_ds(2), task=echo, scorers=[acc])
+        run.scorer_specs = specs
+        run_p = _write_runner_artifact(run, tmp_path)
+
+        assert EvalRunResult.load(str(run_p)).scorer_specs == specs

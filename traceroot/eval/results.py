@@ -299,6 +299,9 @@ class EvalRunResult:
             dataset=RunDatasetRef(**ds) if ds else None,
             run_id=d.get("run_id"),
             metadata=d.get("metadata"),
+            # Restore the declared policy so a run loaded from a runner artifact re-uploads under
+            # the thresholds it was scored with (older artifacts have none -> falls back to names).
+            scorer_specs=d.get("scorer_specs"),
         )
 
     def save(self, path: str) -> None:

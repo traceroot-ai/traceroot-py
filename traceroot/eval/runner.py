@@ -488,6 +488,10 @@ def write_artifacts(
         "scorers": [
             {"name": n, "version": _scorer_versions(result).get(n)} for n in result.score_summary
         ],
+        # The full declared policy (threshold/direction/value_type), alongside the name/version
+        # list above: a run loaded back from this artifact is re-uploadable, and without it the
+        # re-upload registers policy-less and its per-score `passed` contradicts this run's.
+        "scorer_specs": result.scorer_specs,
         "counts": _counts(result),
         "scores": {k: v.to_dict() for k, v in result.score_summary.items()},
         "upload": result.upload_state.to_dict(),

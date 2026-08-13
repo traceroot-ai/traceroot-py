@@ -121,6 +121,33 @@ class TestConcurrencyIsolation:
             assert by["exact"].parent.span_id == root.context.span_id
 
 
+class TestLocalTracePrivacy:
+    """``local=True`` promises nothing leaves the process. Swapping the transport is not enough:
+    the per-case spans carry the case input/output, so a local run must not open EXPORTING spans
+    either -- even when the process has a configured, exporting tracer provider."""
+
+    def test_local_run_exports_no_spans(self, memory_exporter):
+        evaluate(name="r", data=_ds(3), task=echo, scorers=[exact], local=True)
+        assert memory_exporter.get_finished_spans() == ()
+
+    def test_the_same_run_reported_does_export(self, memory_exporter):
+        evaluate(name="r", data=_ds(3), task=echo, scorers=[exact], report_to=_reported())
+        assert len(memory_exporter.get_finished_spans()) == 9  # 3 cases x root/task/scorer
+
+    def test_local_case_carries_no_trace_id(self, memory_exporter):
+        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], local=True)
+        # No exported trace exists, so there is nothing for the item to link to.
+        assert result.item_results[0].trace_id is None
+
+    def test_eval_tracer_local_spans_have_no_valid_context(self):
+        from traceroot.eval.tracer import eval_tracer
+
+        with eval_tracer(local=True).start_as_current_span("x") as span:
+            assert span.get_span_context().is_valid is False
+        # The default (reported) tracer is the real, exporting one.
+        assert eval_tracer() is not eval_tracer(local=True)
+
+
 class TestEvalAttributes:
     def test_root_attributes(self, memory_exporter):
         ds = _ds(1, metadata={"cat": "x"}, source_trace_id="t1", source_span_id="s1")
