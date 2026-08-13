@@ -573,6 +573,41 @@ def _auto_transport(
     )
 
 
+def _auto_publish(data: Dataset) -> None:
+    """Publish ``data``'s current content as the version this run will pin.
+
+    Runs BEFORE the first case, so anything it raises aborts the whole evaluation. A raw
+    ``DatasetConflictError`` (or a socket timeout) surfaces there as an SDK crash with no hint of
+    what to do, so the failure is restated as what actually happened plus the ways out.
+    """
+    from traceroot.eval.dataset_sync import PlatformDatasetSync
+    from traceroot.eval.platform import remember_pinned_content
+
+    try:
+        # The base for optimistic concurrency is whatever version this dataset is standing on: its
+        # push base, or the version it was pulled at (a pull pins dataset_version_id only).
+        #
+        # Auto-approve the new version instead of falling through to the interactive confirmation:
+        # a versioning decision must never block a run waiting on [y/N]. The run's content is
+        # authoritative -- publishing it is what lets the run pin exactly what it scored. The
+        # explicit, user-initiated Dataset.push() keeps the prompt; that is where deliberate
+        # version management lives.
+        data.push(
+            PlatformDatasetSync(),
+            base_version_id=data.base_version_id or data.dataset_version_id,
+            on_existing=lambda info: True,
+        )
+        # What is now pinned is exactly what was published, so the NEXT run can tell a mutation
+        # from an untouched dataset without another round trip.
+        remember_pinned_content(data)
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not auto-publish dataset {data.name!r} before the run: {_fmt_error(exc)}. "
+            "Pull the latest version and retry (pull_dataset(...)), or pass a dataset that is "
+            "already synced, or pass transport= / local=True to run without publishing."
+        ) from exc
+
+
 def _validate_config(name, task, scorers, max_concurrency) -> None:
     if not name or not str(name).strip():
         raise ValueError("evaluate() requires a non-empty 'name'")
@@ -696,25 +731,19 @@ async def _run_async(
         # Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
         # server-side version to attach to -- the user never writes a manual "sync then run" step
         # (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses
-        # the current version. Only for a local Dataset with credentials; a pulled dataset
-        # (already synced), an explicit dataset_id, or an explicit transport skip this.
-        if (
-            isinstance(data, Dataset)
-            and data.dataset_version_id is None
-            and dataset_id is None
-        ):
-            from traceroot.eval.platform import _resolve_credentials
+        # the current version. Only for a local Dataset with credentials; an explicit dataset_id
+        # or an explicit transport skip this.
+        #
+        # A dataset that IS pinned republishes only once it has drifted from the version it is
+        # pinned to. A Dataset is mutable and evaluate() is re-runnable, so pinning the version
+        # from a previous run (or from the pull) would attribute the cases this run actually
+        # scored to content that never contained them.
+        if isinstance(data, Dataset) and dataset_id is None:
+            from traceroot.eval.platform import _resolve_credentials, pinned_content_changed
 
             api_key, _ = _resolve_credentials(None, None)
-            if api_key:
-                from traceroot.eval.dataset_sync import PlatformDatasetSync
-
-                # Auto-approve the new version instead of falling through to the interactive
-                # confirmation: a versioning decision must never block a run waiting on [y/N].
-                # The run's content is authoritative -- publishing it is what lets the run pin
-                # exactly what it scored. The explicit, user-initiated Dataset.push() keeps the
-                # prompt; that is where deliberate version management lives.
-                data.push(PlatformDatasetSync(), on_existing=lambda info: True)
+            if api_key and (data.dataset_version_id is None or pinned_content_changed(data)):
+                _auto_publish(data)
         active_transport = _auto_transport(
             data, scorers, dataset_id, candidate_version, environment
         )

@@ -23,13 +23,14 @@ import math
 import urllib.error
 import urllib.request
 import warnings
+import weakref
 from typing import Any
 from urllib.parse import quote
 
 from traceroot.eval.ids import stable_dataset_id
 from traceroot.eval.results import EvalItemResult, UploadState, case_status as _case_status
 from traceroot.eval.transport import PublishResult, RunHandle
-from traceroot.eval.types import Dataset, EvalCase, Score
+from traceroot.eval.types import Dataset, EvalCase, Score, _content_revision
 from traceroot.utils import serialize_value
 
 _DEFAULT_PASS_THRESHOLD = 1.0
@@ -136,6 +137,35 @@ def _numeric_score(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
     return None
+
+
+# --- pinned-content bookkeeping ---------------------------------------------
+# The content revision each Dataset had at the moment it became pinned to a server version
+# (pulled, or published). A Dataset is mutable and ``evaluate()`` is re-runnable, so a run must
+# not pin a version that no longer describes what it scored; comparing the current revision to
+# this one detects that WITHOUT a round trip. Weak keys: this bookkeeping never keeps a dataset
+# alive, and an unknown dataset simply has no opinion (see pinned_content_changed).
+_PINNED_REVISION: "weakref.WeakKeyDictionary[Dataset, str]" = weakref.WeakKeyDictionary()
+
+
+def remember_pinned_content(dataset: Dataset) -> None:
+    """Record that ``dataset``'s CURRENT content is exactly the version it is pinned to."""
+    try:
+        _PINNED_REVISION[dataset] = _content_revision(tuple(dataset.cases()))
+    except TypeError:  # not weak-referenceable (exotic subclass) -> just don't remember
+        pass
+
+
+def pinned_content_changed(dataset: Dataset) -> bool:
+    """True only when the dataset is KNOWN to have drifted from the version it is pinned to.
+
+    An unremembered dataset (loaded from disk, or with an id assigned by hand) returns False: the
+    SDK has no evidence either way and inventing a republish would surprise a caller whose dataset
+    is fine. Everything it pinned itself -- ``pull_dataset``, the engine's auto-publish -- is
+    remembered, which covers mutate-then-rerun and pull-then-mutate.
+    """
+    remembered = _PINNED_REVISION.get(dataset)
+    return remembered is not None and remembered != _content_revision(tuple(dataset.cases()))
 
 
 def _resolve_credentials(api_key: str | None, host_url: str | None) -> tuple[str, str]:
@@ -681,4 +711,7 @@ def pull_dataset_version(
     # Pin ids even if the snapshot omitted them.
     ds.dataset_version_id = ds.dataset_version_id or version_id
     ds.dataset_id = ds.dataset_id or dataset_id  # type: ignore[assignment]
+    # A freshly pulled dataset IS its pinned version; remember that, so a later mutation is
+    # detectable and ``evaluate()`` republishes instead of reporting the version it left behind.
+    remember_pinned_content(ds)
     return ds

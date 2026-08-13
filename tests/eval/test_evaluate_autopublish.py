@@ -15,7 +15,12 @@ import traceroot.eval.dataset_sync as sync_mod
 import traceroot.eval.engine as engine
 import traceroot.eval.platform as platform
 from traceroot.eval import Dataset, evaluate
-from traceroot.eval.dataset_sync import DatasetPublishAborted, PlatformDatasetSync
+from traceroot.eval.dataset_sync import (
+    DatasetConflictError,
+    DatasetPublishAborted,
+    FakeDatasetSync,
+    PlatformDatasetSync,
+)
 from traceroot.eval.transport import FakeTransport
 
 
@@ -98,6 +103,112 @@ class TestEvaluateNeverPrompts:
 
         assert declining_prompt == []
         assert not _published(sync)  # no new version for identical content
+        assert result.dataset.dataset_version_id == "dsv_9"
+
+
+def _failing_sync(exc: BaseException):
+    """A ``PlatformDatasetSync`` whose publish always fails with ``exc``."""
+    sync = PlatformDatasetSync.__new__(PlatformDatasetSync)
+    sync.api_key = "k"
+    sync.host_url = "https://h"
+
+    def _raise(*_a, **_k):
+        raise exc
+
+    sync.push_dataset = _raise
+    return sync
+
+
+class TestAutoPublishFailureIsActionable:
+    """The auto-publish happens BEFORE the first case runs, so anything it raises aborts the whole
+    evaluation. A raw ``DatasetConflictError`` (or a timeout) reads as an SDK crash; it must read as
+    the thing that actually happened, with the way out."""
+
+    @pytest.mark.no_default_transport
+    def test_a_diverged_remote_is_reported_not_raised_raw(self, monkeypatch, wired):
+        sync = _failing_sync(DatasetConflictError("dsv_1", "dsv_7"))
+        monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: sync)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            evaluate(name="r", data=_dataset(), task=lambda x: x, scorers=[lambda ctx: 1.0])
+
+        assert not isinstance(excinfo.value, DatasetConflictError)
+        message = str(excinfo.value)
+        assert "could not auto-publish dataset 'auto' before the run" in message
+        assert "dataset changed remotely" in message  # the real reason is kept, not swallowed
+        assert "Pull the latest version" in message
+        assert "local=True" in message  # ...and a way to run anyway
+
+    @pytest.mark.no_default_transport
+    def test_a_transport_failure_is_reported_the_same_way(self, monkeypatch, wired):
+        sync = _failing_sync(RuntimeError("POST https://h/... -> HTTP 503: upstream down"))
+        monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: sync)
+
+        with pytest.raises(RuntimeError) as excinfo:
+            evaluate(name="r", data=_dataset(), task=lambda x: x, scorers=[lambda ctx: 1.0])
+
+        message = str(excinfo.value)
+        assert "could not auto-publish dataset 'auto' before the run" in message
+        assert "HTTP 503" in message
+
+
+class TestTheRunPinsWhatItScored:
+    """A ``Dataset`` is mutable and ``evaluate()`` is re-runnable, so the version a run pins has to
+    be re-resolved every time. Pinning the version from a PREVIOUS run would attribute the new
+    cases' scores to content that never contained them."""
+
+    @pytest.mark.no_default_transport
+    def test_a_second_run_after_a_mutation_pins_the_new_version(self, monkeypatch, wired):
+        fake = FakeDatasetSync()
+        monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: fake)
+        d = _dataset()
+
+        first = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        assert first.dataset.dataset_version_id == "dsv_1"
+
+        d.add(input={"m": 2}, expected={"m": 2})  # the content the SECOND run actually scores
+        second = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+
+        assert second.dataset.dataset_version_id == "dsv_2"
+        assert len(fake.pushes) == 2
+
+    @pytest.mark.no_default_transport
+    def test_an_unmutated_second_run_reuses_the_same_version(self, monkeypatch, wired):
+        fake = FakeDatasetSync()
+        monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: fake)
+        d = _dataset()
+
+        first = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        second = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+
+        assert second.dataset.dataset_version_id == first.dataset.dataset_version_id
+        assert len(fake.pushes) == 1  # unchanged content never versions
+
+    @pytest.mark.no_default_transport
+    def test_a_pulled_dataset_mutated_before_its_first_run_is_republished(self, monkeypatch, wired):
+        fake = FakeDatasetSync()
+        monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: fake)
+        d = _dataset()
+        d.dataset_version_id = "dsv_pulled"
+        platform.remember_pinned_content(d)  # exactly what pull_dataset records
+        d.add(input={"m": 3}, expected={"m": 3})
+
+        result = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+
+        assert result.dataset.dataset_version_id == "dsv_1"  # the version that has the new case
+        assert len(fake.pushes) == 1
+
+    @pytest.mark.no_default_transport
+    def test_an_already_synced_dataset_is_not_re_versioned(self, monkeypatch, wired):
+        """A pulled (already-pinned) dataset run as-is must stay on its version."""
+        d = _dataset()
+        d.dataset_version_id = "dsv_9"
+        sync = _existing_sync(d.snapshot().revision)
+        monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: sync)
+
+        result = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+
+        assert not _published(sync)
         assert result.dataset.dataset_version_id == "dsv_9"
 
 
