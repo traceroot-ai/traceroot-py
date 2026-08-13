@@ -59,6 +59,31 @@ def test_aggregate_excludes_non_finite_but_keeps_finite_values():
     assert summary["m"].count == 3  # all three still count as produced
 
 
+def test_summary_shows_per_metric_pass_rate():
+    ds = Dataset(name="passrate")
+    ds.upsert(EvalCase(input=1, id="a", expected=1))  # will pass
+    ds.upsert(EvalCase(input=0, id="b", expected=1))  # will fail
+
+    @Scorer.code(key="hit", value_type="numeric", direction="higher_is_better", threshold=1.0)
+    def hit(ctx):
+        return Score("hit", 1.0 if ctx.output == ctx.expected else 0.0)
+
+    run = evaluate(name="r", dataset=ds, task=echo, scorers=[hit], local=True)
+    line = next(ln for ln in run.summary().splitlines() if ln.strip().startswith("hit"))
+    assert "pass=1/2" in line  # one of two cleared the declared threshold
+    assert "count=2" in line
+
+
+def test_summary_omits_pass_rate_when_no_threshold_declared():
+    ds = Dataset(name="nopolicy")
+    ds.upsert(EvalCase(input=1, id="a", expected=1))
+    # a plain-function scorer declares no threshold -> nothing can judge pass/fail
+    run = evaluate(name="r", dataset=ds, task=echo, scorers=[lambda ctx: 0.5], local=True)
+    line = next(ln for ln in run.summary().splitlines() if "mean=" in ln)
+    assert "pass=" not in line  # no fabricated verdict
+    assert "count=1" in line
+
+
 def test_evaluate_retains_the_declared_scorer_policy_on_the_result():
     # The run remembers the policy it scored under (name/threshold/direction), so a later
     # result.upload() can re-declare it instead of re-registering policy-less. Captured even for a

@@ -161,6 +161,23 @@ def aggregate_scores(item_results: list[EvalItemResult]) -> dict[str, ScoreSumma
     return summary
 
 
+def _score_verdict(value: Any, spec: dict[str, Any] | None) -> bool | None:
+    """Whether one score passes — the same rule the platform applies. A bool value IS its verdict;
+    a numeric value passes iff it clears the owning scorer's declared threshold in its declared
+    direction. None (no verdict) when there is no declared policy or the value isn't numeric."""
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, (int, float)):
+        return None
+    if not spec:
+        return None
+    threshold = spec.get("threshold")
+    direction = spec.get("direction")
+    if threshold is None or direction in (None, "none"):
+        return None
+    return value <= threshold if direction == "lower_is_better" else value >= threshold
+
+
 @dataclasses.dataclass
 class EvalRunResult:
     """The full, immutable result of an evaluation run."""
@@ -390,7 +407,28 @@ class EvalRunResult:
             f"task_errors={self.task_error_count}, upload={self.upload_state.status})"
         )
         lines = [head]
+        passed, judged = self._pass_tally()
         for name, summ in self.score_summary.items():
             mean = "n/a" if summ.mean is None else f"{summ.mean:.4g}"
-            lines.append(f"  {name}: mean={mean} count={summ.count}")
+            n = judged.get(name, 0)
+            pass_seg = f" pass={passed.get(name, 0)}/{n}" if n else ""
+            lines.append(f"  {name}: mean={mean}{pass_seg} count={summ.count}")
         return "\n".join(lines)
+
+    def _pass_tally(self) -> tuple[dict[str, int], dict[str, int]]:
+        """(passed, judged) counts per metric for ``summary()``. A score is JUDGED when it has a
+        bool value, or a numeric value AND its owning scorer declared a threshold + direction — the
+        SAME rule the platform uses for per-score ``passed`` (see PlatformTransport). Metrics the
+        SDK cannot judge (no declared policy) contribute no pass-rate, only a count."""
+        policy = {s.get("name"): s for s in (self.scorer_specs or [])}
+        passed: dict[str, int] = {}
+        judged: dict[str, int] = {}
+        for item in self.item_results:
+            for score in item.scores:
+                verdict = _score_verdict(score.value, policy.get(score.name))
+                if verdict is None:
+                    continue
+                judged[score.name] = judged.get(score.name, 0) + 1
+                if verdict:
+                    passed[score.name] = passed.get(score.name, 0) + 1
+        return passed, judged

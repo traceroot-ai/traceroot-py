@@ -994,6 +994,13 @@ async def _run_async(
         scorer_specs=getattr(active_transport, "scorer_specs", None) or resolved_scorer_specs,
     )
 
+    # When the bar was shown (interactive), print the run's summary too — so calling evaluate() on
+    # a terminal SHOWS its result (metric means + counts) without the caller writing
+    # print(run.summary()). Gated on the reporter, so piped/CI/programmatic callers keep clean
+    # stdout and read result.summary() / result.upload_state themselves.
+    if reporter is not None:
+        print(result.summary())
+
     # When the bar was shown (interactive), surface the clickable run link if the
     # backend returned one. Off-terminal callers read result.upload_state instead.
     # (Candidate-vs-baseline comparison is the backend's job, not the SDK's.)
