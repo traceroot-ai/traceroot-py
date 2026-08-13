@@ -4,9 +4,12 @@ and honest metric ownership for a single metric-map scorer.
 Network is stubbed via PlatformTransport._request so no real HTTP happens.
 """
 
+import json
+
 from traceroot.eval import capabilities
 from traceroot.eval.platform import (
     _EXPLANATION_MAX,
+    _METADATA_MAX,
     _PAYLOAD_TEXT_MAX,
     _SCORE_ERROR_MAX,
     _STRING_VALUE_MAX,
@@ -147,6 +150,21 @@ class TestContractCapClamping:
         body = t.bodies("/results")[0]
         assert body["task_error"] == "short"
         assert body["scores"][0]["explanation"] == "fine"
+
+    def test_run_metadata_clamped_on_registration(self):
+        """Run metadata is free-form and user-supplied (a whole prompt, a config dump), and it is
+        the ONE field that reaches the backend unclamped. Over the cap, registration 400s and the
+        run never starts -- worse than any per-result rejection."""
+        t = _t()
+        t.create_run("e", "d", {"prompt": "m" * (_METADATA_MAX + 100)})
+        meta = t.bodies("/evaluation-runs")[0]["metadata"]
+        assert meta["truncated"] is True
+        assert len(json.dumps(meta)) <= _METADATA_MAX
+
+    def test_under_cap_run_metadata_passes_through_untouched(self):
+        t = _t()
+        t.create_run("e", "d", {"commit": "abc123"})
+        assert t.bodies("/evaluation-runs")[0]["metadata"] == {"commit": "abc123"}
 
     def test_scorer_source_clamped_on_registration(self):
         t = _t(scorer_specs=[{"name": "acc", "source": "c" * 60000}])

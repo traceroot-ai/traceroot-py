@@ -76,7 +76,18 @@ def _clamp_metadata(value: Any, limit: int) -> Any:
         return value
     if len(text) <= limit:
         return value
-    return {"truncated": True, "preview": _clamp(text, limit - 32)}
+    # The MARKER is what gets sent, so the marker -- not the preview inside it -- has to fit the
+    # cap. Re-encoding escapes every quote and backslash in the preview, which can push it back
+    # over the limit the truncation existed to respect; shrink until the encoded marker fits.
+    preview = _clamp(text, limit - 32)
+    marker = {"truncated": True, "preview": preview}
+    while len(preview) > len(_TRUNCATION_SUFFIX):
+        overflow = len(json.dumps(marker)) - limit
+        if overflow <= 0:
+            break
+        preview = _clamp(preview, max(len(_TRUNCATION_SUFFIX), len(preview) - overflow))
+        marker = {"truncated": True, "preview": preview}
+    return marker
 
 
 def _as_text(value: Any) -> str | None:
@@ -318,9 +329,11 @@ class PlatformTransport:
         if effective_crun is not None:
             body["client_run_id"] = effective_crun
         # Free-form user metadata only; optional on the backend, so omit when empty to
-        # match its absent-or-null rules rather than sending an empty object.
+        # match its absent-or-null rules rather than sending an empty object. Clamped like every
+        # other capped field: metadata is whatever the caller put there (a whole prompt, a config
+        # dump), and over the cap the REGISTRATION 400s -- the run then never starts at all.
         if metadata:
-            body["metadata"] = metadata
+            body["metadata"] = _clamp_metadata(metadata, _METADATA_MAX)
         resp = self._request("POST", "/api/v1/public/evaluation-runs", body)
         self.run_id = resp["evaluation_run_id"]
         # Optional, absent on older/self-hosted backends. Prefer the absolute run_url
