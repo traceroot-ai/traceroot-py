@@ -34,7 +34,7 @@ from traceroot.eval.results import (
 )
 from traceroot.eval.scorers import scorer_name
 from traceroot.eval.tracer import eval_tracer as _eval_tracer  # span-export tracer (own module)
-from traceroot.eval.transport import EvalCompletionError, EvalTransport, RunHandle
+from traceroot.eval.transport import EvalCompletionError, EvalTransport, FakeTransport, RunHandle
 from traceroot.eval.types import (
     Dataset,
     DatasetSnapshot,
@@ -48,6 +48,13 @@ from traceroot.span_attributes import SpanAttributes
 from traceroot.utils import serialize_value, set_span_attribute
 
 _INLINE_DATASET = "<inline>"
+
+# local=True already answers "where does this run report", so a sink alongside it is a
+# contradiction rather than a precedence question -- say so instead of silently picking one.
+_LOCAL_AND_TRANSPORT = (
+    "pass local=True OR transport= (report_to=), not both — local=True already means "
+    "'do not report'."
+)
 
 _CASE_FIELDS = {f.name for f in dataclasses.fields(EvalCase)}
 
@@ -634,6 +641,7 @@ async def _run_async(
     scorers: Sequence[Callable[[ScorerContext], Any]],
     max_concurrency: int = 10,
     transport: EvalTransport | None = None,
+    local: bool = False,
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     environment: str = "evaluation",
@@ -648,9 +656,12 @@ async def _run_async(
     """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py).
 
     ``timeout`` bounds each task (seconds; a timeout is an isolated per-case error).
+    ``local`` runs fully but reports nowhere (see the transport block below).
     ``on_case_start``/``on_case_complete`` are internal hooks the runner uses to
     stream per-case events; ``on_case_complete(item, duration_ms)``.
     """
+    if local and transport is not None:
+        raise ValueError(_LOCAL_AND_TRANSPORT)
     _validate_config(name, task, scorers, max_concurrency)
     cases = _normalize_data(data)
     if select is not None:
@@ -670,10 +681,17 @@ async def _run_async(
     run_metadata = collect_run_provenance(metadata, detect_dirty=False)
 
     dataset_name = snapshot.name
-    # Cloud-only: an explicit transport wins; otherwise build a reporting transport from
-    # credentials + the synced dataset. Evaluation always reports -- there is no local run.
-    if transport is not None:
-        active_transport: EvalTransport = transport
+    # Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
+    # from credentials + the synced dataset.
+    if local:
+        # local=True IS transport=FakeTransport(), spelled as intent rather than as a class the
+        # user has to import: the run executes in full and records itself in memory, but nothing
+        # leaves the process. Selected ahead of the auto path so it also short-circuits the
+        # auto-publish below -- a local run needs no credentials and versions no dataset, even
+        # one that is already synced.
+        active_transport: EvalTransport = FakeTransport()
+    elif transport is not None:
+        active_transport = transport
     else:
         # Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
         # server-side version to attach to -- the user never writes a manual "sync then run" step
@@ -709,13 +727,13 @@ async def _run_async(
                 raise RuntimeError(
                     "evaluate() reports to the TraceRoot platform, but this run has no synced "
                     "dataset to report against. Pass a Dataset that was pulled or pushed "
-                    "(pull_dataset(...) / Dataset.push(...)), or pass dataset_id=..., or pass an "
-                    "explicit transport= (e.g. FakeTransport() to run offline)."
+                    "(pull_dataset(...) / Dataset.push(...)), or pass dataset_id=..., or pass "
+                    "local=True to run without reporting."
                 )
             raise RuntimeError(
                 "evaluate() reports to the TraceRoot platform, but no credentials were found. "
-                "Set TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an "
-                "explicit transport= (e.g. FakeTransport() to run offline)."
+                "Set TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass "
+                "local=True to run without reporting."
             )
 
     # Built AFTER the transport block so it sees any version the auto-publish just created: the
