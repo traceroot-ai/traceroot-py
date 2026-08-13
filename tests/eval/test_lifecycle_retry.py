@@ -27,12 +27,14 @@ class _Flaky(PlatformTransport):
         super().__init__(*args, **kwargs)
         self.retry_base_delay_ms = 0  # no real waiting in tests; backoff is tested separately
         self.attempts: list[str] = []
+        self.bodies: list[tuple[str, dict | None]] = []
         self._remaining: dict[str, int] = {}
         self._failures = failures
         self._error = error
 
     def _request(self, method, path, body=None):
         self.attempts.append(path)
+        self.bodies.append((path, body))
         left = self._remaining.get(path, self._failures)
         if left > 0:
             self._remaining[path] = left - 1
@@ -83,6 +85,16 @@ class TestTransientFailuresAreRetried:
         t = _t(error=TimeoutError("timed out"))
         t.create_run("e", "d", None)
         assert t.tries("/evaluation-runs") == 2
+
+    def test_keyless_registration_sends_a_stable_idempotency_key(self):
+        # A create_run with NO client_run_id must still send one (generated), and the SAME one on
+        # every retry -- so a retry after a lost response can never register a second run.
+        t = _t(failures=1)  # one transient failure -> one retry, i.e. two registration attempts
+        t.create_run("e", "d", None)
+        keys = [b.get("client_run_id") for (p, b) in t.bodies if p.endswith("/evaluation-runs")]
+        assert len(keys) == 2  # attempted twice
+        assert all(keys)  # a key was present on both attempts
+        assert len(set(keys)) == 1  # the SAME key -> idempotent
 
 
 class TestPermanentFailuresAreNot:

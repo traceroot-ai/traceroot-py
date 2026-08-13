@@ -29,7 +29,7 @@ import weakref
 from typing import Any
 from urllib.parse import quote
 
-from traceroot.eval.ids import stable_dataset_id
+from traceroot.eval.ids import new_run_id, stable_dataset_id
 from traceroot.eval.results import EvalItemResult, UploadState
 from traceroot.eval.results import case_status as _case_status
 from traceroot.eval.transport import PublishResult, RunHandle
@@ -373,10 +373,11 @@ class PlatformTransport:
         }
         if self.dataset_version_id is not None:
             body["dataset_version_id"] = self.dataset_version_id
-        # Idempotency key: prefer the one the caller drives with, else our own.
-        effective_crun = client_run_id or self.client_run_id
-        if effective_crun is not None:
-            body["client_run_id"] = effective_crun
+        # Idempotency key: prefer the one the caller drives with, else our own, else a FRESH one —
+        # always sent, so a registration retry (after a lost response) can never create a SECOND
+        # run. evaluate()/upload() always supply a client_run_id; this covers a bare create_run().
+        effective_crun = client_run_id or self.client_run_id or new_run_id()
+        body["client_run_id"] = effective_crun
         # Free-form user metadata only; optional on the backend, so omit when empty to
         # match its absent-or-null rules rather than sending an empty object. Clamped like every
         # other capped field: metadata is whatever the caller put there (a whole prompt, a config
