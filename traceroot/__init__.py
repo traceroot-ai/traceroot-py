@@ -173,6 +173,7 @@ __all__ = [
     "RunDatasetRef",
     "ScoreSummary",
     "UploadState",
+    "case_status",
     # Publish-time errors users are told to catch around Dataset.push()/evaluate().
     "DatasetConflictError",
     "DatasetPublishAborted",
@@ -198,6 +199,7 @@ _EVAL_EXPORTS = frozenset(
         "RunDatasetRef",
         "ScoreSummary",
         "UploadState",
+        "case_status",
         "Evaluation",
         "evaluate",
         "evaluate_async",

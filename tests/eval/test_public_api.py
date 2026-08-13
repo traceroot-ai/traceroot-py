@@ -17,6 +17,7 @@ PUBLIC_SURFACE = (
     "Score",
     "Scorer",
     "ScorerContext",
+    "case_status",
     "evaluate",
     "evaluate_async",
     "llm_judge",

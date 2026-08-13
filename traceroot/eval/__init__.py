@@ -31,6 +31,7 @@ _EXPORTS = {
     "ScoreSummary": "results",
     "UploadState": "results",
     "aggregate_scores": "results",
+    "case_status": "results",
     "describe_scorers": "scorers",
     "llm_judge": "scorers",
     "scorer": "scorers",
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
         ScoreSummary,
         UploadState,
         aggregate_scores,
+        case_status,
     )
     from traceroot.eval.scorers import Scorer, describe_scorers, llm_judge, scorer
     from traceroot.eval.snippets import (
@@ -139,6 +141,7 @@ __all__ = [
     "ScoreSummary",
     "UploadState",
     "aggregate_scores",
+    "case_status",
     "EvalCompletionError",
     "EvalTransport",
     "FakeTransport",
