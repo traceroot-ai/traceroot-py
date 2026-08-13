@@ -720,6 +720,7 @@ async def _run_async(
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     environment: str = "evaluation",
+    evaluation_key: str | None = None,
     select: Callable[[EvalCase], bool] | None = None,
     timeout: float | None = None,
     metadata: dict[str, Any] | None = None,
@@ -826,6 +827,11 @@ async def _run_async(
 
     if getattr(active_transport, "scorer_specs", "unset") is None:
         active_transport.scorer_specs = describe_scorers(scorers)
+
+    # Same seam for the evaluation's stable identity: fill it only when the transport has the
+    # field and nothing has set it, so a transport constructed with an explicit key keeps it.
+    if evaluation_key is not None and getattr(active_transport, "evaluation_key", "unset") is None:
+        active_transport.evaluation_key = evaluation_key
 
     # Client-side run id: the idempotency key for run registration AND the id carried on
     # the result (the platform run_id is separate, assigned by the backend).

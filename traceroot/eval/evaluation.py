@@ -28,6 +28,9 @@ class Evaluation:
     (pulled/pushed, or an explicit ``dataset_id``); pass ``report_to=`` to supply an explicit
     transport, or ``local=True`` to run in full and report nowhere.
     ``timeout`` bounds each case; ``metadata`` is attached to the run record.
+    ``evaluation_key`` is the stable identity runs are grouped by, separate from the display
+    ``name`` (the same split as a scorer's ``key``): set it to keep one history across a rename,
+    or to group the Python and TypeScript runs of one evaluation. It defaults to ``name``.
     Candidate-vs-baseline comparison is the backend's job (the SDK reports raw runs; it does
     not compare). ``retry`` is not implemented and is rejected rather than silently ignored.
     """
@@ -49,6 +52,7 @@ class Evaluation:
         local: bool = False,
         dataset_id: str | None = None,
         environment: str = "evaluation",
+        evaluation_key: str | None = None,
         progress: bool | None = None,
     ) -> None:
         if local and report_to is not None:
@@ -74,6 +78,7 @@ class Evaluation:
         self.local = local
         self.dataset_id = dataset_id
         self.environment = environment
+        self.evaluation_key = evaluation_key
         self.progress = progress
 
     def _kwargs(self, overrides: dict[str, Any]) -> dict[str, Any]:
@@ -88,6 +93,7 @@ class Evaluation:
             dataset_id=self.dataset_id,
             candidate_version=self.candidate_version,
             environment=self.environment,
+            evaluation_key=self.evaluation_key,
             select=self.select,
             timeout=self.timeout,
             metadata=self.metadata,
@@ -124,6 +130,7 @@ def evaluate(
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     environment: str = "evaluation",
+    evaluation_key: str | None = None,
     select: Callable[[EvalCase], bool] | None = None,
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
@@ -147,6 +154,7 @@ def evaluate(
         dataset_id=dataset_id,
         candidate_version=candidate_version,
         environment=environment,
+        evaluation_key=evaluation_key,
         select=select,
         metadata=metadata,
         timeout=timeout,
@@ -169,6 +177,7 @@ async def evaluate_async(
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     environment: str = "evaluation",
+    evaluation_key: str | None = None,
     select: Callable[[EvalCase], bool] | None = None,
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
@@ -187,6 +196,7 @@ async def evaluate_async(
         dataset_id=dataset_id,
         candidate_version=candidate_version,
         environment=environment,
+        evaluation_key=evaluation_key,
         select=select,
         metadata=metadata,
         timeout=timeout,

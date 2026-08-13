@@ -252,10 +252,15 @@ class PlatformTransport:
         client_run_id: str | None = None,
         pass_threshold: float | None = None,
         scorer_specs: list[dict[str, Any]] | None = None,
+        evaluation_key: str | None = None,
         api_key: str | None = None,
         host_url: str | None = None,
     ) -> None:
         self.dataset_id = dataset_id
+        # Stable identity for the evaluation this run belongs to, separate from its display name
+        # (same split as a scorer's key). Defaults to the name at registration, so a caller who
+        # never sets one is unaffected; set it to group runs across renames and across SDKs.
+        self.evaluation_key = evaluation_key
         self.scorer_names = scorer_names or []
         # Rich scorer descriptors (name/version/value_type/direction/threshold). The engine
         # fills this from the actual scorer callables when the caller leaves it None; an
@@ -295,6 +300,12 @@ class PlatformTransport:
     ) -> RunHandle:
         body: dict[str, Any] = {
             "evaluation_name": name,
+            # ALWAYS sent. The backend groups runs by evaluation_key and falls back to the name
+            # when it is absent -- which quietly makes the display name the identity, so a rename
+            # forks the history and a Python run only groups with a TypeScript one when their
+            # names match character for character. Defaulting the key to the name reproduces
+            # today's grouping exactly while giving the caller something stable to pin.
+            "evaluation_key": self.evaluation_key or name,
             "dataset_id": self.dataset_id,
             "candidate_version": self.candidate_version,
             "environment": self.environment,
