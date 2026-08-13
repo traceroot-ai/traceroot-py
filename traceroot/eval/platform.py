@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import math
+import re
+import time
 import urllib.error
 import urllib.request
 import warnings
@@ -226,6 +228,30 @@ def _http_get_json(url: str, api_key: str) -> dict:
     return _http_json("GET", url, api_key)
 
 
+# --- bounded retry for the two lifecycle calls -------------------------------
+# Statuses that mean "try again", not "your request is wrong". Keep identical to the TypeScript
+# SDK's RETRYABLE_STATUS.
+_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_HTTP_STATUS_RE = re.compile(r"-> HTTP (\d{3}):")
+_RETRY_ATTEMPTS = 3
+_RETRY_BASE_DELAY_MS = 500
+
+
+def _retry_delay_ms(attempt: int, base_ms: float) -> float:
+    """Exponential backoff for retry ``attempt`` (1-based). Identical in both SDKs."""
+    return base_ms * (2 ** (attempt - 1))
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Whether a failed request is worth repeating. A 4xx never is."""
+    match = _HTTP_STATUS_RE.search(str(exc))
+    if match is None:
+        # No HTTP status at all -- a reset socket, a DNS hiccup, our own read timeout. Exactly the
+        # blip a retry is for. A programming error is not an OSError, so it still propagates.
+        return isinstance(exc, OSError)
+    return int(match.group(1)) in _RETRYABLE_STATUS
+
+
 def _warn_on_metric_name_collisions(contributors: dict[str, list[str]]) -> None:
     """Warn once per metric name emitted by more than one scorer DEFINITION.
 
@@ -289,6 +315,9 @@ class PlatformTransport:
                 "or pass api_key=... (uploading requires credentials)."
             )
         self.host_url = self.host_url.rstrip("/")
+        # Bounded retry for run registration/completion only (see _request_with_retry).
+        self.retry_attempts = _RETRY_ATTEMPTS
+        self.retry_base_delay_ms = _RETRY_BASE_DELAY_MS
         self.run_id: str | None = None
         self.run_url: str | None = None  # absolute UI run link, when the backend returns one
         self.run_path: str | None = None  # UI-relative run path (back-compat fallback)
@@ -300,6 +329,25 @@ class PlatformTransport:
     # --- HTTP seam (overridable in tests) ---
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         return _http_json(method, f"{self.host_url}{path}", self.api_key, body)
+
+    def _request_with_retry(self, method: str, path: str, body: dict | None = None) -> dict:
+        """One LIFECYCLE request, with a small bounded retry.
+
+        Per-case result POSTs are deliberately not retried: they are isolated (a dropped one costs
+        one case and is counted on the upload state), and repeating each of them would multiply the
+        load on a struggling backend by the retry count. Registration and completion are the two
+        calls with no such isolation -- a blip on register aborts the evaluation before a single
+        case runs, and one on complete leaves a finished run stuck in 'running' -- so those two
+        alone get another chance. Only transient failures; a rejected payload is re-raised at once.
+        """
+        for attempt in range(1, max(1, self.retry_attempts) + 1):
+            try:
+                return self._request(method, path, body)
+            except Exception as exc:
+                if attempt >= self.retry_attempts or not _is_retryable(exc):
+                    raise
+                time.sleep(_retry_delay_ms(attempt, self.retry_base_delay_ms) / 1000.0)
+        raise AssertionError("unreachable: the loop either returns or raises")
 
     # --- EvalTransport protocol ---
     def create_run(
@@ -334,7 +382,7 @@ class PlatformTransport:
         # dump), and over the cap the REGISTRATION 400s -- the run then never starts at all.
         if metadata:
             body["metadata"] = _clamp_metadata(metadata, _METADATA_MAX)
-        resp = self._request("POST", "/api/v1/public/evaluation-runs", body)
+        resp = self._request_with_retry("POST", "/api/v1/public/evaluation-runs", body)
         self.run_id = resp["evaluation_run_id"]
         # Optional, absent on older/self-hosted backends. Prefer the absolute run_url
         # (resolved against the UI origin) so the link is correct even when the API and
@@ -481,7 +529,7 @@ class PlatformTransport:
             manifest = self._resolved_scorer_manifest(emitted_metrics)
             if manifest:
                 body["scorers"] = manifest
-        self._request(
+        self._request_with_retry(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
             body,
