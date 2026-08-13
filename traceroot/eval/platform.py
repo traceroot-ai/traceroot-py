@@ -19,6 +19,7 @@ dataset_version_id, so datasets are FETCHED (``pull_dataset``), not created here
 from __future__ import annotations
 
 import json
+import math
 import urllib.error
 import urllib.request
 import warnings
@@ -104,6 +105,28 @@ def _duration_ms(value: float | None) -> int | None:
 # JSON text is retained only where the wire genuinely requires a string: the
 # evaluation-RESULT reporting fields (``_as_text``) and local file persistence
 # (``Dataset.save``/``EvalRunResult.save``).
+
+
+def _is_non_finite(value: Any) -> bool:
+    """True for a NaN/Infinity score value (bools and ints never are)."""
+    return isinstance(value, float) and not math.isfinite(value)
+
+
+def _non_finite_token(value: float) -> str:
+    """ONE language-neutral spelling for a non-finite value. Python renders these ``nan``/
+    ``inf`` and JavaScript ``NaN``/``Infinity``; the wire uses the JSON-familiar spelling in
+    both SDKs so the same scorer bug reads identically whichever one produced it."""
+    if math.isnan(value):
+        return "NaN"
+    return "Infinity" if value > 0 else "-Infinity"
+
+
+def _non_finite_error(name: str, value: float) -> str:
+    """The scorer error a non-finite score is reported as. Byte-identical to the TypeScript SDK."""
+    return (
+        f"ValueError: scorer '{name}' returned a non-finite score value "
+        f"({_non_finite_token(value)}); a numeric score must be finite"
+    )
 
 
 def _numeric_score(value: Any) -> float | None:
@@ -312,7 +335,10 @@ class PlatformTransport:
         return None
 
     def record_item_result(self, run: RunHandle, item_result: EvalItemResult) -> None:
-        status = _case_status(item_result)
+        # A NaN/Infinity score is a scorer failure discovered at serialization time (see
+        # _scores_payload), so it errors the case exactly like a raised scorer would.
+        non_finite = sum(1 for s in item_result.scores if _is_non_finite(s.value))
+        status = "errored" if non_finite else _case_status(item_result)
         self._request(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/results",
@@ -339,8 +365,8 @@ class PlatformTransport:
         # the SDK derives no case-level pass/fail (every score carries its own `passed`).
         self._contrib[item_result.case_id] = (
             item_result.error is not None,
-            len(item_result.scorer_errors),
-            item_result.error is None and bool(item_result.scores),
+            len(item_result.scorer_errors) + non_finite,
+            item_result.error is None and len(item_result.scores) > non_finite,
         )
 
     def record_scores(self, run: RunHandle, case_id: str, scores: list[Score]) -> None:
@@ -427,6 +453,14 @@ class PlatformTransport:
                 "scorer_version": s.version or _UNVERSIONED_SCORER,
             }
             v = s.value
+            if _is_non_finite(v):
+                # NaN/Infinity is not a JSON number. Emitted raw, Python writes a bare NaN token
+                # that the backend's JSON.parse rejects (400ing the whole run) while JavaScript
+                # writes null (a silently fabricated empty score that poisons the aggregate mean).
+                # Both SDKs report it as what it is: the scorer failed to produce a value.
+                entry["error"] = _clamp(_non_finite_error(s.name, v), _SCORE_ERROR_MAX)
+                payload.append(entry)
+                continue
             if isinstance(v, bool):
                 entry["bool_value"] = v
             elif isinstance(v, (int, float)):
