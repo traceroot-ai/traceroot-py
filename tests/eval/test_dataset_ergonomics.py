@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.eval.parity_vectors import DATASET_KEY_FIXTURE
 from traceroot.eval import Dataset, EvalCase
 from traceroot.eval.dataset_sync import PlatformDatasetSync
 from traceroot.eval.ids import stable_dataset_id
@@ -264,6 +265,40 @@ class TestDatasetKeySurvives:
         # The pulled dataset extends exactly like the local one.
         assert pulled.add(input={"m": "second"}).id == local.add(input={"m": "second"}).id
 
+    def test_pull_prefers_the_key_echoed_by_the_platform(self, monkeypatch):
+        """The dataset response now CARRIES the key, so a renamed dataset is no longer a dead end:
+        the echoed key is adopted verbatim and every case added afterwards converges with local
+        authoring. The ids are pinned by the shared fixture, so Python and TypeScript agree."""
+        import traceroot.eval.platform as platform
+
+        fix = DATASET_KEY_FIXTURE
+        local = Dataset(fix["display_name"], key=fix["dataset_key"])
+        first = local.add(input=fix["existing_case"]["input"])
+        assert local.dataset_id == fix["dataset_id"]
+        assert first.id == fix["existing_case"]["id"]
+
+        def fake_get(url, key):
+            if "/dataset-versions/" in url:
+                return {
+                    "dataset_id": fix["dataset_id"],
+                    "dataset_version_id": "dsv_1",
+                    "items": [{"test_case_id": first.id, "input": fix["existing_case"]["input"]}],
+                }
+            return {
+                "name": fix["display_name"],
+                "key": fix["dataset_key"],
+                "current_dataset_version_id": "dsv_1",
+            }
+
+        monkeypatch.setattr(platform, "_resolve_credentials", lambda a, b: ("k", "https://h"))
+        monkeypatch.setattr(platform, "_http_get_json", fake_get)
+
+        pulled = platform.pull_dataset(fix["dataset_id"])
+        assert pulled.key == fix["dataset_key"]
+        added = pulled.add(input=fix["added_case"]["input"])
+        assert added.id == fix["added_case"]["id"]
+        assert added.id == local.add(input=fix["added_case"]["input"]).id
+
     def test_pull_never_adopts_a_name_that_is_not_the_key(self, monkeypatch):
         """A display-name rename (key != name) must not be mistaken for the key: the id derived
         from it would be wrong. The dataset id is used instead -- stable, and never a lie."""
@@ -287,3 +322,60 @@ class TestDatasetKeySurvives:
         assert pulled.key != "Billing v2 (renamed)"
         assert pulled.key == local.dataset_id  # the unambiguous fallback
         assert stable_dataset_id("Billing v2 (renamed)") != local.dataset_id  # name is not the key
+
+    def test_pull_falls_back_to_the_heuristic_when_the_key_is_null(self, monkeypatch):
+        """Datasets that predate the ``key`` contract (or were authored in the UI) echo
+        ``key: null``, so the name-hash recovery must stay in place for them."""
+        import traceroot.eval.platform as platform
+
+        local = Dataset("billing")
+        first = local.add(input={"m": "first"})
+
+        def fake_get(url, key):
+            if "/dataset-versions/" in url:
+                return {
+                    "dataset_id": local.dataset_id,
+                    "dataset_version_id": "dsv_1",
+                    "items": [{"test_case_id": first.id, "input": {"m": "first"}}],
+                }
+            return {"name": "billing", "key": None, "current_dataset_version_id": "dsv_1"}
+
+        monkeypatch.setattr(platform, "_resolve_credentials", lambda a, b: ("k", "https://h"))
+        monkeypatch.setattr(platform, "_http_get_json", fake_get)
+
+        assert platform.pull_dataset(local.dataset_id).key == "billing"
+
+
+class TestDatasetKeyIsSentOnPush:
+    """The key is the dataset's identity, so it belongs on the wire: without it the platform can
+    only guess (name-hash), and a UI rename or an explicit key leaves every later case divergent."""
+
+    def _new_dataset(self, path):
+        raise RuntimeError("GET https://h/... -> HTTP 404: not found")
+
+    def _upserts(self, calls):
+        return [b for m, p, b in calls if m == "POST" and p.endswith("/datasets")]
+
+    def test_push_sends_the_key(self):
+        sync = _sync(self._new_dataset)
+        sync.push_dataset(_snap("billing"), None)
+        assert self._upserts(sync.calls)[0]["key"] == "billing"  # default key == name
+
+    def test_push_sends_an_explicit_key(self):
+        d = Dataset(DATASET_KEY_FIXTURE["display_name"], key=DATASET_KEY_FIXTURE["dataset_key"])
+        d.add(input=DATASET_KEY_FIXTURE["existing_case"]["input"])
+        sync = _sync(self._new_dataset)
+        sync.push_dataset(d.snapshot(), None)
+        body = self._upserts(sync.calls)[0]
+        assert body["key"] == DATASET_KEY_FIXTURE["dataset_key"]
+        assert body["name"] == DATASET_KEY_FIXTURE["display_name"]  # the key is NOT the name
+
+    def test_metadata_only_push_sends_the_key_too(self):
+        """The unchanged-revision short circuit sends the metadata upsert; it must carry the key
+        as well, or the backfill never happens for an already-published dataset."""
+        d = Dataset("Billing", key="billing")
+        d.add(input={"q": "a"})
+        sync = _sync(lambda path: {"name": "Billing", "current_dataset_version_id": "dsv_9"})
+        sync._published_revision = lambda ds, v: d.snapshot().revision  # content unchanged
+        sync.push_dataset(d.snapshot(), None)
+        assert self._upserts(sync.calls)[0]["key"] == "billing"

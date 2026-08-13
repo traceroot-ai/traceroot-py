@@ -606,11 +606,14 @@ def _to_snapshot(
     if isinstance(data, Dataset):
         name, description, dataset_id = data.name, data.description, data.dataset_id
         base_version_id = data.dataset_version_id
+        key = data.key
     elif isinstance(data, DatasetSnapshot):
         name, description, dataset_id = data.name, data.description, data.dataset_id
         base_version_id = data.base_version_id
+        key = data.key
     else:
         name, description, dataset_id, base_version_id = _INLINE_DATASET, None, "ds_inline", None
+        key = None
     cases_t = tuple(cases)
     return DatasetSnapshot(
         dataset_id=dataset_id,
@@ -619,6 +622,7 @@ def _to_snapshot(
         revision=_content_revision(cases_t),
         cases=cases_t,
         base_version_id=base_version_id,
+        key=key,
     )
 
 

@@ -215,16 +215,22 @@ class PlatformDatasetSync:
             return None
 
     def _upsert_dataset(self, snapshot: DatasetSnapshot) -> None:
-        """Upsert the dataset's un-versioned metadata (name/description). Not a version."""
-        self._request(
-            "POST",
-            "/api/v1/public/datasets",
-            {
-                "dataset_id": snapshot.dataset_id,
-                "name": snapshot.name,
-                "description": snapshot.description,
-            },
-        )
+        """Upsert the dataset's un-versioned metadata (key/name/description). Not a version.
+
+        The ``key`` is what the dataset id was hashed from, and the platform cannot recover it
+        from the name (an explicit key, or a rename, hashes from something the name no longer
+        spells). Sending it lets a later pull return the REAL key instead of a guess, so a case
+        added to a pulled dataset gets the same id as one authored locally. The backend stores it
+        on create and backfills a null key; it never clobbers a key already set.
+        """
+        body: dict[str, Any] = {
+            "dataset_id": snapshot.dataset_id,
+            "name": snapshot.name,
+            "description": snapshot.description,
+        }
+        if snapshot.key is not None:
+            body["key"] = snapshot.key
+        self._request("POST", "/api/v1/public/datasets", body)
 
     def push_dataset(
         self,

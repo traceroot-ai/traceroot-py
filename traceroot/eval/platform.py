@@ -513,21 +513,29 @@ class PlatformTransport:
 def _recovered_key(name: str, dataset_id: str | None) -> str | None:
     """The dataset's authoring key, when it can be PROVEN from what the platform returned.
 
-    The key is only ever hashed into the dataset id, never sent, so it is recoverable exactly
-    when the display name still hashes to that id (the default ``key = name`` case). A dataset
-    published under an explicit key, or renamed since, is not recoverable -- and guessing would
-    hand every subsequently added case a divergent id, so the caller falls back to the dataset
-    id (unambiguous and stable) instead of a plausible lie.
+    Only used for datasets that predate the ``key`` contract (or were authored in the UI), whose
+    responses carry no key: it is then recoverable exactly when the display name still hashes to
+    the dataset id (the default ``key = name`` case). A dataset published under an explicit key,
+    or renamed since, is not recoverable this way -- and guessing would hand every subsequently
+    added case a divergent id, so the caller falls back to the dataset id (unambiguous and
+    stable) instead of a plausible lie.
     """
     if dataset_id and stable_dataset_id(name) == dataset_id:
         return name
     return None
 
 
-def _dataset_from_version(snapshot: dict, name: str) -> Dataset:
-    """Build a local Dataset pinned to the exact version described by ``snapshot``."""
+def _dataset_from_version(snapshot: dict, name: str, key: str | None = None) -> Dataset:
+    """Build a local Dataset pinned to the exact version described by ``snapshot``.
+
+    ``key`` is the key the platform echoed for the dataset. It is the authoritative one -- taken
+    verbatim, never re-derived -- so a case added to the pulled dataset gets the same id as one
+    authored locally, even under a display name that is not the key. Only when the platform
+    echoes no key does the name-hash heuristic run.
+    """
     dataset_id = snapshot.get("dataset_id")
-    ds = Dataset(name=name, key=_recovered_key(name, dataset_id) or dataset_id)
+    key = key or snapshot.get("key") or _recovered_key(name, dataset_id) or dataset_id
+    ds = Dataset(name=name, key=key)
     ds.dataset_id = dataset_id  # type: ignore[assignment]
     ds.dataset_version_id = snapshot.get("dataset_version_id")
     for item in snapshot.get("items", []):
@@ -576,7 +584,14 @@ def pull_dataset(
     if version_id is None:
         version_id = meta["current_dataset_version_id"]
     return pull_dataset_version(
-        version_id, dataset_id=dataset_id, name=name, api_key=key, host_url=host
+        version_id,
+        dataset_id=dataset_id,
+        name=name,
+        # The dataset response echoes the authoring key (null for datasets that predate the
+        # contract or were authored in the UI); the version endpoint does not carry it.
+        key=meta.get("key"),
+        api_key=key,
+        host_url=host,
     )
 
 
@@ -585,6 +600,7 @@ def pull_dataset_version(
     *,
     dataset_id: str | None = None,
     name: str | None = None,
+    key: str | None = None,
     api_key: str | None = None,
     host_url: str | None = None,
 ) -> Dataset:
@@ -598,9 +614,13 @@ def pull_dataset_version(
     When ``dataset_id`` is supplied, the returned version is validated to belong to it
     (a mismatch raises ``ValueError`` rather than silently returning the wrong data).
     A missing version surfaces the backend's 404 as a clear error.
+
+    ``key`` is the dataset's authoring key as echoed by the platform (``pull_dataset`` passes it
+    through); pass it when pulling a bare version id whose dataset key you already know, so cases
+    added to the result get ids that converge with local authoring.
     """
-    key, host = _resolve_credentials(api_key, host_url)
-    if not key:
+    token, host = _resolve_credentials(api_key, host_url)
+    if not token:
         raise ValueError(
             "pull_dataset_version needs an API key (initialize traceroot or pass api_key=...)."
         )
@@ -608,7 +628,7 @@ def pull_dataset_version(
 
     try:
         snapshot = _http_get_json(
-            f"{host}/api/v1/public/dataset-versions/{quote(version_id, safe='')}", key
+            f"{host}/api/v1/public/dataset-versions/{quote(version_id, safe='')}", token
         )
     except RuntimeError as exc:
         if " HTTP 404:" in str(exc):
@@ -621,7 +641,9 @@ def pull_dataset_version(
             f"dataset version {version_id!r} belongs to dataset {returned_dataset_id!r}, "
             f"not {dataset_id!r}"
         )
-    ds = _dataset_from_version(snapshot, name or returned_dataset_id or dataset_id or version_id)
+    ds = _dataset_from_version(
+        snapshot, name or returned_dataset_id or dataset_id or version_id, key
+    )
     # Pin ids even if the snapshot omitted them.
     ds.dataset_version_id = ds.dataset_version_id or version_id
     ds.dataset_id = ds.dataset_id or dataset_id  # type: ignore[assignment]

@@ -22,6 +22,9 @@ CASE_FIXTURE: dict[str, Any] = json.loads(
 SCORER_FIXTURE: dict[str, Any] = json.loads(
     (FIXTURES / "scorer_definition_parity.json").read_text(encoding="utf-8")
 )
+DATASET_KEY_FIXTURE: dict[str, Any] = json.loads(
+    (FIXTURES / "dataset_key_parity.json").read_text(encoding="utf-8")
+)
 
 
 def decode(value: Any) -> Any:

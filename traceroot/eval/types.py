@@ -133,6 +133,10 @@ class DatasetSnapshot:
     revision: str
     cases: tuple[EvalCase, ...]
     base_version_id: str | None = None
+    # The authoring key the dataset id was hashed from. Carried so a push can SEND it: the
+    # platform cannot derive it (a renamed or explicitly keyed dataset hashes from something
+    # the name no longer spells), and without it a later pull can only guess.
+    key: str | None = None
 
     def __iter__(self) -> Iterator[EvalCase]:
         return iter(self.cases)
@@ -147,6 +151,7 @@ class DatasetSnapshot:
         return {
             "dataset_id": self.dataset_id,
             "name": self.name,
+            "key": self.key,
             "description": self.description,
             "revision": self.revision,
             "base_version_id": self.base_version_id,
@@ -290,6 +295,7 @@ class Dataset:
             revision=revision,
             cases=active,
             base_version_id=self.base_version_id,
+            key=self.key,
         )
 
     # --- serialization (network-free) ---
