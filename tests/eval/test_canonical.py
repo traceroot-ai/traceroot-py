@@ -179,6 +179,28 @@ def test_non_json_values_are_rejected_not_hashed_in_a_language_specific_shape(va
         canonical_json(value)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "\ud800",  # a lone high surrogate as a value
+        {"k": "lo\udc00"},  # ... nested in a value
+        {"\ud834": "v"},  # ... as a mapping key
+    ],
+)
+def test_a_lone_surrogate_is_rejected_not_hashed(value):
+    # A lone UTF-16 surrogate can't encode to UTF-8: without an explicit guard Python raises a raw
+    # UnicodeEncodeError while TypeScript silently hashes the escaped form. Both must reject it as a
+    # CanonicalizationError so the SDKs never disagree.
+    with pytest.raises(CanonicalizationError, match="surrogate"):
+        canonical_json(value)
+
+
+def test_a_valid_astral_character_still_canonicalizes():
+    # A real non-BMP character (a surrogate PAIR / single code point) is valid text, not a lone
+    # surrogate, and must keep hashing normally.
+    assert canonical_json("\U0001f600") == '"\U0001f600"'
+
+
 def test_dataset_add_rejects_a_non_serializable_payload_naming_the_field():
     with pytest.raises(CanonicalizationError, match="test case expected"):
         Dataset("d").add(input=1, expected=Decimal("1.5"))

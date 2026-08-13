@@ -114,6 +114,7 @@ def _iso(v: date) -> str:
 def _key(k: Any) -> str:
     """Stringify a mapping key the way a JavaScript object/Map key stringifies."""
     if isinstance(k, str):
+        _reject_lone_surrogate(k)
         return k
     if isinstance(k, bool):
         return "true" if k else "false"
@@ -133,6 +134,18 @@ def _key(k: Any) -> str:
     )
 
 
+def _reject_lone_surrogate(s: str) -> None:
+    """A lone UTF-16 surrogate (U+D800..U+DFFF) is not valid Unicode text and cannot be encoded
+    as UTF-8: hashing it here would raise a raw ``UnicodeEncodeError`` while the TypeScript SDK
+    would silently hash the escaped form, so the two SDKs would disagree. Reject it explicitly in
+    both, as a ``CanonicalizationError``, before it reaches the hash."""
+    if any(0xD800 <= ord(c) <= 0xDFFF for c in s):
+        raise CanonicalizationError(
+            "string contains an unpaired UTF-16 surrogate and cannot be canonicalized; "
+            "it is not valid Unicode text"
+        )
+
+
 def _reject(value: Any) -> NoReturn:
     raise CanonicalizationError(
         f"value of type {type(value).__name__!r} is not JSON-serializable; evaluation payloads "
@@ -142,7 +155,10 @@ def _reject(value: Any) -> NoReturn:
 
 
 def _norm(value: Any, path: list[int]) -> Any:
-    if value is None or isinstance(value, (str, bool)):
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        _reject_lone_surrogate(value)
         return value
     if isinstance(value, int):
         return value

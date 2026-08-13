@@ -168,6 +168,11 @@ class EvalRunResult:
     dataset: RunDatasetRef | None = None
     run_id: str | None = None  # server-assigned id when uploaded
     metadata: dict[str, Any] | None = None  # run context (model, prompt, branch, CI, ...)
+    # Declared scorer policy (name/version/value_type/direction/threshold) captured at run time.
+    # Retained so an explicit upload() re-declares each metric's threshold/direction to the platform
+    # instead of re-registering policy-less -- otherwise a re-upload's per-score ``passed`` verdicts
+    # would silently disagree with the original run's.
+    scorer_specs: list[dict[str, Any]] | None = None
 
     # --- inspection ---
     @property
@@ -219,6 +224,7 @@ class EvalRunResult:
             "item_results": [it.to_dict() for it in self.item_results],
             "score_summary": {k: v.to_dict() for k, v in self.score_summary.items()},
             "metadata": self.metadata,
+            "scorer_specs": self.scorer_specs,
             "upload": self.upload_state.to_dict(),
         }
 
@@ -246,6 +252,7 @@ class EvalRunResult:
             dataset=RunDatasetRef(**ds) if ds else None,
             run_id=d.get("run_id"),
             metadata=d.get("metadata"),
+            scorer_specs=d.get("scorer_specs"),
         )
 
     @classmethod
@@ -344,6 +351,10 @@ class EvalRunResult:
                 candidate_version=self.candidate_version,
                 dataset_version_id=self.dataset.dataset_version_id,
                 client_run_id=self.local_run_id,
+                # Re-declare each metric's threshold/direction (captured at run time) so a
+                # re-upload's per-score `passed` matches the original run instead of registering
+                # policy-less. None (an older/loaded run without specs) falls back to names.
+                scorer_specs=self.scorer_specs,
             )
         dataset_name = self.dataset.dataset_id if self.dataset else "<inline>"
         run = active.create_run(

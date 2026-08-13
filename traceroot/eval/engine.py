@@ -825,8 +825,9 @@ async def _run_async(
     # per-score ``passed`` is derived from its owning scorer's declared threshold/direction).
     from traceroot.eval.scorers import describe_scorers
 
+    resolved_scorer_specs = describe_scorers(scorers)
     if getattr(active_transport, "scorer_specs", "unset") is None:
-        active_transport.scorer_specs = describe_scorers(scorers)
+        active_transport.scorer_specs = resolved_scorer_specs
 
     # Same seam for the evaluation's stable identity: fill it only when the transport has the
     # field and nothing has set it, so a transport constructed with an explicit key keeps it.
@@ -980,6 +981,11 @@ async def _run_async(
         dataset=dataset_ref,
         run_id=getattr(active_transport, "run_id", None),
         metadata=run_metadata,
+        # Retain the declared scorer policy so an explicit result.upload() can re-declare each
+        # metric's threshold/direction rather than re-register policy-less. Captured from the
+        # scorers directly (not the transport) so a local/Fake run — "run now, upload later" — keeps
+        # it too.
+        scorer_specs=resolved_scorer_specs,
     )
 
     # When the bar was shown (interactive), surface the clickable run link if the

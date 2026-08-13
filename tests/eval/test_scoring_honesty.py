@@ -5,7 +5,7 @@ outcomes -- quality failure, task error, scorer error, not-scored, pending revie
 must stay separable.
 """
 
-from traceroot.eval import Dataset, DeferredScore, EvalCase, Score, ScorerContext, evaluate
+from traceroot.eval import Dataset, DeferredScore, EvalCase, Score, Scorer, ScorerContext, evaluate
 from traceroot.eval.results import aggregate_scores, case_status
 
 
@@ -17,6 +17,20 @@ def _one(expected=1, **kw):
 
 def echo(x):
     return x
+
+
+def test_evaluate_retains_the_declared_scorer_policy_on_the_result():
+    # The run remembers the policy it scored under (name/threshold/direction), so a later
+    # result.upload() can re-declare it instead of re-registering policy-less. Captured even for a
+    # local run (no transport), which is the "run now, upload later" flow.
+    @Scorer.code(key="acc", value_type="numeric", direction="higher_is_better", threshold=0.8)
+    def acc(ctx):
+        return Score(name="acc", value=1.0)
+
+    run = evaluate(name="r", dataset=_one(), task=echo, scorers=[acc], local=True)
+    spec = next(s for s in (run.scorer_specs or []) if s["name"] == "acc")
+    assert spec["threshold"] == 0.8
+    assert spec["direction"] == "higher_is_better"
 
 
 class TestErrorVocabulary:

@@ -143,6 +143,48 @@ class TestRunUpload:
         with pytest.raises((ValueError, RuntimeError)):
             self._run().upload()
 
+    def test_upload_re_declares_the_retained_scorer_policy(self, monkeypatch):
+        # A run carries the scorer policy it was evaluated under; when upload() builds its own
+        # transport it must re-declare that policy (threshold/direction) so a re-upload's per-score
+        # `passed` matches the original run instead of registering policy-less.
+        import traceroot.eval.platform as platform
+
+        specs = [
+            {"name": "acc", "value_type": "numeric", "direction": "higher_is_better", "threshold": 0.8}
+        ]
+        captured: dict = {}
+
+        class _Spy:
+            def __init__(self, dataset_id, **kw):
+                captured["scorer_specs"] = kw.get("scorer_specs")
+                self.run_id = "run_1"
+
+            def create_run(self, **kw):
+                return object()
+
+            def record_item_result(self, run, item):
+                pass
+
+            def record_scores(self, run, case_id, scores):
+                pass
+
+            def finish_run(self, run, status=None):
+                return UploadState(status="uploaded")
+
+        monkeypatch.setattr(platform, "PlatformTransport", _Spy)
+        run = self._run()
+        run.scorer_specs = specs
+        run.upload()  # no transport -> builds the (spied) PlatformTransport
+        assert captured["scorer_specs"] == specs
+
+    def test_scorer_specs_round_trip_through_save_load(self, tmp_path):
+        specs = [{"name": "acc", "threshold": 0.8, "direction": "higher_is_better"}]
+        run = self._run()
+        run.scorer_specs = specs
+        path = tmp_path / "run.json"
+        run.save(str(path))
+        assert EvalRunResult.load(str(path)).scorer_specs == specs
+
 
 def test_local_sync_is_local_only():
     result = LocalDatasetSync().push_dataset(_ds().snapshot(), None)

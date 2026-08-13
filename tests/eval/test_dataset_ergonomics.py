@@ -299,6 +299,22 @@ class TestDatasetKeySurvives:
         assert added.id == fix["added_case"]["id"]
         assert added.id == local.add(input=fix["added_case"]["input"]).id
 
+    def test_pull_with_no_current_version_raises_a_clear_error(self, monkeypatch):
+        """A dataset that has never published a version has no current version to substitute.
+        Without the guard a None version id reaches pull_dataset_version and fails obscurely; it
+        must instead say what is actually wrong."""
+        import traceroot.eval.platform as platform
+
+        def fake_get(url, key):
+            # The dataset exists but carries no current_dataset_version_id.
+            return {"name": "billing"}
+
+        monkeypatch.setattr(platform, "_resolve_credentials", lambda a, b: ("k", "https://h"))
+        monkeypatch.setattr(platform, "_http_get_json", fake_get)
+
+        with pytest.raises(ValueError, match="no published version to pull"):
+            platform.pull_dataset("ds_1")
+
     def test_pull_never_adopts_a_name_that_is_not_the_key(self, monkeypatch):
         """A display-name rename (key != name) must not be mistaken for the key: the id derived
         from it would be wrong. The dataset id is used instead -- stable, and never a lie."""

@@ -719,7 +719,15 @@ def pull_dataset(
     meta = _http_get_json(f"{host}/api/v1/public/datasets/{quote(dataset_id, safe='')}", key)
     name = meta.get("name", dataset_id)
     if version_id is None:
-        version_id = meta["current_dataset_version_id"]
+        # A dataset with no published version yet has no current version to substitute; without
+        # this guard a None version_id reaches pull_dataset_version and fails obscurely (a bad URL
+        # / TypeError) instead of saying what is actually wrong.
+        version_id = meta.get("current_dataset_version_id")
+    if version_id is None:
+        raise ValueError(
+            f"dataset {dataset_id!r} has no published version to pull; publish one first "
+            "(evaluate() or Dataset.push())."
+        )
     return pull_dataset_version(
         version_id,
         dataset_id=dataset_id,
