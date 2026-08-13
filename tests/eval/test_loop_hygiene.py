@@ -19,7 +19,7 @@ import time
 
 import pytest
 
-from traceroot.eval import Dataset, EvalCase
+from traceroot.eval import Dataset, EvalCase, engine
 from traceroot.eval.engine import _bounded, _CaseTimeoutError, _run
 from traceroot.eval.transport import FakeTransport
 
@@ -133,3 +133,33 @@ class TestTimedOutCasesLeaveNothingDangling:
         fut = captured[0]
         assert fut.done() and not fut.cancelled()
         assert isinstance(fut.exception(), ValueError)  # observed, not left to warn at GC
+
+    def test_a_case_that_ignores_its_cancellation_cannot_hold_the_run_open(self, monkeypatch):
+        """The timed-out task is created on the RUN'S loop, and ``asyncio.run`` cancels and then
+        AWAITS every remaining task before closing that loop. A task that swallows cancellation is
+        therefore not merely orphaned -- it blocks loop shutdown, so ``evaluate()`` never returns
+        even though the case already timed out."""
+        monkeypatch.setattr(engine, "_CANCEL_GRACE_S", 0.05)
+        work = 4.0  # how long the uncooperative case keeps running regardless of cancellation
+
+        async def stubborn(x):
+            end = time.monotonic() + work
+            while time.monotonic() < end:
+                try:
+                    await asyncio.sleep(0.01)
+                except asyncio.CancelledError:
+                    pass  # ignores its cancellation entirely
+
+        started = time.perf_counter()
+        run = _run(
+            name="r",
+            data=_ds(1),
+            task=stubborn,
+            scorers=[lambda ctx: 1.0],
+            transport=FakeTransport(),
+            timeout=0.05,
+        )
+        elapsed = time.perf_counter() - started
+        assert elapsed < work / 2, f"the run waited for the uncancellable case ({elapsed:.2f}s)"
+        item = run.item_results[0]
+        assert item.error is not None and "TimeoutError" in item.error

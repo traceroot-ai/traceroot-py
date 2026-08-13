@@ -1,4 +1,4 @@
-"""One canonical form, shared with TypeScript (C2/C3/C4).
+"""One canonical form, shared with TypeScript.
 
 Every vector here is asserted against the SAME fixture bytes by
 ``traceroot-ts/packages/traceroot/tests/eval-canonical.test.ts``, so a divergence in either SDK
@@ -226,6 +226,21 @@ def test_dataset_add_rejects_a_non_serializable_payload_naming_the_field():
         Dataset("d").add(input=1, expected=Decimal("1.5"))
     with pytest.raises(CanonicalizationError, match="test case input"):
         Dataset("d").upsert(EvalCase(input=object(), id="a"))
+
+
+def test_dataset_update_rejects_a_non_serializable_payload_naming_the_field():
+    # update() writes the same payload fields add()/upsert() validate. Without the same check the
+    # bad value is accepted here and only blows up at snapshot()/push -- far from the call site,
+    # and with nothing left to say WHICH edit introduced it.
+    ds = Dataset("d")
+    case = ds.add(input=1, expected=2, metadata={"k": "v"})
+    with pytest.raises(CanonicalizationError, match="test case expected"):
+        ds.update(case.id, expected=Decimal("1.5"))
+    with pytest.raises(CanonicalizationError, match="test case input"):
+        ds.update(case.id, input=object())
+    with pytest.raises(CanonicalizationError, match="test case metadata"):
+        ds.update(case.id, metadata={"k": Decimal("1.5")})
+    assert ds.get(case.id) == case  # rejected AT the update: nothing was stored
 
 
 def test_nan_and_infinity_are_sentinel_strings_in_both_sdks():

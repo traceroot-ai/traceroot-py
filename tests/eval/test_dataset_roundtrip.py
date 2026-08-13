@@ -1,4 +1,4 @@
-"""C4 — a published dataset re-hashes to the revision that published it.
+"""A published dataset re-hashes to the revision that published it.
 
 ``publishedRevision == snapshot.revision`` is the single predicate the whole idempotent-push
 design rests on, and both suites used to stub it out wholesale. Here NOTHING in the SDK is
@@ -90,7 +90,7 @@ def test_push_then_pull_recomputes_the_same_revision(backend):
 
 
 def test_second_push_of_unchanged_content_is_a_noop_and_never_prompts(backend):
-    """The user-visible consequence of C4: a Date/Set/bytes case used to publish a brand-new
+    """The user-visible consequence: a Date/Set/bytes case used to publish a brand-new
     version on every push, unprompted-and-unbounded, because the pull never matched."""
     sync = _sync()
 

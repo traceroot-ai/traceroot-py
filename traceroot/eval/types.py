@@ -250,6 +250,10 @@ class Dataset:
         if changes.get("id", id) != id:
             raise ValueError("test case id cannot be changed via update()")
         updated = dataclasses.replace(self._cases[id], **changes)
+        # Validate the MERGED case, exactly as add()/upsert() validate theirs: an edit writes the
+        # same payload fields, so an unrepresentable value must fail here (naming the field) rather
+        # than at snapshot()/push, where nothing recalls which edit introduced it.
+        _validate_payload(updated.input, updated.expected, updated.metadata)
         self._cases[id] = updated
         return updated
 

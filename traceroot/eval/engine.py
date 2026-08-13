@@ -12,6 +12,7 @@ This module is the internal engine (``_run`` / ``_run_async``); the public API i
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import dataclasses
 import inspect
@@ -202,6 +203,28 @@ def _observe(fut: Any) -> None:
         fut.exception()
 
 
+def _abandon(fut: Any) -> None:
+    """Drop a still-pending, uncancellable task from the loop's task registry.
+
+    Walking away from the task is not enough to bound the run: it was created on the run's own
+    loop, and ``asyncio.run`` cancels and then AWAITS every task still registered on that loop
+    before closing it. A task that ignores its cancellation therefore blocks loop shutdown, so
+    ``evaluate()`` hangs for as long as the runaway work lasts even though the case already timed
+    out. Unregistering it makes ``asyncio.all_tasks()`` -- and so the shutdown gather -- not see
+    it; it keeps running normally while the run lasts (its ``_observe`` callback still fires) and
+    is simply discarded, unfinished, when the loop closes.
+    """
+    for name in ("_unregister_task", "_unregister_eager_task"):
+        unregister = getattr(asyncio.tasks, name, None)  # private asyncio bookkeeping
+        if unregister is not None:
+            with contextlib.suppress(Exception):
+                unregister(fut)
+    # Being pending at loop close is the point here, so don't let asyncio warn "Task was destroyed
+    # but it is pending!" about a task we abandoned deliberately.
+    with contextlib.suppress(AttributeError):
+        fut._log_destroy_pending = False
+
+
 async def _off_loop(call: Callable[[], Any]) -> Any:
     """Run one BLOCKING transport call off the event loop.
 
@@ -238,6 +261,7 @@ async def _bounded(coro: Any, deadline: float | None, timeout: float | None) -> 
             _observe(f)
         for f in unsettled:  # ignoring its cancellation: observe it whenever it does finish
             f.add_done_callback(_observe)
+            _abandon(f)  # ... and never let it hold the run's loop open past this timeout
         raise _CaseTimeoutError(f"case exceeded {timeout}s")
     return fut.result()
 

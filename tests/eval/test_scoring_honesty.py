@@ -22,7 +22,7 @@ def echo(x):
 
 
 def test_non_finite_score_does_not_poison_the_summary_mean():
-    # H1 makes a non-finite score `errored` on the wire, but the LOCAL aggregate must agree: a NaN
+    # A non-finite score is `errored` on the wire, but the LOCAL aggregate must agree: a NaN
     # folded into the mean makes run.json contain a bare `NaN` (invalid per the JSON spec — strict
     # parsers reject it) and disagrees with .summary() and the platform. It must be excluded.
     import math
