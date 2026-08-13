@@ -91,3 +91,37 @@ class TestDroppedResultsAreCounted:
         run = _run(name="r", data=_ds(2), task=echo, scorers=[ok], transport=FakeTransport())
         assert run.upload_state.failed_result_count == 0
         assert run.upload_state.partial is False
+
+
+class TestAnUnfinishedRunIsNotCompleted:
+    """A run whose body did not get through its cases is ``incomplete``, whatever the reason.
+
+    The completion call lives in the ``finally``, so it runs on the way out of a Ctrl-C too. Left
+    to derive its own status it reports ``completed`` -- the platform then shows a green run for an
+    evaluation that scored two cases out of five, disagreeing with the local artifact (which says
+    ``incomplete``) and with the TypeScript SDK (which reports ``incomplete``)."""
+
+    def test_a_keyboard_interrupt_finishes_the_run_incomplete(self):
+        def interrupted(x):
+            raise KeyboardInterrupt
+
+        t = FakeTransport()
+        with pytest.raises(KeyboardInterrupt):
+            _run(name="r", data=_ds(1), task=interrupted, scorers=[ok], transport=t)
+        assert ("finish_run", "incomplete") in t.calls
+
+    def test_a_cancelled_run_finishes_the_run_incomplete(self):
+        def cancelled(x):
+            raise __import__("asyncio").CancelledError
+
+        t = FakeTransport()
+        with pytest.raises(BaseException):
+            _run(name="r", data=_ds(1), task=cancelled, scorers=[ok], transport=t)
+        assert ("finish_run", "incomplete") in t.calls
+
+    def test_a_run_that_finished_its_cases_still_derives_its_own_status(self):
+        t = FakeTransport()
+        _run(name="r", data=_ds(2), task=echo, scorers=[ok], transport=t)
+        # None = "you work it out from the error counts" (the transport's completed /
+        # completed_with_errors rule). An errored CASE is not an unfinished RUN.
+        assert ("finish_run", None) in t.calls

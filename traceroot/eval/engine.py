@@ -929,10 +929,17 @@ async def _run_async(
         # and the completion failure rides along as a note (it used to REPLACE the real cause --
         # a /complete 400 buried the actual exception under a second traceback).
         try:
+            # A run whose body did not get through its cases is INCOMPLETE, whatever stopped it
+            # (Ctrl-C, cancellation, a crash in the gather). Left to derive its own status the
+            # transport would report 'completed' for an evaluation that scored two cases out of
+            # five -- green on the platform, 'incomplete' in the local artifact, and disagreeing
+            # with the TypeScript SDK. An errored CASE is not an unfinished run: that path leaves
+            # status None so the error counts decide.
+            terminal_status = "incomplete" if body_error is not None else None
             upload = await _off_loop(
                 lambda: active_transport.finish_run(
                     run_handle,
-                    status=None,
+                    status=terminal_status,
                     emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
                 )
             )
