@@ -30,7 +30,8 @@ from typing import Any
 from urllib.parse import quote
 
 from traceroot.eval.ids import stable_dataset_id
-from traceroot.eval.results import EvalItemResult, UploadState, case_status as _case_status
+from traceroot.eval.results import EvalItemResult, UploadState
+from traceroot.eval.results import case_status as _case_status
 from traceroot.eval.transport import PublishResult, RunHandle
 from traceroot.eval.types import Dataset, EvalCase, Score, _content_revision
 from traceroot.utils import serialize_value
@@ -158,7 +159,7 @@ def _numeric_score(value: Any) -> float | None:
 # not pin a version that no longer describes what it scored; comparing the current revision to
 # this one detects that WITHOUT a round trip. Weak keys: this bookkeeping never keeps a dataset
 # alive, and an unknown dataset simply has no opinion (see pinned_content_changed).
-_PINNED_REVISION: "weakref.WeakKeyDictionary[Dataset, str]" = weakref.WeakKeyDictionary()
+_PINNED_REVISION: weakref.WeakKeyDictionary[Dataset, str] = weakref.WeakKeyDictionary()
 
 
 def remember_pinned_content(dataset: Dataset) -> None:

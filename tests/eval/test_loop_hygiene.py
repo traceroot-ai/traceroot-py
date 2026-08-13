@@ -20,7 +20,7 @@ import time
 import pytest
 
 from traceroot.eval import Dataset, EvalCase
-from traceroot.eval.engine import _CaseTimeoutError, _bounded, _run
+from traceroot.eval.engine import _bounded, _CaseTimeoutError, _run
 from traceroot.eval.transport import FakeTransport
 
 

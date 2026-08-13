@@ -9,6 +9,8 @@ wrong -- and the easiest place to lose the truth. Two rules:
      so a run that reports "uploaded" with silently-missing results is detectable.
 """
 
+import asyncio
+
 import pytest
 
 from traceroot.eval import Dataset, EvalCase
@@ -112,10 +114,10 @@ class TestAnUnfinishedRunIsNotCompleted:
 
     def test_a_cancelled_run_finishes_the_run_incomplete(self):
         def cancelled(x):
-            raise __import__("asyncio").CancelledError
+            raise asyncio.CancelledError
 
         t = FakeTransport()
-        with pytest.raises(BaseException):
+        with pytest.raises(asyncio.CancelledError):
             _run(name="r", data=_ds(1), task=cancelled, scorers=[ok], transport=t)
         assert ("finish_run", "incomplete") in t.calls
 
