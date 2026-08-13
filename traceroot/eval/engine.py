@@ -659,16 +659,6 @@ async def _run_async(
         raise ValueError("evaluate() requires at least one case to run")
 
     snapshot = _to_snapshot(data, cases)
-    dataset_ref = RunDatasetRef(
-        # dataset_id is identity only: an explicit dataset_id= associates this run
-        # with a platform dataset without authorizing any upload.
-        dataset_id=dataset_id or snapshot.dataset_id,
-        revision=snapshot.revision,
-        dataset_version_id=data.dataset_version_id
-        if isinstance(data, Dataset)
-        else snapshot.base_version_id,
-        case_count=len(cases),
-    )
 
     # A run is not identified by which SDK produced it, so no SDK-language identity is reported.
     # But git/CI provenance (commit/branch/dirty, CI build) is NON-IDENTITY reproducibility
@@ -688,9 +678,8 @@ async def _run_async(
         # Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
         # server-side version to attach to -- the user never writes a manual "sync then run" step
         # (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses
-        # the current version; a changed dataset under an existing name prompts to confirm the new
-        # version (TTY) before publishing. Only for a local Dataset with credentials; a pulled
-        # dataset (already synced), an explicit dataset_id, or an explicit transport skip this.
+        # the current version. Only for a local Dataset with credentials; a pulled dataset
+        # (already synced), an explicit dataset_id, or an explicit transport skip this.
         if (
             isinstance(data, Dataset)
             and data.dataset_version_id is None
@@ -702,7 +691,12 @@ async def _run_async(
             if api_key:
                 from traceroot.eval.dataset_sync import PlatformDatasetSync
 
-                data.push(PlatformDatasetSync())  # stamps dataset_version_id (may prompt / abort)
+                # Auto-approve the new version instead of falling through to the interactive
+                # confirmation: a versioning decision must never block a run waiting on [y/N].
+                # The run's content is authoritative -- publishing it is what lets the run pin
+                # exactly what it scored. The explicit, user-initiated Dataset.push() keeps the
+                # prompt; that is where deliberate version management lives.
+                data.push(PlatformDatasetSync(), on_existing=lambda info: True)
         active_transport = _auto_transport(
             data, scorers, dataset_id, candidate_version, environment
         )
@@ -723,6 +717,19 @@ async def _run_async(
                 "Set TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an "
                 "explicit transport= (e.g. FakeTransport() to run offline)."
             )
+
+    # Built AFTER the transport block so it sees any version the auto-publish just created: the
+    # run must report the version it actually scored, not the null the dataset carried on entry.
+    dataset_ref = RunDatasetRef(
+        # dataset_id is identity only: an explicit dataset_id= associates this run
+        # with a platform dataset without authorizing any upload.
+        dataset_id=dataset_id or snapshot.dataset_id,
+        revision=snapshot.revision,
+        dataset_version_id=data.dataset_version_id
+        if isinstance(data, Dataset)
+        else snapshot.base_version_id,
+        case_count=len(cases),
+    )
 
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
     # scorer callables when the transport accepts specs and the caller did not pre-set them.

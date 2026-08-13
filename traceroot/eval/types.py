@@ -374,7 +374,13 @@ class Dataset:
             return cls.from_dict(d)
         return cls.from_json(text)
 
-    def push(self, transport: Any = None, *, base_version_id: str | None = None) -> Any:
+    def push(
+        self,
+        transport: Any = None,
+        *,
+        base_version_id: str | None = None,
+        on_existing: Any = None,
+    ) -> Any:
         """Explicitly publish this dataset as ONE immutable server version.
 
         Local mutations never create versions; this is the deliberate publish
@@ -382,6 +388,8 @@ class Dataset:
         no network). Provide the remote version this edit was based on via
         ``base_version_id`` (defaults to this dataset's pinned version) for
         optimistic concurrency; a stale base raises ``DatasetConflictError``.
+        ``on_existing`` overrides the double-check before adding a version to an
+        already-existing dataset (default: the transport's own, an interactive prompt).
         Imported lazily to avoid a types <-> dataset_sync cycle.
         """
         from traceroot.eval.dataset_sync import LocalDatasetSync
@@ -389,7 +397,9 @@ class Dataset:
         sync = transport if transport is not None else LocalDatasetSync()
         snapshot = self.snapshot()
         base = base_version_id if base_version_id is not None else self.base_version_id
-        result = sync.push_dataset(snapshot, base)
+        # Only forwarded when set, so a duck-typed transport without the keyword still works.
+        extra = {"on_existing": on_existing} if on_existing is not None else {}
+        result = sync.push_dataset(snapshot, base, **extra)
         if result.status == "uploaded" and result.dataset_version_id is not None:
             self.dataset_version_id = result.dataset_version_id
             self.base_version_id = result.dataset_version_id
