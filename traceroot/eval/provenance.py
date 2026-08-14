@@ -24,12 +24,10 @@ import subprocess
 from typing import Any
 
 # (env flag that marks the provider, provider name, env var holding the build/run id)
+# Only GitHub Actions is parsed as a named provider (it also feeds git context); every other
+# CI is caught by the generic `env["CI"]` fallback in _ci_block below.
 _CI_PROVIDERS = (
     ("GITHUB_ACTIONS", "github", "GITHUB_RUN_ID"),
-    ("GITLAB_CI", "gitlab", "CI_PIPELINE_ID"),
-    ("CIRCLECI", "circleci", "CIRCLE_BUILD_NUM"),
-    ("BUILDKITE", "buildkite", "BUILDKITE_BUILD_ID"),
-    ("JENKINS_URL", "jenkins", "BUILD_NUMBER"),
 )
 
 
