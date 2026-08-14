@@ -199,6 +199,10 @@ class EvalRunResult:
     # instead of re-registering policy-less -- otherwise a re-upload's per-score ``passed`` verdicts
     # would silently disagree with the original run's.
     scorer_specs: list[dict[str, Any]] | None = None
+    # The scorer -> emitted-metric ownership map captured at run time (which declared scorer produced
+    # which metric name). Retained so an explicit upload() re-declares it on finish_run; without it a
+    # re-upload omits the manifest the platform keys each emitted metric's owner on.
+    emitted_metrics: dict[str, list[str]] | None = None
 
     # --- inspection ---
     @property
@@ -251,6 +255,7 @@ class EvalRunResult:
             "score_summary": {k: v.to_dict() for k, v in self.score_summary.items()},
             "metadata": self.metadata,
             "scorer_specs": self.scorer_specs,
+            "emitted_metrics": self.emitted_metrics,
             "upload": self.upload_state.to_dict(),
         }
 
@@ -279,6 +284,7 @@ class EvalRunResult:
             run_id=d.get("run_id"),
             metadata=d.get("metadata"),
             scorer_specs=d.get("scorer_specs"),
+            emitted_metrics=d.get("emitted_metrics"),
         )
 
     @classmethod
@@ -328,6 +334,7 @@ class EvalRunResult:
             # Restore the declared policy so a run loaded from a runner artifact re-uploads under
             # the thresholds it was scored with (older artifacts have none -> falls back to names).
             scorer_specs=d.get("scorer_specs"),
+            emitted_metrics=d.get("emitted_metrics"),
         )
 
     def save(self, path: str) -> None:
@@ -395,7 +402,9 @@ class EvalRunResult:
         for item in self.item_results:
             active.record_item_result(run, item)
             active.record_scores(run, item.case_id, item.scores)
-        self.upload_state = active.finish_run(run, status=None)
+        # Re-declare the emitted-metric ownership captured at run time, so a re-upload's finish_run
+        # carries the same manifest the original run did (None for a run without it).
+        self.upload_state = active.finish_run(run, status=None, emitted_metrics=self.emitted_metrics)
         # Keep the existing server run id if this transport doesn't expose one (don't erase it).
         self.run_id = getattr(active, "run_id", None) or self.run_id
         return self

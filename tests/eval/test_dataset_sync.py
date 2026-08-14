@@ -168,7 +168,7 @@ class TestRunUpload:
             def record_scores(self, run, case_id, scores):
                 pass
 
-            def finish_run(self, run, status=None):
+            def finish_run(self, run, status=None, emitted_metrics=None):
                 return UploadState(status="uploaded")
 
         monkeypatch.setattr(platform, "PlatformTransport", _Spy)
@@ -184,6 +184,27 @@ class TestRunUpload:
         path = tmp_path / "run.json"
         run.save(str(path))
         assert EvalRunResult.load(str(path)).scorer_specs == specs
+
+    def test_emitted_metrics_round_trip_and_reupload(self, tmp_path):
+        # The emitted-metric ownership manifest is retained + persisted, and re-declared on the
+        # finish_run of an explicit upload() (else a re-upload omits it).
+        run = self._run()
+        run.emitted_metrics = {"acc": ["acc", "acc_detail"]}
+        path = tmp_path / "run.json"
+        run.save(str(path))
+        assert EvalRunResult.load(str(path)).emitted_metrics == {"acc": ["acc", "acc_detail"]}
+
+        transport = _StubPlatform("ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h")
+        captured: dict = {}
+        orig = transport.finish_run
+
+        def _spy(r, status=None, emitted_metrics=None):
+            captured["emitted_metrics"] = emitted_metrics
+            return orig(r, status=status, emitted_metrics=emitted_metrics)
+
+        transport.finish_run = _spy
+        run.upload(transport)
+        assert captured["emitted_metrics"] == {"acc": ["acc", "acc_detail"]}
 
 
 def test_local_sync_is_local_only():

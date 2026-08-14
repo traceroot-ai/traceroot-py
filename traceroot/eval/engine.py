@@ -192,9 +192,12 @@ async def _await_or_run(
 
 # How long a cancelled, overrunning future is given to actually settle before the timeout error
 # is raised anyway. Cancellation is delivered on the NEXT loop tick, so a well-behaved future
-# settles far inside this; the bound only exists so code that swallows its own cancellation
-# cannot hold the run hostage.
-_CANCEL_GRACE_S = 5.0
+# settles far inside this, and a cancelled SYNC task settles immediately at its executor await (its
+# orphaned thread is abandoned, not waited on). The bound only exists for the adversarial case of a
+# coroutine that swallows its own CancelledError and keeps running; keep it SHORT so such a case
+# adds at most this to a timed-out case rather than a multi-second stall. (A future that overruns
+# it is observed via callback and abandoned, so cleanup still completes — it just isn't awaited.)
+_CANCEL_GRACE_S = 1.0
 
 
 def _observe(fut: Any) -> None:
@@ -799,8 +802,8 @@ async def _run_async(
         active_transport = transport
     else:
         # Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
-        # server-side version to attach to -- the user never writes a manual "sync then run" step
-        # (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses
+        # server-side version to attach to -- the user never writes a manual "sync then run" step.
+        # Idempotent: unchanged content reuses
         # the current version. Only for a local Dataset with credentials; an explicit dataset_id
         # or an explicit transport skip this.
         #
@@ -1018,6 +1021,9 @@ async def _run_async(
         # `passed`. Transports without the field (FakeTransport, i.e. a local "run now, upload
         # later" run) fall back to the specs derived from the scorers.
         scorer_specs=getattr(active_transport, "scorer_specs", None) or resolved_scorer_specs,
+        # Retain the scorer -> emitted-metric ownership so an explicit result.upload() re-declares it
+        # on finish_run (the same manifest this run sent below). None when nothing was emitted.
+        emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()} or None,
     )
 
     # When the bar was shown (interactive), print the run's summary too — so calling evaluate() on

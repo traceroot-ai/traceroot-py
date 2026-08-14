@@ -117,7 +117,7 @@ class TestEngineAttachesProvenance:
 class TestProvenanceReachesWire:
     """Reproducibility metadata (git commit/branch, CI) is NON-IDENTITY but must reach the
     platform as run metadata -- it was captured locally yet dropped from the wire alongside
-    SDK-language identity. Braintrust sends the equivalent `repo_info` for reproducibility."""
+    SDK-language identity."""
 
     def test_git_and_ci_provenance_ride_the_run_metadata(self, monkeypatch):
         monkeypatch.setattr(

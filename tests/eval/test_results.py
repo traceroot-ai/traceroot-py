@@ -173,7 +173,7 @@ class TestReuploadRegistration:
             def record_scores(self, run, case_id, scores):
                 pass
 
-            def finish_run(self, run, status=None):
+            def finish_run(self, run, status=None, emitted_metrics=None):
                 return UploadState()
 
         monkeypatch.setattr(platform_mod, "PlatformTransport", _Capture)
