@@ -36,9 +36,6 @@ _EXPORTS = {
     "llm_judge": "scorers",
     "scorer": "scorers",
     "Scorer": "scorers",
-    "dataset_latest_snippet": "snippets",
-    "dataset_version_snippet": "snippets",
-    "reproduce_run_snippet": "snippets",
     "EvalCompletionError": "transport",
     "EvalTransport": "transport",
     "FakeTransport": "transport",
@@ -74,11 +71,6 @@ if TYPE_CHECKING:
         case_status,
     )
     from traceroot.eval.scorers import Scorer, describe_scorers, llm_judge, scorer
-    from traceroot.eval.snippets import (
-        dataset_latest_snippet,
-        dataset_version_snippet,
-        reproduce_run_snippet,
-    )
     from traceroot.eval.transport import (
         EvalCompletionError,
         EvalTransport,
@@ -154,9 +146,6 @@ __all__ = [
     "llm_judge",
     "Scorer",
     "describe_scorers",
-    "dataset_latest_snippet",
-    "dataset_version_snippet",
-    "reproduce_run_snippet",
     "collect_run_provenance",
     "PushResult",
     "DatasetConflictError",
