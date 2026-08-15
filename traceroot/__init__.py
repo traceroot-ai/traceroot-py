@@ -153,4 +153,52 @@ __all__ = [
     "update_current_trace",
     # OpenInference (re-exported for convenience)
     "using_attributes",
+    # Offline evaluation
+    "Dataset",
+    "DatasetSnapshot",
+    "EvalCase",
+    "Score",
+    "ScorerContext",
+    "DeferredScore",
+    "Evaluation",
+    "evaluate",
+    "evaluate_async",
+    "pull_dataset",
+    "pull_dataset_version",
+    "EvalRunResult",
+    "EvalItemResult",
+    "RunDatasetRef",
+    "ScoreSummary",
+    "UploadState",
 ]
+
+# Offline-evaluation symbols are re-exported lazily so importing ``traceroot`` never
+# eagerly pulls the eval submodules (keeps import light and safe on partial installs).
+_EVAL_EXPORTS = frozenset(
+    {
+        "Dataset",
+        "DatasetSnapshot",
+        "DeferredScore",
+        "EvalCase",
+        "Score",
+        "ScorerContext",
+        "EvalItemResult",
+        "EvalRunResult",
+        "RunDatasetRef",
+        "ScoreSummary",
+        "UploadState",
+        "Evaluation",
+        "evaluate",
+        "evaluate_async",
+        "pull_dataset",
+        "pull_dataset_version",
+    }
+)
+
+
+def __getattr__(name):
+    if name in _EVAL_EXPORTS:
+        import traceroot.eval as _eval
+
+        return getattr(_eval, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
