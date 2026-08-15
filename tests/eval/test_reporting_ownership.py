@@ -68,7 +68,14 @@ def _run():
 
 
 class TestSendsRawData:
-    def test_register_run_carries_identity_and_scorer_metadata(self):
+    def test_register_run_carries_identity_and_scorer_metadata(self, monkeypatch):
+        import traceroot.eval.provenance as prov
+
+        monkeypatch.setattr(
+            prov,
+            "_resolved_git",
+            lambda env: ("owner/repo", "0123456789abcdef0123456789abcdef01234567"),
+        )
         _, reqs = _run()
         reg = reqs[0][2]
         assert reqs[0][1] == "/api/v1/public/evaluation-runs"
@@ -85,8 +92,10 @@ class TestSendsRawData:
         assert sc["scorer_type"] == "code"
         assert sc["output_type"] == "score"  # derived from numeric
         assert sc["language"] == "python" and "def acc" in sc["source"]
-        # run metadata/provenance is NOT sent (backend registration schema is strict)
-        assert "metadata" not in reg
+        # git provenance is NON-IDENTITY reproducibility metadata and rides the wire as `metadata`
+        # (a real registration field); SDK-language identity is never sent.
+        assert reg["metadata"]["git"]["repository"] == "owner/repo"
+        assert "sdk" not in reg and "language" not in reg
 
     def test_results_carry_raw_outputs_values_errors_duration_trace(self):
         _, reqs = _run()
@@ -95,14 +104,17 @@ class TestSendsRawData:
 
         ok = by_id["c0"]
         assert ok["candidate_output"] == "ok"  # raw candidate output
-        assert ok["status"] == "passed"
-        assert ok["main_score"] == 1.0
+        # No case-level headline verdict: a clean case with no error is "not_scored" (the
+        # pass/fail signal lives per-score, below), and no run-level main_score is sent.
+        assert ok["status"] == "not_scored"
+        assert "main_score" not in ok
         assert "duration_ms" in ok  # measurement present (int or null)
         assert "trace_id" in ok  # trace identity link
         assert ok["scores"] == [
-            {"scorer_name": "acc", "scorer_version": "v2", "numeric_value": 1.0, "passed": True}
-        ]  # raw per-scorer value + declared version + SDK-computed pass/fail (its OWN policy,
-        # not a comparison against a baseline -- see TestDoesNotSendComparisonLabels)
+            {"scorer_name": "acc", "scorer_version": "v2", "numeric_value": 1.0}
+        ]  # raw per-scorer value + declared version. `acc` declares NO threshold, so there is no
+        # fabricated pass/fail -- `passed` is omitted (a numeric metric without a declared threshold
+        # is scored but carries no verdict; see test_primary_metric).
 
         # scorer error: preserved as a per-scorer error, task_error stays null
         se = by_id["c1"]
@@ -114,12 +126,12 @@ class TestSendsRawData:
         assert te["status"] == "errored"
         assert "task boom" in te["task_error"]
 
-    def test_complete_carries_counts_and_main_score(self):
+    def test_complete_carries_counts_and_no_main_score(self):
         _, reqs = _run()
         comp = next(b for _m, p, b in reqs if p.endswith("/complete"))
         assert comp["status"] in ("completed", "completed_with_errors")
         assert "scored_count" in comp and "task_error_count" in comp
-        assert "main_score" in comp
+        assert "main_score" not in comp  # no run-level headline metric on the wire
 
 
 class TestDoesNotSendComparisonLabels:
@@ -148,9 +160,17 @@ class TestDoesNotSendComparisonLabels:
 
 
 class TestLocalOwnership:
-    def test_run_metadata_provenance_is_local_only(self):
+    def test_git_provenance_rides_wire_never_sdk_identity(self, monkeypatch):
+        import traceroot.eval.provenance as prov
+
+        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "main"))
         result, reqs = _run()
-        # provenance lives on the LOCAL result, never on a request body
-        assert result.metadata is None or isinstance(result.metadata, dict)
+        # git/CI provenance is reproducibility metadata (non-identity): it rides the registration
+        # body AND backs the local result -- the same combined view, not local-only.
+        assert result.metadata["git"] == {"repository": "owner/repo", "ref": "main"}
+        reg = reqs[0][2]
+        assert reg["metadata"]["git"] == {"repository": "owner/repo", "ref": "main"}
+        # never SDK-language identity on any request body
         for _m, _p, body in reqs:
-            assert not body or "metadata" not in body
+            if body and isinstance(body.get("metadata"), dict):
+                assert "sdk" not in body["metadata"] and "language" not in body["metadata"]

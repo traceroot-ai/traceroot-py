@@ -61,17 +61,17 @@ def _write(tmp_path, name, body):
 
 
 class TestSeededSamplingReproducible:
-    def test_same_seed_selects_same_content_across_fresh_ids(self):
-        # Two independent imports mint fresh ULIDs per case; seeded sampling must still
-        # select the same CASES (by stable order/position), not different ones.
+    def test_same_seed_selects_same_content_with_stable_ids(self):
+        # Re-authoring the same dataset yields STABLE, identical case ids (convergence),
+        # and seeded sampling still selects the same CASES by stable order/position.
         def mk():
             ds = Dataset("d")
             for i in range(10):
-                ds.add(input=i)  # auto ULID id, different each construction
+                ds.add(input=i)  # stable id from (dataset key, insertion position)
             return ds
 
         ds1, ds2 = mk(), mk()
-        assert [c.id for c in ds1] != [c.id for c in ds2]  # ids really differ
+        assert [c.id for c in ds1] == [c.id for c in ds2]  # stable ids converge
         c1, _, _ = _subset(ds1, None, 3, 42)
         c2, _, _ = _subset(ds2, None, 3, 42)
         inputs1 = sorted(c.input for c in ds1 if c.id in c1)

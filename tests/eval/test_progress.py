@@ -58,16 +58,16 @@ def test_progress_counts_and_renders():
     buf = io.StringIO()
     bar = ConsoleProgress(3, "demo", stream=buf, width=10, animate=True)
     bar.start()
-    bar.on_case_complete(_item("a", 1.0), 5.0)  # passed
-    bar.on_case_complete(_item("b", 0.0), 5.0)  # failed
+    bar.on_case_complete(_item("a", 1.0), 5.0)  # not_scored (clean, no error)
+    bar.on_case_complete(_item("b", 0.0), 5.0)  # not_scored (clean, no error)
     bar.on_case_complete(_item("c", "error"), 5.0)  # errored
     bar.finish()
 
-    assert (bar.passed, bar.failed, bar.errored, bar.done) == (1, 1, 1, 3)
+    assert (bar.errored, bar.not_scored, bar.done) == (1, 2, 3)
     out = buf.getvalue()
     assert "demo" in out
     assert "3/3" in out
-    # "off" tail appears once a case fails/errors.
+    # "off" tail appears once a case errors.
     assert "off" in out
     # finish() persists the completed bar (redraws the final frame) and ends the line,
     # instead of erasing it -> the 100% bar stays on screen.

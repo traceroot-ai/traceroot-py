@@ -53,7 +53,7 @@ ds = Dataset("d")
 ds.add(input="ok", id="ok", expected="ok")
 ds.add(input="boom", id="err", expected="boom")
 
-mixed_eval = Evaluation(name="mixed", dataset=ds, task=task, scorers=[good, bad], main_score="good")
+mixed_eval = Evaluation(name="mixed", dataset=ds, task=task, scorers=[good, bad])
 """
 
 INSTRUMENTED_EVAL = """
@@ -172,7 +172,10 @@ class TestSuccessStream:
         assert types[-1] == "suite_completed"
         done = next(e for e in events if e["type"] == "evaluation_completed")
         assert done["status"] == "completed"
-        assert done["counts"]["passed"] == 2
+        # Both cases ran cleanly with no error -> not_scored at the case level (per-score
+        # verdicts live on each score); no headline passed/failed count.
+        assert done["counts"]["not_scored"] == 2
+        assert done["counts"]["errored"] == 0
 
 
 class TestIndependentErrorFields:

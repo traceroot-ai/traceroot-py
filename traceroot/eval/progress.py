@@ -19,7 +19,7 @@ import sys
 import time
 from typing import TextIO
 
-from traceroot.eval.results import EvalItemResult, MainScore, case_status
+from traceroot.eval.results import EvalItemResult, case_status
 
 # Eighth-block glyphs for a smooth sub-cell bar edge.
 _BLOCKS = " ▏▎▍▌▋▊▉█"
@@ -187,21 +187,16 @@ class ConsoleProgress:
         width: int = 24,
         animate: bool | None = None,
         cols: int | None = None,
-        main_score: MainScore | None = None,
     ) -> None:
         self.total = max(int(total), 0)
         self.label = _sanitize_label(label)
-        # The run's resolved scoring policy (threshold + direction), so live pass/fail matches
-        # the final result. None -> the default policy (single-scorer default).
-        self._main_score = main_score
         self.stream = stream if stream is not None else sys.stderr
         self.width = width
         # Terminal width to clamp each frame to (auto-detected when None).
         self._cols = cols
         self.done = 0
-        self.passed = 0
-        self.failed = 0
         self.errored = 0
+        self.not_scored = 0
         self._t0 = time.monotonic()
         self._active = False
         # Animate (in-place) only when the stream truly supports \r; else plain lines.
@@ -216,13 +211,11 @@ class ConsoleProgress:
 
     def on_case_complete(self, item: EvalItemResult, _duration_ms: float) -> None:
         self.done += 1
-        status = case_status(item, self._main_score)
-        if status == "passed":
-            self.passed += 1
-        elif status == "failed":
-            self.failed += 1
-        elif status == "errored":
+        status = case_status(item)
+        if status == "errored":
             self.errored += 1
+        else:  # not_scored
+            self.not_scored += 1
         if self._animate:
             self._render()
         else:
@@ -253,8 +246,7 @@ class ConsoleProgress:
         for large runs so it never floods."""
         step = max(1, self.total // 10)
         if self.done == self.total or self.total <= 20 or self.done % step == 0:
-            bad = self.failed + self.errored
-            tail = f"  ({bad} off)" if bad else ""
+            tail = f"  ({self.errored} off)" if self.errored else ""
             self._safe_write(f"  {self.label}  {self.done}/{self.total}{tail}\n")
 
     # -- rendering -------------------------------------------------------
@@ -275,7 +267,7 @@ class ConsoleProgress:
         elapsed = time.monotonic() - self._t0
         rate = self.done / elapsed if elapsed > 0 else 0.0
         mm, ss = divmod(int(elapsed), 60)
-        tail = f"  {self.failed + self.errored} off" if (self.failed or self.errored) else ""
+        tail = f"  {self.errored} off" if self.errored else ""
         # Clamp to one physical row: a line wider than the terminal wraps, and then
         # \r\x1b[2K only clears the last wrapped row -> the overflow stacks. Trim to cols-1
         # (leave the last column free so an exactly-full line can't auto-wrap).

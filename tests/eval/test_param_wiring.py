@@ -74,9 +74,8 @@ class TestMetadata:
         seen = {}
 
         class CapturingTransport(FakeTransport):
-            def create_run(self, name, dataset_name, metadata, client_run_id=None, provenance=None):
+            def create_run(self, name, dataset_name, metadata, client_run_id=None):
                 seen["metadata"] = metadata
-                seen["provenance"] = provenance
                 return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
         Evaluation(
@@ -87,9 +86,10 @@ class TestMetadata:
             metadata={"model": "gpt"},
             report_to=CapturingTransport(),
         ).run()
-        assert seen["metadata"] == {"model": "gpt"}
-        # typed provenance reaches registration alongside free-form metadata.
-        assert seen["provenance"]["sdk_language"] == "python"
+        # Free-form user metadata reaches registration (git/CI reproducibility provenance may ride
+        # alongside as non-identity keys); SDK-language identity never does.
+        assert seen["metadata"]["model"] == "gpt"
+        assert "sdk" not in seen["metadata"] and "language" not in seen["metadata"]
 
 
 class TestRetryRejected:

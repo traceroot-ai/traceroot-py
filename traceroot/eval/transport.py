@@ -43,7 +43,6 @@ class EvalTransport(Protocol):
         dataset_name: str,
         metadata: dict[str, Any] | None,
         client_run_id: str | None = None,
-        provenance: dict[str, Any] | None = None,
     ) -> RunHandle: ...
 
     def register_item(self, run: RunHandle, case: EvalCase) -> None: ...
@@ -56,7 +55,6 @@ class EvalTransport(Protocol):
         self,
         run: RunHandle,
         status: str | None = None,
-        main_score_name: str | None = None,
         emitted_metrics: dict[str, list[str]] | None = None,
     ) -> UploadState: ...
 
@@ -74,11 +72,9 @@ class FakeTransport:
         dataset_name: str,
         metadata: dict[str, Any] | None,
         client_run_id: str | None = None,
-        provenance: dict[str, Any] | None = None,
     ) -> RunHandle:
         self.calls.append(("create_run", name, dataset_name, client_run_id))
         self.last_run_metadata = metadata
-        self.last_run_provenance = provenance
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
     def register_item(self, run: RunHandle, case: EvalCase) -> None:
@@ -94,11 +90,9 @@ class FakeTransport:
         self,
         run: RunHandle,
         status: str | None = None,
-        main_score_name: str | None = None,
         emitted_metrics: dict[str, list[str]] | None = None,
     ) -> UploadState:
         self.calls.append(("finish_run", status))
-        self.last_main_score_name = main_score_name
         self.last_emitted_metrics = emitted_metrics
         return UploadState(status="uploaded", dashboard_url=None)
 

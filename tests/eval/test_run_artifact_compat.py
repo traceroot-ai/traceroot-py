@@ -33,7 +33,6 @@ def _write_runner_artifact(result, tmp_path):
         sample_count=None,
         sample_seed=None,
         candidate_version=None,
-        provenance=None,
     )
     return run_p
 

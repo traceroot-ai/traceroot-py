@@ -47,12 +47,10 @@ from traceroot.eval.ids import new_run_id
 from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
-    MainScore,
     RunDatasetRef,
     UploadState,
     aggregate_scores,
     case_status,
-    resolve_main_score_policy,
 )
 from traceroot.eval.transport import FakeTransport
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase
@@ -288,10 +286,10 @@ def _scorer_versions(result: EvalRunResult) -> dict[str, str | None]:
     return versions
 
 
-def _case_metadata(item: EvalItemResult, main_score: MainScore | None = None) -> dict[str, Any]:
+def _case_metadata(item: EvalItemResult) -> dict[str, Any]:
     return {
         "case_id": item.case_id,
-        "status": case_status(item, main_score),
+        "status": case_status(item),
         "scores": [_score_event(s) for s in item.scores],
         "task_error": item.error,
         "scorer_errors": _scorer_error_events(item),
@@ -313,9 +311,7 @@ def _run_status(result: EvalRunResult, cancelled: bool) -> str:
 def _counts(result: EvalRunResult) -> dict[str, int]:
     return {
         "cases": result.case_count,
-        "scored": result.scored_count,
-        "passed": result.passed,
-        "failed": result.failed,
+        "errored": result.errored,
         "task_errors": result.task_error_count,
         "scorer_errors": result.scorer_error_count,
         "not_scored": result.not_scored,
@@ -376,7 +372,6 @@ def write_artifacts(
     sample_count: int | None,
     sample_seed: int | None,
     candidate_version: str | None,
-    provenance: dict[str, Any] | None,
     max_payload_bytes: int | None = None,
     created_at: str | None = None,
 ) -> dict[str, Any]:
@@ -391,7 +386,7 @@ def write_artifacts(
         record = {
             "schema_version": "1",
             "case_id": item.case_id,
-            "status": case_status(item, result.main_score),
+            "status": case_status(item),
             "input": inp,
             "output": out,
             "expected": exp,
@@ -413,13 +408,11 @@ def write_artifacts(
         "run_id": result.run_id,
         "created_at": created_at or _now_iso(),
         "evaluation_name": result.name,
-        "main_score_name": result.main_score_name,
         "status": status,
         "candidate_version": candidate_version,
         "run_mode": run_mode,
         "is_final": is_final,
         "sample": {"count": sample_count, "seed": sample_seed},
-        "provenance": provenance,
         "dataset": result.dataset.to_dict() if result.dataset else None,
         "scorers": [
             {"name": n, "version": _scorer_versions(result).get(n)} for n in result.score_summary
@@ -428,7 +421,7 @@ def write_artifacts(
         "scores": {k: v.to_dict() for k, v in result.score_summary.items()},
         "upload": result.upload_state.to_dict(),
         "artifact": artifact,
-        "cases": [_case_metadata(it, result.main_score) for it in result.item_results],
+        "cases": [_case_metadata(it) for it in result.item_results],
     }
     _atomic_write(run_path, json.dumps(serialize_value(run_doc), ensure_ascii=False, indent=2))
     return artifact
@@ -501,7 +494,6 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     # An option is an OVERRIDE only when the caller actually supplied it; otherwise
     # the Evaluation's own value stands (never silently replaced with a runner default).
     candidate_version = options.get("candidate_version") or evaluation.candidate_version
-    provenance = options.get("provenance")
     created_at = _now_iso()
     identity = _dataset_identity(evaluation.dataset)
 
@@ -553,18 +545,9 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     def on_start(case: EvalCase) -> None:
         emitter.emit({"type": "case_started", "case_id": case.id})
 
-    # The scoring POLICY (threshold + direction) is known up front from the scorers, so live
-    # per-case status uses it immediately -- never the default 1.0 that a late-bound name would
-    # otherwise imply. The metric NAME is name-agnostic live (a single scorer's one score) and
-    # resolves to the same value as the final artifact, so live and final agree.
-    from traceroot.eval.scorers import describe_scorers as _describe
-
-    _lt, _ld = resolve_main_score_policy(_describe(evaluation.scorers), evaluation.main_score)
-    live_main = MainScore(evaluation.main_score, _lt, _ld)
-
     def on_complete(item: EvalItemResult, _dur: float) -> None:
         collected.append(item)
-        emitter.emit({"type": "case_completed", **_case_metadata(item, live_main)})
+        emitter.emit({"type": "case_completed", **_case_metadata(item)})
 
     # Only override the Evaluation's own concurrency/timeout when the option is present;
     # an absent option must NOT replace the definition's value with a runner default.
@@ -615,7 +598,6 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             sample_count=len(chosen) if chosen is not None else None,
             sample_seed=seed if chosen is not None else None,
             candidate_version=candidate_version,
-            provenance=provenance,
             max_payload_bytes=options.get("max_payload_bytes"),
             created_at=created_at,
         )

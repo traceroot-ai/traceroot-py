@@ -15,10 +15,10 @@ def _ds():
     return ds
 
 
-def _run(scorers, main_score=None):
+def _run(scorers):
     return evaluate(
         name="r", dataset=_ds(), task=lambda x: "hi", scorers=scorers,
-        main_score=main_score, transport=FakeTransport(),
+        transport=FakeTransport(),
     )
 
 
@@ -55,7 +55,7 @@ def test_metric_map_return():
     def multi(input, output):
         return {"len_ok": len(output) > 0, "starts_h": output.startswith("h")}
 
-    assert _scores(_run([multi], main_score="len_ok")) == {"len_ok": True, "starts_h": True}
+    assert _scores(_run([multi])) == {"len_ok": True, "starts_h": True}
 
 
 def test_named_object_return_still_single_score():

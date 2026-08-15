@@ -109,7 +109,6 @@ class TestScorerSpecsOnWire:
 
         t = _recording(PlatformTransport)
         t.scorer_specs = describe_scorers([acc])
-        t.main_score_name = "acc"
         t.create_run("r", "d", None)
         (sc,) = t.reqs[0][2]["scorers"]
         # comparison metadata
@@ -120,7 +119,7 @@ class TestScorerSpecsOnWire:
         assert sc["scorer_type"] == "code" and sc["output_type"] == "score"
         assert sc["language"] == "python" and "def acc" in sc["source"]
 
-    def test_declared_threshold_drives_cloud_status(self):
+    def test_declared_threshold_drives_per_score_passed(self):
         from traceroot.eval.platform import PlatformTransport
         from traceroot.eval.results import EvalItemResult
 
@@ -128,11 +127,15 @@ class TestScorerSpecsOnWire:
         def acc(ctx):
             return 0.85
 
-        t = PlatformTransport("ds", main_score_name="acc", api_key="tr-x", host_url="https://h")
+        t = _recording(PlatformTransport)
         t.scorer_specs = describe_scorers([acc])
-        # 0.85 >= declared threshold 0.8 -> passed (would be "failed" against the 1.0 default)
+        t.create_run("r", "d", None)
+        # 0.85 >= declared threshold 0.8 -> the emitted score's own `passed` is True
+        # (would be False against the 1.0 default).
         item = EvalItemResult("c", {}, {}, {}, [Score("acc", 0.85)], {}, None, None)
-        assert t._status_and_main(item) == ("passed", 0.85)
+        t.record_item_result(None, item)
+        (score,) = t.reqs[-1][2]["scores"]
+        assert score["passed"] is True
 
     def test_plain_names_still_work_without_specs(self):
         from traceroot.eval.platform import PlatformTransport
