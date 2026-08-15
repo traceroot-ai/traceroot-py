@@ -54,7 +54,6 @@ from traceroot.eval.results import (
     case_status,
 )
 from traceroot.eval.scorers import describe_scorers
-from traceroot.eval.transport import FakeTransport
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase
 from traceroot.utils import serialize_value
 
@@ -427,7 +426,10 @@ def _truncate(value: Any, limit: int | None) -> tuple[Any, bool]:
     text = json.dumps(value, ensure_ascii=False, default=str)
     if len(text.encode()) <= limit:
         return value, False
-    return {"truncated": True, "preview": text[:limit]}, True
+    # ``limit`` is a byte budget, so slice UTF-8 bytes (not characters) and decode back at a safe
+    # boundary -- slicing characters would let a multi-byte (non-ASCII) preview exceed the budget.
+    preview = text.encode()[:limit].decode("utf-8", errors="ignore")
+    return {"truncated": True, "preview": preview}, True
 
 
 def write_artifacts(
@@ -642,9 +644,13 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
         "progress": False,
     }
     if not bool(options.get("reporting")):
-        # Local-only guarantee: replace any transport the Evaluation supplied (report_to) with an
-        # in-memory no-op, so lifecycle requests never leave the process even when reporting is off.
-        run_kwargs["transport"] = FakeTransport()
+        # Local-only guarantee: run the engine in local mode, ignoring any transport the eval module
+        # configured (report_to=). This reports nowhere AND activates the non-exporting evaluation
+        # tracer, so neither lifecycle requests NOR per-case spans leave the process -- even if the
+        # evaluated module re-enabled export via initialize(enabled=True), which would defeat the
+        # transport-swap-only approach. (local + transport are mutually exclusive, so clear it.)
+        run_kwargs["local"] = True
+        run_kwargs["transport"] = None
     if options.get("max_concurrency"):
         run_kwargs["max_concurrency"] = int(options["max_concurrency"])
     if options.get("timeout") is not None:
