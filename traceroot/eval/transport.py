@@ -15,6 +15,21 @@ from traceroot.eval.results import EvalItemResult, UploadState
 from traceroot.eval.types import EvalCase, Score
 
 
+class EvalCompletionError(RuntimeError):
+    """The evaluation ran, but the run could not be finalized on the platform.
+
+    Raised ONLY when the run itself succeeded. A completion failure never replaces the error a
+    run already failed with -- that one propagates, with the completion failure attached to it as
+    a note -- so the real cause is never buried under a 400 from ``/complete``. The underlying
+    transport exception is kept on ``completion_error`` rather than chained, so the user sees one
+    error instead of a double traceback.
+    """
+
+    def __init__(self, message: str, completion_error: BaseException) -> None:
+        super().__init__(message)
+        self.completion_error = completion_error
+
+
 @dataclasses.dataclass
 class RunHandle:
     """Opaque handle for one evaluation run, returned by ``create_run``."""

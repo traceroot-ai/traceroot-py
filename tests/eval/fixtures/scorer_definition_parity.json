@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared cross-SDK normalized-definition parity. Equivalent Python and TypeScript scorer definitions must produce the SAME normalized descriptor fields below (identity + policy). Provenance (language/source) and the config-hash version are language-specific and NOT compared here.",
+  "_comment": "Shared cross-SDK normalized-definition parity. Equivalent Python and TypeScript scorer definitions must produce the SAME normalized descriptor fields below -- identity, policy, AND the config-hash `version`. The version is derived from the judge's declarative config through the shared canonicalizer (snake_case keys, sha256), so it changes when the rubric changes and NEVER when the authoring language changes. Provenance (language/source) stays language-specific.",
   "code": {
     "key": "grade",
     "scorer_type": "code",
@@ -13,6 +13,24 @@
     "model": "claude-sonnet-5",
     "output_type": "score",
     "threshold": 1.0,
-    "direction": "higher_is_better"
+    "direction": "higher_is_better",
+    "version": "cfg_95630cf2c8992f99"
+  },
+  "judge_with_metadata": {
+    "_comment": "metadata exercises the canonicalizer inside the config hash: numeric-string keys, an integral float, an exponent-threshold float.",
+    "key": "meta",
+    "scorer_type": "llm_judge",
+    "model": "gpt-5",
+    "output_type": "score",
+    "threshold": 0.5,
+    "direction": "lower_is_better",
+    "value_type": "numeric",
+    "metadata": {
+      "10": "a",
+      "2": "b",
+      "weight": 1.0,
+      "eps": 1e-07
+    },
+    "version": "cfg_526bde1fd54d9cce"
   }
 }

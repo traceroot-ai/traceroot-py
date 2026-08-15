@@ -160,6 +160,8 @@ __all__ = [
     "Score",
     "Scorer",
     "ScorerContext",
+    "scorer",
+    "llm_judge",
     "DeferredScore",
     "Evaluation",
     "evaluate",
@@ -171,6 +173,11 @@ __all__ = [
     "RunDatasetRef",
     "ScoreSummary",
     "UploadState",
+    "case_status",
+    # Publish-time errors users are told to catch around Dataset.push()/evaluate().
+    "DatasetConflictError",
+    "DatasetPublishAborted",
+    "EvalCompletionError",
 ]
 
 # Offline-evaluation symbols are re-exported lazily so importing ``traceroot`` never
@@ -178,9 +185,12 @@ __all__ = [
 _EVAL_EXPORTS = frozenset(
     {
         "Dataset",
+        "DatasetConflictError",
+        "DatasetPublishAborted",
         "DatasetSnapshot",
         "DeferredScore",
         "EvalCase",
+        "EvalCompletionError",
         "Score",
         "Scorer",
         "ScorerContext",
@@ -189,11 +199,14 @@ _EVAL_EXPORTS = frozenset(
         "RunDatasetRef",
         "ScoreSummary",
         "UploadState",
+        "case_status",
         "Evaluation",
         "evaluate",
         "evaluate_async",
+        "llm_judge",
         "pull_dataset",
         "pull_dataset_version",
+        "scorer",
     }
 )
 

@@ -32,7 +32,6 @@ class TestHandshake:
             "compare",
             "dataset_push",
             "sampling",
-            "provenance",
             "cancellation",
         ):
             assert caps[key] is True

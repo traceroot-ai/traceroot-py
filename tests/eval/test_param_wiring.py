@@ -2,6 +2,7 @@
 never silently ignored (audit follow-up)."""
 
 import asyncio
+import time
 
 import pytest
 
@@ -27,6 +28,11 @@ def ok(ctx):
 async def slow(x):
     await asyncio.sleep(1.0)
     return x
+
+
+async def slow_scorer(ctx):
+    await asyncio.sleep(1.0)
+    return 1.0
 
 
 class TestTimeout:
@@ -55,6 +61,50 @@ class TestTimeout:
             report_to=FakeTransport(),
         )
         assert run.task_error_count == 1
+
+    def test_timeout_bounds_the_scorer_too(self):
+        # One deadline covers task AND scorers (parity with the TS engine): a hung judge must
+        # not outlive the budget, or `timeout=` silently doesn't bound the run at all.
+        started = time.perf_counter()
+        run = Evaluation(
+            name="r",
+            dataset=_ds(1),
+            task=echo,
+            scorers=[slow_scorer],
+            timeout=0.05,
+            report_to=FakeTransport(),
+        ).run()
+        assert time.perf_counter() - started < 0.9  # returned on the deadline, did not hang
+        item = run.item_results[0]
+        # A budget overrun errors the whole case (not an isolated per-scorer failure), and a
+        # timed-out case is honestly "not scored".
+        assert item.error is not None and "TimeoutError" in item.error
+        assert item.scores == []
+
+    def test_shared_deadline_is_not_restarted_per_scorer(self):
+        # The budget is per CASE, not per call: a task that spends most of it leaves the
+        # scorer only the remainder. The scorer's sleep is deliberately chosen to sit BETWEEN
+        # the remaining budget (~0.05s) and a full fresh one (0.5s): it must time out under the
+        # shared deadline, and would have completed had the deadline restarted per scorer.
+        async def most_of_the_budget(x):
+            await asyncio.sleep(0.45)
+            return x
+
+        async def scorer_within_a_fresh_budget(ctx):
+            await asyncio.sleep(0.2)
+            return 1.0
+
+        run = Evaluation(
+            name="r",
+            dataset=_ds(1),
+            task=most_of_the_budget,
+            scorers=[scorer_within_a_fresh_budget],
+            timeout=0.5,
+            report_to=FakeTransport(),
+        ).run()
+        item = run.item_results[0]
+        assert item.error is not None and "TimeoutError" in item.error
+        assert item.scores == []
 
     def test_no_timeout_completes(self):
         run = Evaluation(

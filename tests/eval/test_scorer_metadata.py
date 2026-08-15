@@ -145,6 +145,44 @@ class TestScorerSpecsOnWire:
         assert t.reqs[0][2]["scorers"] == [{"name": "acc", "version": "unversioned"}]
 
 
+class TestRetainedSpecsMatchTheRunsEffectivePolicy:
+    """``result.scorer_specs`` is what an explicit ``upload()`` re-declares, so it must be the
+    policy the run actually registered under -- the transport's, when the caller pre-set one."""
+
+    def test_a_pre_set_transport_policy_wins_over_the_callable_derived_one(self):
+        from traceroot.eval import Dataset, EvalCase, FakeTransport, evaluate
+
+        @scorer(value_type="numeric", threshold=0.9)
+        def acc(ctx):
+            return 1.0
+
+        custom = [{"name": "acc", "value_type": "numeric", "threshold": 0.25}]
+        t = FakeTransport()
+        t.scorer_specs = custom  # a caller-declared policy: the run registers under THIS
+        ds = Dataset(name="d")
+        ds.upsert(EvalCase(input=1, id="c0", expected=1))
+
+        run = evaluate(name="r", data=ds, task=lambda x: x, scorers=[acc], transport=t)
+
+        assert run.scorer_specs == custom  # not describe_scorers([acc]) (threshold 0.9)
+
+    def test_without_a_pre_set_policy_the_callable_derived_specs_are_retained(self):
+        from traceroot.eval import Dataset, EvalCase, FakeTransport, evaluate
+
+        @scorer(value_type="numeric", threshold=0.9)
+        def acc(ctx):
+            return 1.0
+
+        ds = Dataset(name="d")
+        ds.upsert(EvalCase(input=1, id="c0", expected=1))
+
+        run = evaluate(
+            name="r", data=ds, task=lambda x: x, scorers=[acc], transport=FakeTransport()
+        )
+
+        assert run.scorer_specs == describe_scorers([acc])
+
+
 def _recording(cls):
     t = cls("ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h")
     t.reqs = []

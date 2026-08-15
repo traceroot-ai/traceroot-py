@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import copy
 import dataclasses
-import hashlib
 import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from traceroot.eval.ids import new_test_case_id, stable_case_id, stable_dataset_id
-from traceroot.utils import serialize_value
+from traceroot.eval.canonical import (
+    CanonicalizationError,
+    canonical_hash,
+    canonical_json,
+    normalize,
+)
+from traceroot.eval.ids import stable_case_id, stable_dataset_id
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,6 +84,10 @@ class ScorerContext:
 
 
 # Content fields that define a snapshot's identity (archived + volatile excluded).
+# Every field here MUST also travel on the wire and come back on a pull -- a field that is hashed
+# but not stored makes the published revision permanently unequal to the local one, so every push
+# publishes a no-change version. ``score_target_span_id`` is a reserved hook that the platform does
+# not persist yet, so it is deliberately NOT part of the identity.
 _CONTENT_FIELDS = (
     "id",
     "input",
@@ -87,16 +95,23 @@ _CONTENT_FIELDS = (
     "metadata",
     "source_trace_id",
     "source_span_id",
-    "score_target_span_id",
 )
 
 
-def _canonical_json(value: Any) -> str:
-    """Canonical JSON (sorted keys, compact) — the byte-identical form used for content hashing
-    both here and in TypeScript (``canonicalJson``)."""
-    return json.dumps(
-        serialize_value(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    )
+def _validate_payload(input: Any, expected: Any, metadata: Any) -> None:
+    """Reject a case payload the canonicalizer cannot represent, AT AUTHORING TIME.
+
+    Identity (case id + dataset revision) and the wire form are both the canonical form, so a
+    value with no canonical form has no stable identity. Failing here names the offending field
+    instead of surfacing as a mystery hash difference between the two SDKs later.
+    """
+    for field, value in (("input", input), ("expected", expected), ("metadata", metadata)):
+        if value is None:
+            continue
+        try:
+            normalize(value)
+        except CanonicalizationError as e:
+            raise CanonicalizationError(f"test case {field}: {e}") from None
 
 
 def _content_revision(cases: tuple[EvalCase, ...]) -> str:
@@ -105,10 +120,7 @@ def _content_revision(cases: tuple[EvalCase, ...]) -> str:
     # change). Only a real content change (add/remove/edit a case) advances the revision.
     ordered = sorted(cases, key=lambda c: c.id or "")
     content = [{k: getattr(c, k) for k in _CONTENT_FIELDS} for c in ordered]
-    canonical = json.dumps(
-        serialize_value(content), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    )
-    return "rev_" + hashlib.sha256(canonical.encode()).hexdigest()[:16]
+    return "rev_" + canonical_hash(content, 16)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -121,6 +133,10 @@ class DatasetSnapshot:
     revision: str
     cases: tuple[EvalCase, ...]
     base_version_id: str | None = None
+    # The authoring key the dataset id was hashed from. Carried so a push can SEND it: the
+    # platform cannot derive it (a renamed or explicitly keyed dataset hashes from something
+    # the name no longer spells), and without it a later pull can only guess.
+    key: str | None = None
 
     def __iter__(self) -> Iterator[EvalCase]:
         return iter(self.cases)
@@ -135,6 +151,7 @@ class DatasetSnapshot:
         return {
             "dataset_id": self.dataset_id,
             "name": self.name,
+            "key": self.key,
             "description": self.description,
             "revision": self.revision,
             "base_version_id": self.base_version_id,
@@ -167,6 +184,17 @@ class Dataset:
         self._cases: dict[str, EvalCase] = {}
 
     # --- authoring / mutation (network-free) ---
+    def _content_id(self, input: Any) -> str:
+        """The stable content id for ``input``: dataset key + canonical input + first free
+        occurrence. Shared by ``add`` and ``upsert`` so both converge on the same id."""
+        canonical = canonical_json(input)
+        occurrence = 0
+        cid = stable_case_id(self.key, canonical, occurrence)
+        while cid in self._cases:
+            occurrence += 1
+            cid = stable_case_id(self.key, canonical, occurrence)
+        return cid
+
     def add(
         self,
         input: Any,
@@ -185,15 +213,8 @@ class Dataset:
         id. Duplicate inputs are disambiguated by occurrence (the first free slot), which also
         keeps ids collision-free across removes.
         """
-        if id:
-            cid = id
-        else:
-            canonical = _canonical_json(input)
-            occurrence = 0
-            cid = stable_case_id(self.key, canonical, occurrence)
-            while cid in self._cases:
-                occurrence += 1
-                cid = stable_case_id(self.key, canonical, occurrence)
+        _validate_payload(input, expected, metadata)
+        cid = id if id else self._content_id(input)
         if cid in self._cases:
             raise ValueError(f"test case id already exists: {cid!r}")
         case = EvalCase(
@@ -208,9 +229,15 @@ class Dataset:
         return case
 
     def upsert(self, case: EvalCase) -> EvalCase:
-        """Add or replace by id; anonymous cases get a stable ULID id."""
+        """Add or replace by id.
+
+        An anonymous case gets the SAME content-derived id ``add()`` would give it, not a fresh
+        random one: a random id would fork the case into a new server case on every process, which
+        is exactly what content-addressed ids exist to prevent.
+        """
+        _validate_payload(case.input, case.expected, case.metadata)
         if case.id is None:
-            case = dataclasses.replace(case, id=new_test_case_id())
+            case = dataclasses.replace(case, id=self._content_id(case.input))
         self._cases[case.id] = case
         return case
 
@@ -223,6 +250,10 @@ class Dataset:
         if changes.get("id", id) != id:
             raise ValueError("test case id cannot be changed via update()")
         updated = dataclasses.replace(self._cases[id], **changes)
+        # Validate the MERGED case, exactly as add()/upsert() validate theirs: an edit writes the
+        # same payload fields, so an unrepresentable value must fail here (naming the field) rather
+        # than at snapshot()/push, where nothing recalls which edit introduced it.
+        _validate_payload(updated.input, updated.expected, updated.metadata)
         self._cases[id] = updated
         return updated
 
@@ -268,6 +299,7 @@ class Dataset:
             revision=revision,
             cases=active,
             base_version_id=self.base_version_id,
+            key=self.key,
         )
 
     # --- serialization (network-free) ---
@@ -275,6 +307,10 @@ class Dataset:
         return {
             "dataset_id": self.dataset_id,
             "name": self.name,
+            # The key is what every case id is derived from, so it must survive save/load:
+            # without it a reloaded dataset falls back to `name` and every case added
+            # afterwards gets an id that no longer converges with locally authored ones.
+            "key": self.key,
             "description": self.description,
             "base_version_id": self.base_version_id,
             "dataset_version_id": self.dataset_version_id,  # keep the remote binding through save/load
@@ -283,7 +319,7 @@ class Dataset:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Dataset:
-        ds = cls(name=d["name"], description=d.get("description"))
+        ds = cls(name=d["name"], description=d.get("description"), key=d.get("key"))
         ds.dataset_id = d.get("dataset_id", ds.dataset_id)
         ds.base_version_id = d.get("base_version_id")
         ds.dataset_version_id = d.get("dataset_version_id")
@@ -293,7 +329,7 @@ class Dataset:
         return ds
 
     def to_json(self) -> str:
-        return json.dumps(serialize_value(self.to_dict()), ensure_ascii=False)
+        return json.dumps(normalize(self.to_dict()), ensure_ascii=False)
 
     @classmethod
     def from_json(cls, text: str) -> Dataset:
@@ -306,15 +342,16 @@ class Dataset:
                 "type": "dataset",
                 "dataset_id": self.dataset_id,
                 "name": self.name,
+                "key": self.key,
                 "description": self.description,
                 "base_version_id": self.base_version_id,
                 "dataset_version_id": self.dataset_version_id,
                 "schema": 1,
             }
-            lines = [json.dumps(serialize_value(header), ensure_ascii=False)]
+            lines = [json.dumps(normalize(header), ensure_ascii=False)]
             for c in self._cases.values():
                 lines.append(
-                    json.dumps(serialize_value({"type": "case", **c.to_dict()}), ensure_ascii=False)
+                    json.dumps(normalize({"type": "case", **c.to_dict()}), ensure_ascii=False)
                 )
             Path(path).write_text("\n".join(lines) + "\n", encoding="utf-8")
         else:
@@ -331,6 +368,7 @@ class Dataset:
                 for k in (
                     "dataset_id",
                     "name",
+                    "key",
                     "description",
                     "base_version_id",
                     "dataset_version_id",
@@ -340,7 +378,13 @@ class Dataset:
             return cls.from_dict(d)
         return cls.from_json(text)
 
-    def push(self, transport: Any = None, *, base_version_id: str | None = None) -> Any:
+    def push(
+        self,
+        transport: Any = None,
+        *,
+        base_version_id: str | None = None,
+        on_existing: Any = None,
+    ) -> Any:
         """Explicitly publish this dataset as ONE immutable server version.
 
         Local mutations never create versions; this is the deliberate publish
@@ -348,6 +392,8 @@ class Dataset:
         no network). Provide the remote version this edit was based on via
         ``base_version_id`` (defaults to this dataset's pinned version) for
         optimistic concurrency; a stale base raises ``DatasetConflictError``.
+        ``on_existing`` overrides the double-check before adding a version to an
+        already-existing dataset (default: the transport's own, an interactive prompt).
         Imported lazily to avoid a types <-> dataset_sync cycle.
         """
         from traceroot.eval.dataset_sync import LocalDatasetSync
@@ -355,7 +401,9 @@ class Dataset:
         sync = transport if transport is not None else LocalDatasetSync()
         snapshot = self.snapshot()
         base = base_version_id if base_version_id is not None else self.base_version_id
-        result = sync.push_dataset(snapshot, base)
+        # Only forwarded when set, so a duck-typed transport without the keyword still works.
+        extra = {"on_existing": on_existing} if on_existing is not None else {}
+        result = sync.push_dataset(snapshot, base, **extra)
         if result.status == "uploaded" and result.dataset_version_id is not None:
             self.dataset_version_id = result.dataset_version_id
             self.base_version_id = result.dataset_version_id

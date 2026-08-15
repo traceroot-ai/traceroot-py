@@ -12,6 +12,7 @@ This module is the internal engine (``_run`` / ``_run_async``); the public API i
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
 import dataclasses
 import inspect
@@ -29,11 +30,12 @@ from traceroot.eval.results import (
     EvalItemResult,
     EvalRunResult,
     RunDatasetRef,
-    RunView,
+    UploadState,
     aggregate_scores,
 )
+from traceroot.eval.scorers import scorer_name
 from traceroot.eval.tracer import eval_tracer as _eval_tracer  # span-export tracer (own module)
-from traceroot.eval.transport import EvalTransport, RunHandle
+from traceroot.eval.transport import EvalCompletionError, EvalTransport, FakeTransport, RunHandle
 from traceroot.eval.types import (
     Dataset,
     DatasetSnapshot,
@@ -48,10 +50,27 @@ from traceroot.utils import serialize_value, set_span_attribute
 
 _INLINE_DATASET = "<inline>"
 
+# local=True already answers "where does this run report", so a sink alongside it is a
+# contradiction rather than a precedence question -- say so instead of silently picking one.
+_LOCAL_AND_TRANSPORT = (
+    "pass local=True OR transport= (report_to=), not both — local=True already means "
+    "'do not report'."
+)
+
 _CASE_FIELDS = {f.name for f in dataclasses.fields(EvalCase)}
 
 
+class _CaseTimeoutError(Exception):
+    """A per-case deadline expiry. A distinct type so the scorer loop can tell a budget overrun
+    (which errors the whole case) apart from an ordinary per-scorer failure (which is isolated),
+    and so a task/scorer raising ``TimeoutError`` itself is never mistaken for one."""
+
+
 def _fmt_error(exc: BaseException) -> str:
+    # A deadline expiry reads as a TimeoutError (same wording as the TS engine), not as the
+    # internal marker class.
+    if isinstance(exc, _CaseTimeoutError):
+        return f"TimeoutError: {exc}"
     return f"{type(exc).__name__}: {exc}"
 
 
@@ -171,6 +190,85 @@ async def _await_or_run(
     return result
 
 
+# How long a cancelled, overrunning future is given to actually settle before the timeout error
+# is raised anyway. Cancellation is delivered on the NEXT loop tick, so a well-behaved future
+# settles far inside this, and a cancelled SYNC task settles immediately at its executor await (its
+# orphaned thread is abandoned, not waited on). The bound only exists for the adversarial case of a
+# coroutine that swallows its own CancelledError and keeps running; keep it SHORT so such a case
+# adds at most this to a timed-out case rather than a multi-second stall. (A future that overruns
+# it is observed via callback and abandoned, so cleanup still completes — it just isn't awaited.)
+_CANCEL_GRACE_S = 1.0
+
+
+def _observe(fut: Any) -> None:
+    """Retrieve a settled future's outcome so asyncio doesn't report it as never-retrieved."""
+    if not fut.cancelled():
+        fut.exception()
+
+
+def _abandon(fut: Any) -> None:
+    """Drop a still-pending, uncancellable task from the loop's task registry.
+
+    Walking away from the task is not enough to bound the run: it was created on the run's own
+    loop, and ``asyncio.run`` cancels and then AWAITS every task still registered on that loop
+    before closing it. A task that ignores its cancellation therefore blocks loop shutdown, so
+    ``evaluate()`` hangs for as long as the runaway work lasts even though the case already timed
+    out. Unregistering it makes ``asyncio.all_tasks()`` -- and so the shutdown gather -- not see
+    it; it keeps running normally while the run lasts (its ``_observe`` callback still fires) and
+    is simply discarded, unfinished, when the loop closes.
+    """
+    for name in ("_unregister_task", "_unregister_eager_task"):
+        unregister = getattr(asyncio.tasks, name, None)  # private asyncio bookkeeping
+        if unregister is not None:
+            with contextlib.suppress(Exception):
+                unregister(fut)
+    # Being pending at loop close is the point here, so don't let asyncio warn "Task was destroyed
+    # but it is pending!" about a task we abandoned deliberately.
+    with contextlib.suppress(AttributeError):
+        fut._log_destroy_pending = False
+
+
+async def _off_loop(call: Callable[[], Any]) -> Any:
+    """Run one BLOCKING transport call off the event loop.
+
+    The reporting transport is synchronous (urllib, 30s timeout). Awaited straight from a per-case
+    coroutine it blocks the loop THREAD, so per-case POSTs serialize behind one another, one slow
+    backend inflates every other case's wall clock, and the ``asyncio.wait`` that enforces their
+    deadlines can't run. Dispatch it to a worker the same way task/scorer code is -- but to the
+    loop's default executor rather than the bounded sync pool, so reporting never queues behind an
+    orphaned timed-out task that is still holding a slot there.
+    """
+    loop = asyncio.get_running_loop()
+    ctx = contextvars.copy_context()
+    return await loop.run_in_executor(None, lambda: ctx.run(call))
+
+
+async def _bounded(coro: Any, deadline: float | None, timeout: float | None) -> Any:
+    """Await ``coro`` within the case's SHARED deadline (one budget for task + scorers, so a
+    hung judge cannot outlive ``timeout=``). ``deadline`` is an absolute ``time.monotonic()``
+    mark; expiry raises ``_CaseTimeoutError``. The awaitable is raced rather than wrapped in
+    ``wait_for`` so a TimeoutError the user's own code raises stays their error."""
+    if deadline is None:
+        return await coro
+    fut = asyncio.ensure_future(coro)
+    done, _pending = await asyncio.wait({fut}, timeout=max(0.0, deadline - time.monotonic()))
+    if not done:
+        fut.cancel()  # an uncancellable sync call keeps its bounded pool slot until it returns
+        # Cancelling only REQUESTS cancellation; the task settles on a later tick. Raising here
+        # without waiting for that leaves a live task nobody observes -- "Task exception was never
+        # retrieved" on every timed-out case, and worse noise when the coroutine turns its own
+        # cancellation into a different error. Wait for it to settle (it does so immediately in
+        # the ordinary case) and read its outcome.
+        settled, unsettled = await asyncio.wait({fut}, timeout=_CANCEL_GRACE_S)
+        for f in settled:
+            _observe(f)
+        for f in unsettled:  # ignoring its cancellation: observe it whenever it does finish
+            f.add_done_callback(_observe)
+            _abandon(f)  # ... and never let it hold the run's loop open past this timeout
+        raise _CaseTimeoutError(f"case exceeded {timeout}s")
+    return fut.result()
+
+
 _PLAIN_FIELDS = ("input", "output", "expected", "metadata")
 
 
@@ -199,7 +297,7 @@ def _scorer_call_plan(scorer: Any) -> tuple[str, tuple[str, ...]]:
     names = [p.name for p in pos]
     has_kwargs = any(p.kind == p.VAR_KEYWORD for p in params)
     has_varargs = any(p.kind == p.VAR_POSITIONAL for p in params)
-    label = getattr(scorer, "__name__", type(scorer).__name__)
+    label = scorer_name(scorer)
     if "input" in names or "output" in names:
         unsupported = [p.name for p in pos if p.default is p.empty and p.name not in _PLAIN_FIELDS]
         if unsupported and not has_kwargs:
@@ -320,10 +418,16 @@ async def _run_case(
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
     executor: ThreadPoolExecutor | None = None,
     emitted_ownership: dict[str, set[str]] | None = None,
+    dropped_results: list[str] | None = None,
+    local: bool = False,
 ) -> EvalItemResult:
-    tracer = _eval_tracer()
+    # A local run gets a NON-EXPORTING tracer: swapping the transport alone would still ship the
+    # case input/output out of the process on the per-case spans.
+    tracer = _eval_tracer(local=local)
     async with semaphore:
         started = time.perf_counter()
+        # ONE deadline for the whole case (task + scorers), so a hung scorer cannot outlive it.
+        deadline = time.monotonic() + timeout if timeout is not None else None
         output: Any = None
         error: str | None = None
         scores: list[Score] = []
@@ -333,7 +437,7 @@ async def _run_case(
             on_case_start(case)
         # Pre-register the item (before execution) so a future live UI can show it.
         try:
-            transport.register_item(run, case)
+            await _off_loop(lambda: transport.register_item(run, case))
         except Exception:
             pass  # reporting is best-effort; a transport blip must not drop the case
 
@@ -363,12 +467,9 @@ async def _run_case(
                     task_span, SpanAttributes.SPAN_INPUT, serialize_value(case.input)
                 )
                 try:
-                    if timeout is not None:
-                        output = await asyncio.wait_for(
-                            _await_or_run(task, (case.input,), executor=executor), timeout
-                        )
-                    else:
-                        output = await _await_or_run(task, (case.input,), executor=executor)
+                    output = await _bounded(
+                        _await_or_run(task, (case.input,), executor=executor), deadline, timeout
+                    )
                     set_span_attribute(
                         task_span, SpanAttributes.SPAN_OUTPUT, serialize_value(output)
                     )
@@ -389,8 +490,12 @@ async def _run_case(
                 ctx = ScorerContext(
                     input=case.input, output=output, expected=case.expected, metadata=case.metadata
                 )
+                case_timeout: _CaseTimeoutError | None = None
                 for scorer in scorers:
-                    name = getattr(scorer, "__name__", scorer.__class__.__name__)
+                    # The DECLARED name (same resolver the manifest uses) -- the emitted Score,
+                    # the ownership key and the registered definition must agree or the platform
+                    # drops the metric's policy.
+                    name = scorer_name(scorer)
                     # Record scorer->metric ownership AT THE POINT OF PRODUCTION (never inferred
                     # afterward by matching names). Seed the definition now so a scorer that errors
                     # before emitting still appears in the completion manifest with no metrics.
@@ -413,7 +518,9 @@ async def _run_case(
                         )
                         try:
                             s_args, s_kwargs = _bind_scorer_args(scorer, ctx)
-                            raw = await _await_or_run(scorer, s_args, s_kwargs, executor)
+                            raw = await _bounded(
+                                _await_or_run(scorer, s_args, s_kwargs, executor), deadline, timeout
+                            )
                             produced = _stamp_scorer_version(
                                 _normalize_score_like(raw, name), scorer
                             )
@@ -429,6 +536,18 @@ async def _run_case(
                                     SpanAttributes.SPAN_OUTPUT,
                                     serialize_value(_scorer_output_repr(produced)),
                                 )
+                        except _CaseTimeoutError as exc:
+                            # A deadline hit is a case-level budget overrun, not an isolated
+                            # scorer failure: record it on the span, stop scoring, and error the
+                            # whole case below.
+                            case_timeout = exc
+                            scorer_span.set_status(Status(StatusCode.ERROR, str(exc)))
+                            scorer_span.set_attribute(
+                                SpanAttributes.EVAL_ERROR, _fmt_error(exc)
+                            )
+                            set_span_attribute(
+                                scorer_span, SpanAttributes.SPAN_OUTPUT, _fmt_error(exc)
+                            )
                         except Exception as exc:  # per-scorer isolation
                             scorer_errors[name] = _fmt_error(exc)
                             scorer_span.set_status(Status(StatusCode.ERROR, str(exc)))
@@ -439,6 +558,19 @@ async def _run_case(
                             set_span_attribute(
                                 scorer_span, SpanAttributes.SPAN_OUTPUT, scorer_errors[name]
                             )
+                    if case_timeout is not None:
+                        break  # (outside the span 'with' so the scorer span still closes)
+
+                if case_timeout is not None:
+                    # Scoring exceeded the case deadline -> the same isolated per-case error path
+                    # as a task timeout (errored case, not scored). Scores collected before the
+                    # timeout are dropped so a timed-out case is truly "not scored" and cannot
+                    # contaminate the summaries.
+                    error = _fmt_error(case_timeout)
+                    scores.clear()
+                    root.set_status(Status(StatusCode.ERROR, error))
+                    root.set_attribute(SpanAttributes.EVAL_ERROR, error)
+                    set_span_attribute(root, SpanAttributes.SPAN_OUTPUT, error)
 
         item_result = EvalItemResult(
             case_id=case.id,  # type: ignore[arg-type]  (id assigned in _normalize_data)
@@ -452,10 +584,16 @@ async def _run_case(
             duration_ms=(time.perf_counter() - started) * 1000.0,
         )
         try:
-            transport.record_item_result(run, item_result)
-            transport.record_scores(run, item_result.case_id, item_result.scores)
-        except Exception:
-            pass  # reporting is best-effort; the computed result is still returned
+            await _off_loop(lambda: transport.record_item_result(run, item_result))
+            await _off_loop(
+                lambda: transport.record_scores(run, item_result.case_id, item_result.scores)
+            )
+        except Exception as exc:
+            # Reporting is best-effort; the computed result is still returned. But a dropped
+            # result must not be invisible -- it is counted onto the run's upload state, so a
+            # run that completes "uploaded" with missing results can be told from a clean one.
+            if dropped_results is not None:
+                dropped_results.append(_fmt_error(exc))
         if on_case_complete is not None:
             on_case_complete(item_result, item_result.duration_ms)
         return item_result
@@ -495,7 +633,7 @@ def _auto_transport(
     key, _host = _resolve_credentials(None, None)
     if not key:  # no credentials
         return None
-    names = [getattr(s, "__name__", s.__class__.__name__) for s in scorers]
+    names = [scorer_name(s) for s in scorers]
     return PlatformTransport(
         effective_id,
         scorer_names=names,
@@ -503,6 +641,41 @@ def _auto_transport(
         environment=environment,
         dataset_version_id=version_id,
     )
+
+
+def _auto_publish(data: Dataset) -> None:
+    """Publish ``data``'s current content as the version this run will pin.
+
+    Runs BEFORE the first case, so anything it raises aborts the whole evaluation. A raw
+    ``DatasetConflictError`` (or a socket timeout) surfaces there as an SDK crash with no hint of
+    what to do, so the failure is restated as what actually happened plus the ways out.
+    """
+    from traceroot.eval.dataset_sync import PlatformDatasetSync
+    from traceroot.eval.platform import remember_pinned_content
+
+    try:
+        # The base for optimistic concurrency is whatever version this dataset is standing on: its
+        # push base, or the version it was pulled at (a pull pins dataset_version_id only).
+        #
+        # Auto-approve the new version instead of falling through to the interactive confirmation:
+        # a versioning decision must never block a run waiting on [y/N]. The run's content is
+        # authoritative -- publishing it is what lets the run pin exactly what it scored. The
+        # explicit, user-initiated Dataset.push() keeps the prompt; that is where deliberate
+        # version management lives.
+        data.push(
+            PlatformDatasetSync(),
+            base_version_id=data.base_version_id or data.dataset_version_id,
+            on_existing=lambda info: True,
+        )
+        # What is now pinned is exactly what was published, so the NEXT run can tell a mutation
+        # from an untouched dataset without another round trip.
+        remember_pinned_content(data)
+    except Exception as exc:
+        raise RuntimeError(
+            f"could not auto-publish dataset {data.name!r} before the run: {_fmt_error(exc)}. "
+            "Pull the latest version and retry (pull_dataset(...)), or pass a dataset that is "
+            "already synced, or pass transport= / local=True to run without publishing."
+        ) from exc
 
 
 def _validate_config(name, task, scorers, max_concurrency) -> None:
@@ -516,6 +689,23 @@ def _validate_config(name, task, scorers, max_concurrency) -> None:
         if not callable(s):
             raise TypeError(f"scorer {s!r} is not callable")
         _scorer_call_plan(s)  # fail fast on an unsupported scorer signature (not a per-case error)
+    # A Score row's identity IS its emitted-metric name, and the platform keys that metric's
+    # direction/threshold on the name. Two scorers resolving to the same name make the policy
+    # ambiguous, so the platform drops the metric to non-directional. Catch the static case here,
+    # before a single case runs.
+    seen: dict[str, int] = {}
+    for s in scorers:
+        n = scorer_name(s)
+        seen[n] = seen.get(n, 0) + 1
+    duplicated = sorted(n for n, count in seen.items() if count > 1)
+    if duplicated:
+        listed = ", ".join(repr(n) for n in duplicated)
+        raise ValueError(
+            f"two or more scorers report the same metric name ({listed}); metric names must be "
+            # Only the NAME resolves this -- the check and the emitted metric both key off it, so
+            # suggesting a distinct `key` would send the author down a path that cannot help.
+            "unique within a run. Give each scorer a distinct name."
+        )
     if max_concurrency < 1:
         raise ValueError("'max_concurrency' must be >= 1")
 
@@ -530,11 +720,14 @@ def _to_snapshot(
     if isinstance(data, Dataset):
         name, description, dataset_id = data.name, data.description, data.dataset_id
         base_version_id = data.dataset_version_id
+        key = data.key
     elif isinstance(data, DatasetSnapshot):
         name, description, dataset_id = data.name, data.description, data.dataset_id
         base_version_id = data.base_version_id
+        key = data.key
     else:
         name, description, dataset_id, base_version_id = _INLINE_DATASET, None, "ds_inline", None
+        key = None
     cases_t = tuple(cases)
     return DatasetSnapshot(
         dataset_id=dataset_id,
@@ -543,6 +736,7 @@ def _to_snapshot(
         revision=_content_revision(cases_t),
         cases=cases_t,
         base_version_id=base_version_id,
+        key=key,
     )
 
 
@@ -554,11 +748,12 @@ async def _run_async(
     scorers: Sequence[Callable[[ScorerContext], Any]],
     max_concurrency: int = 10,
     transport: EvalTransport | None = None,
+    local: bool = False,
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     environment: str = "evaluation",
+    evaluation_key: str | None = None,
     select: Callable[[EvalCase], bool] | None = None,
-    run_scorers: Sequence[Callable[[RunView], Any]] | None = None,
     timeout: float | None = None,
     metadata: dict[str, Any] | None = None,
     progress: bool | None = None,
@@ -569,9 +764,12 @@ async def _run_async(
     """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py).
 
     ``timeout`` bounds each task (seconds; a timeout is an isolated per-case error).
+    ``local`` runs fully but reports nowhere (see the transport block below).
     ``on_case_start``/``on_case_complete`` are internal hooks the runner uses to
     stream per-case events; ``on_case_complete(item, duration_ms)``.
     """
+    if local and transport is not None:
+        raise ValueError(_LOCAL_AND_TRANSPORT)
     _validate_config(name, task, scorers, max_concurrency)
     cases = _normalize_data(data)
     if select is not None:
@@ -580,16 +778,6 @@ async def _run_async(
         raise ValueError("evaluate() requires at least one case to run")
 
     snapshot = _to_snapshot(data, cases)
-    dataset_ref = RunDatasetRef(
-        # dataset_id is identity only: an explicit dataset_id= associates this run
-        # with a platform dataset without authorizing any upload.
-        dataset_id=dataset_id or snapshot.dataset_id,
-        revision=snapshot.revision,
-        dataset_version_id=data.dataset_version_id
-        if isinstance(data, Dataset)
-        else snapshot.base_version_id,
-        case_count=len(cases),
-    )
 
     # A run is not identified by which SDK produced it, so no SDK-language identity is reported.
     # But git/CI provenance (commit/branch/dirty, CI build) is NON-IDENTITY reproducibility
@@ -601,38 +789,67 @@ async def _run_async(
     run_metadata = collect_run_provenance(metadata, detect_dirty=False)
 
     dataset_name = snapshot.name
-    # Cloud-only: an explicit transport wins; otherwise build a reporting transport from
-    # credentials + the synced dataset. Evaluation always reports -- there is no local run.
-    if transport is not None:
-        active_transport: EvalTransport = transport
+    # Cloud-only by default: an explicit transport wins; otherwise build a reporting transport
+    # from credentials + the synced dataset.
+    if local:
+        # local=True IS transport=FakeTransport(), spelled as intent rather than as a class the
+        # user has to import: the run executes in full and records itself in memory, but nothing
+        # leaves the process. Selected ahead of the auto path so it also short-circuits the
+        # auto-publish below -- a local run needs no credentials and versions no dataset, even
+        # one that is already synced.
+        active_transport: EvalTransport = FakeTransport()
+    elif transport is not None:
+        active_transport = transport
     else:
         # Auto-provision a locally-authored, unsynced Dataset: publish it once so the run has a
-        # server-side version to attach to -- the user never writes a manual "sync then run" step
-        # (matches how Braintrust/Laminar provision on run). Idempotent: unchanged content reuses
-        # the current version; a changed dataset under an existing name prompts to confirm the new
-        # version (TTY) before publishing. Only for a local Dataset with credentials; a pulled
-        # dataset (already synced), an explicit dataset_id, or an explicit transport skip this.
-        if (
-            isinstance(data, Dataset)
-            and data.dataset_version_id is None
-            and dataset_id is None
-        ):
-            from traceroot.eval.platform import _resolve_credentials
+        # server-side version to attach to -- the user never writes a manual "sync then run" step.
+        # Idempotent: unchanged content reuses
+        # the current version. Only for a local Dataset with credentials; an explicit dataset_id
+        # or an explicit transport skip this.
+        #
+        # A dataset that IS pinned republishes only once it has drifted from the version it is
+        # pinned to. A Dataset is mutable and evaluate() is re-runnable, so pinning the version
+        # from a previous run (or from the pull) would attribute the cases this run actually
+        # scored to content that never contained them.
+        if isinstance(data, Dataset) and dataset_id is None:
+            from traceroot.eval.platform import _resolve_credentials, pinned_content_changed
 
             api_key, _ = _resolve_credentials(None, None)
-            if api_key:
-                from traceroot.eval.dataset_sync import PlatformDatasetSync
-
-                data.push(PlatformDatasetSync())  # stamps dataset_version_id (may prompt / abort)
+            if api_key and (data.dataset_version_id is None or pinned_content_changed(data)):
+                _auto_publish(data)
         active_transport = _auto_transport(
             data, scorers, dataset_id, candidate_version, environment
         )
         if active_transport is None:
+            # _auto_transport returns None for two unrelated reasons; saying "no credentials" for
+            # both misdirects a user who HAS a key but passed inline cases or an unsynced snapshot.
+            from traceroot.eval.platform import _resolve_credentials as _creds
+
+            if _creds(None, None)[0]:
+                raise RuntimeError(
+                    "evaluate() reports to the TraceRoot platform, but this run has no synced "
+                    "dataset to report against. Pass a Dataset that was pulled or pushed "
+                    "(pull_dataset(...) / Dataset.push(...)), or pass dataset_id=..., or pass "
+                    "local=True to run without reporting."
+                )
             raise RuntimeError(
                 "evaluate() reports to the TraceRoot platform, but no credentials were found. "
-                "Set TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass an "
-                "explicit transport= (e.g. FakeTransport() to run offline)."
+                "Set TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass "
+                "local=True to run without reporting."
             )
+
+    # Built AFTER the transport block so it sees any version the auto-publish just created: the
+    # run must report the version it actually scored, not the null the dataset carried on entry.
+    dataset_ref = RunDatasetRef(
+        # dataset_id is identity only: an explicit dataset_id= associates this run
+        # with a platform dataset without authorizing any upload.
+        dataset_id=dataset_id or snapshot.dataset_id,
+        revision=snapshot.revision,
+        dataset_version_id=data.dataset_version_id
+        if isinstance(data, Dataset)
+        else snapshot.base_version_id,
+        case_count=len(cases),
+    )
 
     # Forward scorer comparison metadata (value_type/direction/threshold) from the actual
     # scorer callables when the transport accepts specs and the caller did not pre-set them.
@@ -640,8 +857,14 @@ async def _run_async(
     # per-score ``passed`` is derived from its owning scorer's declared threshold/direction).
     from traceroot.eval.scorers import describe_scorers
 
+    resolved_scorer_specs = describe_scorers(scorers)
     if getattr(active_transport, "scorer_specs", "unset") is None:
-        active_transport.scorer_specs = describe_scorers(scorers)
+        active_transport.scorer_specs = resolved_scorer_specs
+
+    # Same seam for the evaluation's stable identity: fill it only when the transport has the
+    # field and nothing has set it, so a transport constructed with an explicit key keeps it.
+    if evaluation_key is not None and getattr(active_transport, "evaluation_key", "unset") is None:
+        active_transport.evaluation_key = evaluation_key
 
     # Client-side run id: the idempotency key for run registration AND the id carried on
     # the result (the platform run_id is separate, assigned by the backend).
@@ -649,11 +872,13 @@ async def _run_async(
 
     # Register the run up front so scorer descriptors + the run_id are available before the
     # per-case traces are stamped.
-    run_handle = active_transport.create_run(
-        name=name,
-        dataset_name=dataset_name,
-        metadata=run_metadata,
-        client_run_id=local_run_id,
+    run_handle = await _off_loop(
+        lambda: active_transport.create_run(
+            name=name,
+            dataset_name=dataset_name,
+            metadata=run_metadata,
+            client_run_id=local_run_id,
+        )
     )
     # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the runner
     # runner on SIGINT) can finalize its partial artifact under the SAME ids the run registered
@@ -702,6 +927,10 @@ async def _run_async(
     # definition name -> the metric names it emitted, accumulated across cases (union: a metric
     # emitted by only some cases still counts). Recorded during execution, sent at completion.
     emitted_ownership: dict[str, set[str]] = {}
+    # Per-case result POSTs the transport dropped (best-effort reporting), surfaced on the
+    # upload state so a green run with silently-missing results is detectable.
+    dropped_results: list[str] = []
+    body_error: BaseException | None = None
     try:
         item_results = await asyncio.gather(
             *[
@@ -718,26 +947,62 @@ async def _run_async(
                     on_case_complete=case_complete_hook,
                     executor=sync_executor,
                     emitted_ownership=emitted_ownership,
+                    dropped_results=dropped_results,
+                    local=local,
                 )
                 for c in cases
             ]
         )
         results_list = list(item_results)
         summary = aggregate_scores(results_list)
+    except BaseException as exc:  # remembered, then re-raised untouched
+        body_error = exc
+        raise
     finally:
         # The shared executor is intentionally NOT shut down here — it's reused across runs so
         # orphaned timed-out threads stay bounded to its fixed worker count.
         if reporter is not None:
             reporter.finish()
         # Finish inside finally so a mid-run failure never leaves the run open; a registered run
-        # is never left orphaned in 'running'.
-        upload = active_transport.finish_run(
-            run_handle,
-            status=None,
-            emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
-        )
-
-    run_scores, run_scorer_errors = await _run_run_scorers(run_scorers, name, results_list, summary)
+        # is never left orphaned in 'running'. Completion is the LAST thing to run, so it must
+        # never become the story: if the run already failed, the original error keeps propagating
+        # and the completion failure rides along as a note (it used to REPLACE the real cause --
+        # a /complete 400 buried the actual exception under a second traceback).
+        try:
+            # A run whose body did not get through its cases is INCOMPLETE, whatever stopped it
+            # (Ctrl-C, cancellation, a crash in the gather). Left to derive its own status the
+            # transport would report 'completed' for an evaluation that scored two cases out of
+            # five -- green on the platform, 'incomplete' in the local artifact, and disagreeing
+            # with the TypeScript SDK. An errored CASE is not an unfinished run: that path leaves
+            # status None so the error counts decide.
+            terminal_status = "incomplete" if body_error is not None else None
+            upload = await _off_loop(
+                lambda: active_transport.finish_run(
+                    run_handle,
+                    status=terminal_status,
+                    emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
+                )
+            )
+        except BaseException as completion_exc:
+            if body_error is None:
+                # The run itself succeeded: one clear error naming the completion failure, with
+                # the transport exception carried as data (`from None`) rather than chained into
+                # a double traceback.
+                raise EvalCompletionError(
+                    "the evaluation ran but the run could not be finalized on the platform: "
+                    f"{_fmt_error(completion_exc)}. The run stays 'running' until a retry "
+                    "completes it.",
+                    completion_exc,
+                ) from None
+            body_error.add_note(
+                f"run completion also failed: {_fmt_error(completion_exc)} "
+                "(the run may stay 'running' on the platform)"
+            )
+        else:
+            if dropped_results and isinstance(upload, UploadState):
+                upload = dataclasses.replace(
+                    upload, failed_result_count=len(dropped_results)
+                )
 
     result = EvalRunResult(
         name=name,
@@ -748,10 +1013,25 @@ async def _run_async(
         candidate_version=candidate_version,
         dataset=dataset_ref,
         run_id=getattr(active_transport, "run_id", None),
-        run_scores=run_scores,
-        run_scorer_errors=run_scorer_errors,
         metadata=run_metadata,
+        # Retain the declared scorer policy so an explicit result.upload() can re-declare each
+        # metric's threshold/direction rather than re-register policy-less. It must be the policy
+        # the run ACTUALLY registered under: a caller who pre-set transport.scorer_specs declared
+        # that one, and a re-upload under the callable-derived specs would silently flip per-score
+        # `passed`. Transports without the field (FakeTransport, i.e. a local "run now, upload
+        # later" run) fall back to the specs derived from the scorers.
+        scorer_specs=getattr(active_transport, "scorer_specs", None) or resolved_scorer_specs,
+        # Retain the scorer -> emitted-metric ownership so an explicit result.upload() re-declares it
+        # on finish_run (the same manifest this run sent below). None when nothing was emitted.
+        emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()} or None,
     )
+
+    # When the bar was shown (interactive), print the run's summary too — so calling evaluate() on
+    # a terminal SHOWS its result (metric means + counts) without the caller writing
+    # print(run.summary()). Gated on the reporter, so piped/CI/programmatic callers keep clean
+    # stdout and read result.summary() / result.upload_state themselves.
+    if reporter is not None:
+        print(result.summary())
 
     # When the bar was shown (interactive), surface the clickable run link if the
     # backend returned one. Off-terminal callers read result.upload_state instead.
@@ -762,30 +1042,6 @@ async def _run_async(
         print_run_url(upload.dashboard_url)
 
     return result
-
-
-async def _run_run_scorers(
-    run_scorers: Sequence[Callable[[RunView], Any]] | None,
-    name: str,
-    item_results: list[EvalItemResult],
-    summary: Any,
-) -> tuple[list[Score], dict[str, str]]:
-    """Run whole-run scorers over the completed items. Errors are isolated per scorer."""
-    run_scores: list[Score] = []
-    run_scorer_errors: dict[str, str] = {}
-    if not run_scorers:
-        return run_scores, run_scorer_errors
-    view = RunView(name=name, item_results=item_results, score_summary=summary)
-    for rs in run_scorers:
-        rname = getattr(rs, "__name__", rs.__class__.__name__)
-        try:
-            raw = rs(view)
-            if inspect.iscoroutine(raw):
-                raw = await raw
-            run_scores.extend(_stamp_scorer_version(_normalize_score_like(raw, rname), rs))
-        except Exception as exc:  # per-run-scorer isolation
-            run_scorer_errors[rname] = _fmt_error(exc)
-    return run_scores, run_scorer_errors
 
 
 def _run(**kwargs: Any) -> EvalRunResult:

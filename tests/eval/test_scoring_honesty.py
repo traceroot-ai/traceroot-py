@@ -5,7 +5,9 @@ outcomes -- quality failure, task error, scorer error, not-scored, pending revie
 must stay separable.
 """
 
-from traceroot.eval import Dataset, DeferredScore, EvalCase, Score, ScorerContext, evaluate
+import json
+
+from traceroot.eval import Dataset, DeferredScore, EvalCase, Score, Scorer, ScorerContext, evaluate
 from traceroot.eval.results import aggregate_scores, case_status
 
 
@@ -17,6 +19,97 @@ def _one(expected=1, **kw):
 
 def echo(x):
     return x
+
+
+def test_non_finite_score_does_not_poison_the_summary_mean():
+    # A non-finite score is `errored` on the wire, but the LOCAL aggregate must agree: a NaN
+    # folded into the mean makes run.json contain a bare `NaN` (invalid per the JSON spec — strict
+    # parsers reject it) and disagrees with .summary() and the platform. It must be excluded.
+    import math
+
+    ds = Dataset(name="nan-agg")
+    ds.upsert(EvalCase(input=1, id="c0", expected=1))
+    run = evaluate(name="r", dataset=ds, task=echo, scorers=[lambda ctx: float("nan")], local=True)
+    metric = next(iter(run.score_summary.values()))
+    assert metric.mean is None  # excluded from the mean, not NaN
+    assert metric.count == 1  # still counts as a produced score
+    # And the saved artifact is valid JSON — no bare NaN/Infinity token that a strict parser rejects.
+    import os
+    import tempfile
+
+    path = os.path.join(tempfile.mkdtemp(), "run.json")
+    run.save(path)
+
+    def _reject(token):
+        raise AssertionError(f"artifact has a bare {token} token (invalid JSON)")
+
+    json.loads(open(path).read(), parse_constant=_reject)
+
+
+def test_aggregate_excludes_non_finite_but_keeps_finite_values():
+    from traceroot.eval.results import EvalItemResult, aggregate_scores
+
+    def _item(cid, value):
+        return EvalItemResult(cid, value, value, value, [Score("m", value)], {}, None, None)
+
+    summary = aggregate_scores(
+        [_item("a", 1.0), _item("b", float("nan")), _item("c", float("inf"))]
+    )
+    assert summary["m"].mean == 1.0  # only the finite value contributes
+    assert summary["m"].count == 3  # all three still count as produced
+
+
+def test_summary_shows_per_metric_pass_rate():
+    ds = Dataset(name="passrate")
+    ds.upsert(EvalCase(input=1, id="a", expected=1))  # will pass
+    ds.upsert(EvalCase(input=0, id="b", expected=1))  # will fail
+
+    @Scorer.code(key="hit", value_type="numeric", direction="higher_is_better", threshold=1.0)
+    def hit(ctx):
+        return Score("hit", 1.0 if ctx.output == ctx.expected else 0.0)
+
+    run = evaluate(name="r", dataset=ds, task=echo, scorers=[hit], local=True)
+    line = next(ln for ln in run.summary().splitlines() if ln.strip().startswith("hit"))
+    assert "pass=1/2" in line  # one of two cleared the declared threshold
+    assert "count=2" in line
+
+
+def test_summary_pass_rate_is_name_agnostic_for_a_lone_scorer():
+    # A lone scorer emitting a lone metric owns it even when the emitted Score name differs from the
+    # scorer's declared name — the SAME resolution PlatformTransport uses, so local pass-rate == the
+    # platform's. (Regression: a by-name-only lookup would miss this and show no pass-rate.)
+    ds = Dataset(name="agnostic")
+    ds.upsert(EvalCase(input=1, id="a", expected=1))
+    s = Scorer.code(key="x", value_type="numeric", direction="higher_is_better", threshold=1.0)(
+        lambda ctx: Score("differently_named", 1.0)
+    )
+    run = evaluate(name="r", dataset=ds, task=echo, scorers=[s], local=True)
+    line = next(ln for ln in run.summary().splitlines() if "mean=" in ln)
+    assert "pass=1/1" in line
+
+
+def test_summary_omits_pass_rate_when_no_threshold_declared():
+    ds = Dataset(name="nopolicy")
+    ds.upsert(EvalCase(input=1, id="a", expected=1))
+    # a plain-function scorer declares no threshold -> nothing can judge pass/fail
+    run = evaluate(name="r", dataset=ds, task=echo, scorers=[lambda ctx: 0.5], local=True)
+    line = next(ln for ln in run.summary().splitlines() if "mean=" in ln)
+    assert "pass=" not in line  # no fabricated verdict
+    assert "count=1" in line
+
+
+def test_evaluate_retains_the_declared_scorer_policy_on_the_result():
+    # The run remembers the policy it scored under (name/threshold/direction), so a later
+    # result.upload() can re-declare it instead of re-registering policy-less. Captured even for a
+    # local run (no transport), which is the "run now, upload later" flow.
+    @Scorer.code(key="acc", value_type="numeric", direction="higher_is_better", threshold=0.8)
+    def acc(ctx):
+        return Score(name="acc", value=1.0)
+
+    run = evaluate(name="r", dataset=_one(), task=echo, scorers=[acc], local=True)
+    spec = next(s for s in (run.scorer_specs or []) if s["name"] == "acc")
+    assert spec["threshold"] == 0.8
+    assert spec["direction"] == "higher_is_better"
 
 
 class TestErrorVocabulary:
@@ -46,9 +139,7 @@ class TestErrorVocabulary:
         def broken(c):
             raise RuntimeError("judge down")
 
-        run = evaluate(
-            name="r", dataset=_one(), task=echo, scorers=[good, broken]
-        )
+        run = evaluate(name="r", dataset=_one(), task=echo, scorers=[good, broken])
         item = run.item_results[0]
         # the good score survives; the broken scorer is recorded as an error, not a 0.
         assert [s.name for s in item.scores] == ["good"]
@@ -140,12 +231,13 @@ class TestScorerVersionHonesty:
 
     def test_runner_events_do_not_invent_version(self):
         from traceroot.eval.results import EvalItemResult
-        from traceroot.eval.runner import _score_event, _scorer_error_events
+        from traceroot.eval.runner import ScorePolicy, _score_event, _scorer_error_events
 
         item = EvalItemResult(
             "c", None, None, None, [Score("acc", 1.0)], {"bad": "boom"}, None, None
         )
-        assert _score_event(item.scores[0])["scorer_version"] is None
+        event = _score_event(item.scores[0], ScorePolicy(None), single_emission=True)
+        assert event["scorer_version"] is None
         assert _scorer_error_events(item)[0]["scorer_version"] is None
         # scorer NAME and independent error are still preserved
         assert _scorer_error_events(item)[0]["scorer_name"] == "bad"

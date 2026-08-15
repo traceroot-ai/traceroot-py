@@ -97,9 +97,57 @@ def _provider_integration_traces(model: str) -> bool:
         return False
 
 
-def _default_complete(model: str, messages: list[dict[str, str]]) -> str:
+def _as_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _anthropic_usage(usage: Any) -> dict[str, int] | None:
+    """Normalize an anthropic ``resp.usage`` into judge-internal token counts.
+
+    Cache reads/writes ARE prompt tokens (billed at their own rate), so they are folded into the
+    prompt count -- the same arithmetic ``instrumentation/claude_agent_sdk.extract_usage`` uses,
+    so a judge span and an auto-instrumented span report the same thing for the same call."""
+    if usage is None:
+        return None
+    cache_read = _as_int(getattr(usage, "cache_read_input_tokens", None))
+    cache_creation = _as_int(getattr(usage, "cache_creation_input_tokens", None))
+    prompt = _as_int(getattr(usage, "input_tokens", None)) + cache_read + cache_creation
+    completion = _as_int(getattr(usage, "output_tokens", None))
+    counts = {
+        "prompt": prompt,
+        "completion": completion,
+        "total": prompt + completion,
+        "cache_read": cache_read,
+        "cache_creation": cache_creation,
+    }
+    return {k: v for k, v in counts.items() if v > 0} or None
+
+
+def _openai_usage(usage: Any) -> dict[str, int] | None:
+    """Normalize an openai ``resp.usage`` into judge-internal token counts."""
+    if usage is None:
+        return None
+    prompt = _as_int(getattr(usage, "prompt_tokens", None))
+    completion = _as_int(getattr(usage, "completion_tokens", None))
+    counts = {
+        "prompt": prompt,
+        "completion": completion,
+        "total": _as_int(getattr(usage, "total_tokens", None)) or prompt + completion,
+    }
+    return {k: v for k, v in counts.items() if v > 0} or None
+
+
+def _default_complete(
+    model: str, messages: list[dict[str, str]]
+) -> tuple[str, dict[str, int] | None]:
     """Best-effort provider dispatch used when no `complete` is injected. Lazily imports the
-    provider so the SDK never hard-depends on it; raises a clear error when unavailable."""
+    provider so the SDK never hard-depends on it; raises a clear error when unavailable.
+
+    Returns the response text AND the provider's token counts (``None`` when it reported none),
+    so the judge's own span can carry them -- see ``_set_token_attributes``."""
     if model.startswith(("claude", "anthropic")):
         try:
             import anthropic
@@ -114,7 +162,8 @@ def _default_complete(model: str, messages: list[dict[str, str]]) -> str:
         resp = anthropic.Anthropic().messages.create(
             model=model, max_tokens=512, system=system, messages=turns
         )
-        return "".join(getattr(b, "text", "") for b in resp.content)
+        text = "".join(getattr(b, "text", "") for b in resp.content)
+        return text, _anthropic_usage(getattr(resp, "usage", None))
     try:
         import openai
     except ImportError as e:  # pragma: no cover
@@ -122,7 +171,36 @@ def _default_complete(model: str, messages: list[dict[str, str]]) -> str:
             "llm_judge needs the 'openai' package to call this model, or pass complete=..."
         ) from e
     resp = openai.OpenAI().chat.completions.create(model=model, messages=messages)
-    return resp.choices[0].message.content or ""
+    return resp.choices[0].message.content or "", _openai_usage(getattr(resp, "usage", None))
+
+
+def _set_token_attributes(usage: dict[str, int]) -> None:
+    """Record the judge call's token counts on the CURRENT span.
+
+    Uses the OpenInference attribute names the SDK's auto-instrumentation already emits, because
+    the backend derives cost from exactly those keys on ingest. The SDK never computes cost --
+    it only reports the counts the provider returned."""
+    from opentelemetry import trace as otel_trace
+
+    from traceroot.instrumentation.claude_agent_sdk import (
+        LLM_TOKEN_CACHE_CREATION,
+        LLM_TOKEN_CACHE_READ,
+        LLM_TOKEN_TOTAL,
+        OI_LLM_TOKEN_COUNT_COMPLETION,
+        OI_LLM_TOKEN_COUNT_PROMPT,
+    )
+
+    span = otel_trace.get_current_span()
+    attributes = {
+        OI_LLM_TOKEN_COUNT_PROMPT: usage.get("prompt"),
+        OI_LLM_TOKEN_COUNT_COMPLETION: usage.get("completion"),
+        LLM_TOKEN_TOTAL: usage.get("total"),
+        LLM_TOKEN_CACHE_READ: usage.get("cache_read"),
+        LLM_TOKEN_CACHE_CREATION: usage.get("cache_creation"),
+    }
+    for key, value in attributes.items():
+        if value:  # absent/zero counts are left off rather than reported as a real zero
+            span.set_attribute(key, int(value))
 
 
 # A general {{VAR}} placeholder (any identifier), used to render a dynamic judge's builder variables.
@@ -131,13 +209,13 @@ _ANY_PLACEHOLDER = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 def _config_revision(**config: Any) -> str:
     """Deterministic revision of a judge's DECLARATIVE configuration (model/messages/policy/...): its
-    versioned 'source'. Canonical JSON (sorted keys) -> sha256, so the same config always hashes the
-    same across processes and languages that canonicalize identically."""
-    import hashlib
-    import json
+    versioned 'source'. The SHARED canonical JSON (snake_case keys) -> sha256, so the same config
+    always hashes to the same ``cfg_`` in every process AND in both SDKs -- the version must change
+    only when the rubric changes, never when the authoring language changes. Non-canonicalizable
+    ``metadata`` raises here rather than being ``repr``'d into a per-process hash."""
+    from traceroot.eval.canonical import canonical_hash
 
-    canon = json.dumps(config, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
-    return "cfg_" + hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+    return "cfg_" + canonical_hash(config, 16)
 
 
 def _render_vars(messages: list[dict[str, str]], variables: dict[str, str]) -> list[dict[str, str]]:
@@ -213,12 +291,24 @@ def _build_judge(*, name: str, model: str, messages: list[dict[str, str]], outpu
         if b_src is not None:
             meta = {**meta, "builder_source": b_src}
 
+    def _invoke(rendered_messages: list[dict[str, str]]) -> tuple[str, dict[str, int] | None]:
+        # A user-supplied `complete` returns text only -- there is no usage to report, and none
+        # is invented. Only the default provider dispatch can surface real token counts.
+        if complete is not None:
+            return complete(model, rendered_messages), None
+        return _default_complete(model, rendered_messages)
+
     def _call(rendered_messages: list[dict[str, str]]) -> str:
-        return (complete or _default_complete)(model, rendered_messages)
+        return _invoke(rendered_messages)[0]
 
     @observe(name=f"llm_judge:{name}", type=SpanKind.LLM, metadata={"model": model})
     def _call_instrumented(rendered_messages: list[dict[str, str]]) -> str:
-        return _call(rendered_messages)
+        # This span is the ONLY record of the judge's model call (no integration traced it), so it
+        # must carry the tokens the backend prices from -- otherwise the call shows up costless.
+        text, usage = _invoke(rendered_messages)
+        if usage:
+            _set_token_attributes(usage)
+        return text
 
     def run(ctx: Any) -> Any:
         if builder is not None:

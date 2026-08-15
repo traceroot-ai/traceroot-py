@@ -1,0 +1,18 @@
+{
+  "_comment": "Cross-SDK parity for the dataset `key` on the wire. Pushing Dataset(display_name, key=dataset_key) must send `key` = dataset_key on the dataset upsert, and pulling a dataset whose response echoes that key (under a DIFFERENT display name) must adopt it -- so a case added to the pulled dataset gets `added_case.id`, byte-identical in Python and TypeScript and identical to authoring that case locally.",
+  "dataset_key": "billing",
+  "display_name": "Billing v2 (renamed)",
+  "dataset_id": "ds_0c95c7ece1ce1a9750275ef1c6",
+  "existing_case": {
+    "input": {
+      "m": "first"
+    },
+    "id": "tc_ef46279f4f0081a21d14"
+  },
+  "added_case": {
+    "input": {
+      "m": "second"
+    },
+    "id": "tc_10235f27409c30947a49"
+  }
+}

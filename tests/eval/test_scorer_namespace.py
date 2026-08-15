@@ -1,5 +1,7 @@
 """Unified `Scorer` namespace: Scorer.code + Scorer.llm_judge (static & dynamic), aliases, hashing."""
 
+import pytest
+
 from traceroot.eval import Scorer, evaluate, llm_judge, scorer
 from traceroot.eval.scorers import scorer_metadata
 from traceroot.eval.transport import FakeTransport
@@ -48,6 +50,36 @@ def test_static_judge_runs_and_hashes_config():
 def test_static_judge_config_hash_is_deterministic():
     mk = lambda: Scorer.llm_judge(name="j", model=MODEL, rubric="Grade it 0..1.", threshold=1.0)
     assert scorer_metadata(mk())["version"] == scorer_metadata(mk())["version"]
+
+
+def _cfg_version(**overrides):
+    base = dict(name="j", model=MODEL, rubric="Grade it 0..1.", threshold=1.0)
+    return scorer_metadata(Scorer.llm_judge(**{**base, **overrides}))["version"]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("rubric", "Grade it 0..10."),  # the rubric IS the judge's source
+        ("model", "claude-opus-4-5"),
+        ("threshold", 0.5),
+        ("direction", "lower_is_better"),
+        ("value_type", "categorical"),
+        ("output_type", "classification"),
+        ("metadata", {"team": "eval"}),
+    ],
+)
+def test_changed_config_changes_the_version(field, value):
+    """Determinism alone is satisfied by a constant, so pin the other half: every hashed field
+    must MOVE the ``cfg_``. A judge whose version survives a rubric edit is a version that lies."""
+    assert _cfg_version(**{field: value}) != _cfg_version()
+
+
+def test_human_name_is_not_part_of_the_version():
+    """`name` is a label, not source: renaming a judge must not read as 'someone edited the
+    rubric'. (`key` is the cross-language identity and is likewise outside the config hash.)"""
+    assert _cfg_version(name="readability") == _cfg_version()
+    assert _cfg_version(key="other_key") == _cfg_version()
 
 
 # ── Scorer.llm_judge — dynamic (decorator over a builder) ─────────────────────

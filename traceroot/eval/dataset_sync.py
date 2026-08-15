@@ -17,8 +17,8 @@ from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 from urllib.parse import quote
 
+from traceroot.eval.canonical import normalize
 from traceroot.eval.types import DatasetSnapshot
-from traceroot.utils import serialize_value
 
 
 class DatasetConflictError(Exception):
@@ -43,10 +43,10 @@ def _confirm_new_version(info: dict[str, Any]) -> bool:
 
     A dataset's identity is its name, so re-pushing the same name updates the SAME dataset with a
     NEW version rather than forking. That's usually intended, but it can surprise someone who reused
-    a name by accident -- so on an interactive terminal we ask first (default ``no``: an accidental
-    Enter never publishes). Non-interactive contexts (CI, pipes) proceed silently so automation is
-    never blocked, and ``TRACEROOT_ASSUME_YES=1`` skips the prompt everywhere. Pass an explicit
-    ``on_existing`` to ``push_dataset`` to fully customize."""
+    a name by accident -- so on an interactive terminal we ask first (default ``no``: neither an
+    accidental Enter nor an EOF ever publishes). Non-interactive contexts (CI, pipes) proceed
+    silently so automation is never blocked, and ``TRACEROOT_ASSUME_YES=1`` skips the prompt
+    everywhere. Pass an explicit ``on_existing`` to ``push_dataset`` to fully customize."""
     import os
     import sys
 
@@ -61,7 +61,7 @@ def _confirm_new_version(info: dict[str, Any]) -> bool:
             f"Dataset {name!r} already exists (current version {ver}). Publish a NEW version? [y/N] "
         )
     except EOFError:
-        return True
+        return False  # no answer at all (^D / stream closed) -> the same default no
     return answer.strip().lower() in ("y", "yes")
 
 
@@ -184,14 +184,21 @@ class PlatformDatasetSync:
         return _http_json(method, f"{self.host_url}{path}", self.api_key, body)
 
     def _existing_dataset(self, dataset_id: str) -> dict[str, Any] | None:
-        """The remote dataset's metadata if it ALREADY exists with a published version, else None
-        (a fetch error is treated as 'new' so the push itself surfaces any real problem)."""
+        """The remote dataset's metadata if it ALREADY exists with a published version, else None.
+
+        ONLY a 404 means "no such dataset". Any other failure (401/403/5xx/timeout) says nothing
+        about whether the dataset exists, and reading it as "new" would skip BOTH the idempotent
+        no-op and the confirmation -- publishing an unprompted version off a transient error. So
+        everything but a 404 propagates.
+        """
         try:
             meta = self._request(
                 "GET", f"/api/v1/public/datasets/{quote(dataset_id, safe='')}"
             )
-        except RuntimeError:
-            return None
+        except RuntimeError as exc:
+            if " HTTP 404:" in str(exc):
+                return None
+            raise
         return meta if meta.get("current_dataset_version_id") else None
 
     def _published_revision(self, dataset_id: str, version_id: str) -> str | None:
@@ -206,6 +213,24 @@ class PlatformDatasetSync:
             return current.snapshot().revision
         except Exception:
             return None
+
+    def _upsert_dataset(self, snapshot: DatasetSnapshot) -> None:
+        """Upsert the dataset's un-versioned metadata (key/name/description). Not a version.
+
+        The ``key`` is what the dataset id was hashed from, and the platform cannot recover it
+        from the name (an explicit key, or a rename, hashes from something the name no longer
+        spells). Sending it lets a later pull return the REAL key instead of a guess, so a case
+        added to a pulled dataset gets the same id as one authored locally. The backend stores it
+        on create and backfills a null key; it never clobbers a key already set.
+        """
+        body: dict[str, Any] = {
+            "dataset_id": snapshot.dataset_id,
+            "name": snapshot.name,
+            "description": snapshot.description,
+        }
+        if snapshot.key is not None:
+            body["key"] = snapshot.key
+        self._request("POST", "/api/v1/public/datasets", body)
 
     def push_dataset(
         self,
@@ -223,38 +248,40 @@ class PlatformDatasetSync:
             current_version = existing["current_dataset_version_id"]
             if self._published_revision(snapshot.dataset_id, current_version) == snapshot.revision:
                 # Identical content -> idempotent no-op; keep the current version, never prompt.
+                # ``name``/``description`` are dataset metadata, NOT part of the content revision,
+                # so an edit to either lands here with an unchanged revision. Returning without the
+                # upsert would make ``ds.description = ...; ds.push()`` a silent no-op, so send the
+                # metadata first and only skip the VERSION.
+                self._upsert_dataset(snapshot)
                 return PushResult("uploaded", snapshot.dataset_id, current_version)
             confirm = on_existing if on_existing is not None else _confirm_new_version
             if not confirm(existing):
+                # A declined publish leaves the remote entirely untouched -- metadata included.
                 raise DatasetPublishAborted(
                     f"publish to existing dataset {snapshot.name!r} declined; no new version created."
                 )
-        self._request(
-            "POST",
-            "/api/v1/public/datasets",
-            {
-                "dataset_id": snapshot.dataset_id,
-                "name": snapshot.name,
-                "description": snapshot.description,
-            },
-        )
+        self._upsert_dataset(snapshot)
         changes: list[dict[str, Any]] = []
         for c in snapshot.cases:
             # Native JSON at the HTTP boundary: input/expected/metadata are sent as
-            # their real Python values. The backend owns the single JSON-encode into
-            # its storage column (input/expected schema is z.unknown()); the SDK does
-            # NOT pre-encode -- doing so would double-encode. serialize_value only
-            # normalizes non-JSON-native objects (datetime, dataclasses, ...) to
-            # JSON-safe values; a dict stays a dict, "42" stays the string "42".
+            # their real values. The backend owns the single JSON-encode into its
+            # storage column (input/expected schema is z.unknown()); the SDK does NOT
+            # pre-encode -- doing so would double-encode.
+            #
+            # The value SENT is the SAME canonical form that was HASHED into the
+            # revision, so a pulled version re-hashes to the revision that published
+            # it. Sending a differently-shaped value (a datetime here, an ISO string
+            # in storage) would make publishedRevision != snapshot.revision forever,
+            # and every push would publish a no-change version.
             change: dict[str, Any] = {
                 "op": "upsert",
                 "test_case_id": c.id,
-                "input": serialize_value(c.input),
+                "input": normalize(c.input),
             }
             if c.expected is not None:
-                change["expected"] = serialize_value(c.expected)
+                change["expected"] = normalize(c.expected)
             if c.metadata is not None:
-                change["metadata"] = serialize_value(c.metadata)
+                change["metadata"] = normalize(c.metadata)
             if c.source_trace_id is not None:
                 change["source_trace_id"] = c.source_trace_id
             if c.source_span_id is not None:

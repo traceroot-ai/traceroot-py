@@ -55,6 +55,16 @@ class TestCollectRunProvenance:
         meta = collect_run_provenance(env={}, detect_dirty=True)
         assert meta["git"]["dirty"] is True
 
+    def test_dirty_detection_is_off_by_default(self, monkeypatch):
+        # Same default as the TS helper: dirty detection spawns a synchronous `git status`,
+        # so a direct caller never pays for it (or blocks) unless it opts in.
+        monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "abc123"))
+        calls = []
+        monkeypatch.setattr(prov, "_git_dirty", lambda: calls.append(1) or True)
+        meta = collect_run_provenance(env={})
+        assert calls == []
+        assert "dirty" not in meta["git"]
+
     def test_user_metadata_preserved_and_wins(self, monkeypatch):
         monkeypatch.setattr(prov, "_resolved_git", lambda env: ("owner/repo", "abc123"))
         meta = collect_run_provenance(
@@ -69,6 +79,13 @@ class TestCollectRunProvenance:
     def test_nothing_available_is_none(self, monkeypatch):
         monkeypatch.setattr(prov, "_resolved_git", lambda env: (None, None))
         assert collect_run_provenance(env={}, detect_dirty=False) is None
+
+    def test_no_orphaned_provenance_helpers(self):
+        # A run is not identified by which SDK produced it and the branch name is not reported
+        # as provenance -- the helpers that did both were removed with their only caller. Left
+        # behind they read as a contract that still exists.
+        for gone in ("_SDK_LANGUAGE", "_CI_BRANCH_VARS", "_sdk_version", "_git_branch"):
+            assert not hasattr(prov, gone), f"{gone} is dead code"
 
     def test_never_raises_on_git_failure(self, monkeypatch):
         # _git_dirty must degrade to None rather than raise, even if git blows up.
@@ -100,7 +117,7 @@ class TestEngineAttachesProvenance:
 class TestProvenanceReachesWire:
     """Reproducibility metadata (git commit/branch, CI) is NON-IDENTITY but must reach the
     platform as run metadata -- it was captured locally yet dropped from the wire alongside
-    SDK-language identity. Braintrust sends the equivalent `repo_info` for reproducibility."""
+    SDK-language identity."""
 
     def test_git_and_ci_provenance_ride_the_run_metadata(self, monkeypatch):
         monkeypatch.setattr(

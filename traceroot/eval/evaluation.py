@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from traceroot.eval.engine import _run, _run_async
+from traceroot.eval.engine import _LOCAL_AND_TRANSPORT, _run, _run_async
 from traceroot.eval.results import EvalRunResult
 from traceroot.eval.transport import EvalTransport
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase, ScorerContext
@@ -26,10 +26,13 @@ class Evaluation:
     Mutable in user code; changing it affects the next ``run()``. Evaluation is cloud-only:
     every run reports to the platform, which needs credentials and a synced dataset
     (pulled/pushed, or an explicit ``dataset_id``); pass ``report_to=`` to supply an explicit
-    transport. ``timeout`` bounds each case; ``metadata`` is attached to the run record;
-    ``run_scorers`` run whole-run scorers. Candidate-vs-baseline comparison is the backend's
-    job (the SDK reports raw runs; it does not compare). ``retry`` is not implemented and is
-    rejected rather than silently ignored.
+    transport, or ``local=True`` to run in full and report nowhere.
+    ``timeout`` bounds each case; ``metadata`` is attached to the run record.
+    ``evaluation_key`` is the stable identity runs are grouped by, separate from the display
+    ``name`` (the same split as a scorer's ``key``): set it to keep one history across a rename,
+    or to group the Python and TypeScript runs of one evaluation. It defaults to ``name``.
+    Candidate-vs-baseline comparison is the backend's job (the SDK reports raw runs; it does
+    not compare). ``retry`` is not implemented and is rejected rather than silently ignored.
     """
 
     def __init__(
@@ -39,7 +42,6 @@ class Evaluation:
         dataset: DataSource,
         task: Callable[[Any], Any],
         scorers: Sequence[Callable[[ScorerContext], Any]],
-        run_scorers: Sequence[Callable[[Any], Any]] | None = None,
         candidate_version: str | None = None,
         metadata: dict[str, Any] | None = None,
         max_concurrency: int = 10,
@@ -47,10 +49,14 @@ class Evaluation:
         retry: Any = None,
         select: Callable[[EvalCase], bool] | None = None,
         report_to: EvalTransport | None = None,
+        local: bool = False,
         dataset_id: str | None = None,
         environment: str = "evaluation",
+        evaluation_key: str | None = None,
         progress: bool | None = None,
     ) -> None:
+        if local and report_to is not None:
+            raise ValueError(_LOCAL_AND_TRANSPORT)
         if retry is not None:
             # Deferred by design: automatic retry can bias nondeterministic results and
             # hide flaky apps. Reject explicitly so it is never a silent no-op.
@@ -62,7 +68,6 @@ class Evaluation:
         self.dataset = dataset
         self.task = task
         self.scorers = scorers
-        self.run_scorers = run_scorers
         self.candidate_version = candidate_version
         self.metadata = metadata
         self.max_concurrency = max_concurrency
@@ -70,8 +75,10 @@ class Evaluation:
         self.retry = retry
         self.select = select
         self.report_to = report_to
+        self.local = local
         self.dataset_id = dataset_id
         self.environment = environment
+        self.evaluation_key = evaluation_key
         self.progress = progress
 
     def _kwargs(self, overrides: dict[str, Any]) -> dict[str, Any]:
@@ -82,11 +89,12 @@ class Evaluation:
             scorers=self.scorers,
             max_concurrency=self.max_concurrency,
             transport=self.report_to,
+            local=self.local,
             dataset_id=self.dataset_id,
             candidate_version=self.candidate_version,
             environment=self.environment,
+            evaluation_key=self.evaluation_key,
             select=self.select,
-            run_scorers=self.run_scorers,
             timeout=self.timeout,
             metadata=self.metadata,
             progress=self.progress,
@@ -118,17 +126,23 @@ def evaluate(
     max_concurrency: int = 10,
     transport: EvalTransport | None = None,
     report_to: EvalTransport | None = None,
+    local: bool = False,
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     environment: str = "evaluation",
+    evaluation_key: str | None = None,
     select: Callable[[EvalCase], bool] | None = None,
-    run_scorers: Sequence[Callable[[Any], Any]] | None = None,
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
     progress: bool | None = None,
     retry: Any = None,
 ) -> EvalRunResult:
-    """Construct-and-run an :class:`Evaluation`. ``dataset=`` is primary; ``data=`` is an alias."""
+    """Construct-and-run an :class:`Evaluation`. ``dataset=`` is primary; ``data=`` is an alias.
+
+    ``local=True`` is the shortcut for ``transport=FakeTransport()``: the run executes in full and
+    returns a complete result, but reports nowhere -- no credentials, no dataset publish, no run
+    record. Pass one or the other, never both.
+    """
     return Evaluation(
         name=name,
         dataset=_resolve_dataset(dataset, data),
@@ -136,11 +150,12 @@ def evaluate(
         scorers=scorers,
         max_concurrency=max_concurrency,
         report_to=report_to or transport,
+        local=local,
         dataset_id=dataset_id,
         candidate_version=candidate_version,
         environment=environment,
+        evaluation_key=evaluation_key,
         select=select,
-        run_scorers=run_scorers,
         metadata=metadata,
         timeout=timeout,
         progress=progress,
@@ -158,11 +173,12 @@ async def evaluate_async(
     max_concurrency: int = 10,
     transport: EvalTransport | None = None,
     report_to: EvalTransport | None = None,
+    local: bool = False,
     dataset_id: str | None = None,
     candidate_version: str | None = None,
     environment: str = "evaluation",
+    evaluation_key: str | None = None,
     select: Callable[[EvalCase], bool] | None = None,
-    run_scorers: Sequence[Callable[[Any], Any]] | None = None,
     metadata: dict[str, Any] | None = None,
     timeout: float | None = None,
     progress: bool | None = None,
@@ -176,11 +192,12 @@ async def evaluate_async(
         scorers=scorers,
         max_concurrency=max_concurrency,
         report_to=report_to or transport,
+        local=local,
         dataset_id=dataset_id,
         candidate_version=candidate_version,
         environment=environment,
+        evaluation_key=evaluation_key,
         select=select,
-        run_scorers=run_scorers,
         metadata=metadata,
         timeout=timeout,
         progress=progress,

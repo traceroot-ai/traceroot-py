@@ -24,24 +24,10 @@ import subprocess
 from typing import Any
 
 # (env flag that marks the provider, provider name, env var holding the build/run id)
+# Only GitHub Actions is parsed as a named provider (it also feeds git context); every other
+# CI is caught by the generic `env["CI"]` fallback in _ci_block below.
 _CI_PROVIDERS = (
     ("GITHUB_ACTIONS", "github", "GITHUB_RUN_ID"),
-    ("GITLAB_CI", "gitlab", "CI_PIPELINE_ID"),
-    ("CIRCLECI", "circleci", "CIRCLE_BUILD_NUM"),
-    ("BUILDKITE", "buildkite", "BUILDKITE_BUILD_ID"),
-    ("JENKINS_URL", "jenkins", "BUILD_NUMBER"),
-)
-
-_SDK_LANGUAGE = "python"
-
-# Branch/ref env vars set by common CI providers (distinct from the commit SHA).
-_CI_BRANCH_VARS = (
-    "GITHUB_HEAD_REF",
-    "GITHUB_REF_NAME",
-    "CI_COMMIT_REF_NAME",
-    "CIRCLE_BRANCH",
-    "BUILDKITE_BRANCH",
-    "GIT_BRANCH",
 )
 
 
@@ -137,7 +123,9 @@ def collect_run_provenance(
     user_metadata: dict[str, Any] | None = None,
     *,
     env: dict[str, str] | None = None,
-    detect_dirty: bool = True,
+    # Default OFF: dirty detection spawns a synchronous `git status`, so a direct caller
+    # shouldn't pay that (and block) unless it explicitly opts in.
+    detect_dirty: bool = False,
 ) -> dict[str, Any] | None:
     """Build run metadata = user metadata + auto git/ci provenance (when available).
 
@@ -154,35 +142,3 @@ def collect_run_provenance(
     if user_metadata:
         meta = {**meta, **user_metadata}  # user metadata takes precedence
     return meta or None
-
-
-def _sdk_version() -> str | None:
-    """The installed SDK version, or None if it cannot be determined."""
-    try:
-        from traceroot.constants import SDK_VERSION
-
-        return SDK_VERSION or None
-    except Exception:
-        return None
-
-
-def _git_branch(env: dict[str, str]) -> str | None:
-    """Best-effort branch name -- distinct from the commit SHA. CI branch env first,
-    then ``git rev-parse --abbrev-ref HEAD``. None on detached HEAD or when unknown."""
-    for var in _CI_BRANCH_VARS:
-        branch = env.get(var)
-        if branch:
-            return branch
-    try:
-        out = subprocess.run(
-            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except Exception:
-        return None
-    if out.returncode != 0:
-        return None
-    branch = out.stdout.strip()
-    return branch if branch and branch != "HEAD" else None

@@ -143,6 +143,69 @@ class TestRunUpload:
         with pytest.raises((ValueError, RuntimeError)):
             self._run().upload()
 
+    def test_upload_re_declares_the_retained_scorer_policy(self, monkeypatch):
+        # A run carries the scorer policy it was evaluated under; when upload() builds its own
+        # transport it must re-declare that policy (threshold/direction) so a re-upload's per-score
+        # `passed` matches the original run instead of registering policy-less.
+        import traceroot.eval.platform as platform
+
+        specs = [
+            {"name": "acc", "value_type": "numeric", "direction": "higher_is_better", "threshold": 0.8}
+        ]
+        captured: dict = {}
+
+        class _Spy:
+            def __init__(self, dataset_id, **kw):
+                captured["scorer_specs"] = kw.get("scorer_specs")
+                self.run_id = "run_1"
+
+            def create_run(self, **kw):
+                return object()
+
+            def record_item_result(self, run, item):
+                pass
+
+            def record_scores(self, run, case_id, scores):
+                pass
+
+            def finish_run(self, run, status=None, emitted_metrics=None):
+                return UploadState(status="uploaded")
+
+        monkeypatch.setattr(platform, "PlatformTransport", _Spy)
+        run = self._run()
+        run.scorer_specs = specs
+        run.upload()  # no transport -> builds the (spied) PlatformTransport
+        assert captured["scorer_specs"] == specs
+
+    def test_scorer_specs_round_trip_through_save_load(self, tmp_path):
+        specs = [{"name": "acc", "threshold": 0.8, "direction": "higher_is_better"}]
+        run = self._run()
+        run.scorer_specs = specs
+        path = tmp_path / "run.json"
+        run.save(str(path))
+        assert EvalRunResult.load(str(path)).scorer_specs == specs
+
+    def test_emitted_metrics_round_trip_and_reupload(self, tmp_path):
+        # The emitted-metric ownership manifest is retained + persisted, and re-declared on the
+        # finish_run of an explicit upload() (else a re-upload omits it).
+        run = self._run()
+        run.emitted_metrics = {"acc": ["acc", "acc_detail"]}
+        path = tmp_path / "run.json"
+        run.save(str(path))
+        assert EvalRunResult.load(str(path)).emitted_metrics == {"acc": ["acc", "acc_detail"]}
+
+        transport = _StubPlatform("ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h")
+        captured: dict = {}
+        orig = transport.finish_run
+
+        def _spy(r, status=None, emitted_metrics=None):
+            captured["emitted_metrics"] = emitted_metrics
+            return orig(r, status=status, emitted_metrics=emitted_metrics)
+
+        transport.finish_run = _spy
+        run.upload(transport)
+        assert captured["emitted_metrics"] == {"acc": ["acc", "acc_detail"]}
+
 
 def test_local_sync_is_local_only():
     result = LocalDatasetSync().push_dataset(_ds().snapshot(), None)
@@ -253,6 +316,110 @@ class TestExistingDatasetConfirmation:
 
         monkeypatch.setattr("sys.stdin", _FakeStdin())
         assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is True
+
+    def _interactive(self, monkeypatch, answer):
+        """An interactive terminal that types `answer` at the prompt (EOFError = ^D / closed
+        stream). Returns the list the prompt text is recorded into, so a test can assert the
+        prompt was -- or was not -- actually shown."""
+        monkeypatch.delenv("TRACEROOT_ASSUME_YES", raising=False)
+
+        class _FakeStdin:
+            def isatty(self):
+                return True
+
+        prompts: list[str] = []
+
+        def _input(prompt=""):
+            prompts.append(prompt)
+            if isinstance(answer, type) and issubclass(answer, BaseException):
+                raise answer
+            return answer
+
+        monkeypatch.setattr("sys.stdin", _FakeStdin())
+        monkeypatch.setattr("builtins.input", _input)
+        return prompts
+
+    def _interactive_eof(self, monkeypatch):
+        """An interactive terminal whose input is at EOF (^D, or the stream closed under us)."""
+        return self._interactive(monkeypatch, EOFError)
+
+    def test_default_confirmer_declines_on_eof(self, monkeypatch):
+        # The prompt defaults to NO; EOF is no answer at all, so it must decline too. Answering
+        # "yes" to a question nobody read is exactly the accidental publish the prompt prevents.
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        self._interactive_eof(monkeypatch)
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is False
+
+    def test_eof_at_the_prompt_publishes_nothing(self, monkeypatch):
+        from traceroot.eval.dataset_sync import DatasetPublishAborted
+
+        self._interactive_eof(monkeypatch)
+        sync = self._sync(exists=True)  # content changed -> the default confirmer is consulted
+        with pytest.raises(DatasetPublishAborted):
+            sync.push_dataset(self._snap(), None)
+        assert not any(p.endswith("/versions") for _m, p in sync.calls)
+
+    @pytest.mark.parametrize(
+        "typed,accepted",
+        [
+            ("", False),  # a bare Enter is the [y/N] default: decline
+            ("n", False),
+            ("N", False),
+            ("no", False),
+            ("garbage", False),  # anything that isn't yes is not a yes
+            ("y", True),
+            ("Y", True),
+            ("YES", True),  # case-insensitive
+            ("  y  ", True),  # surrounding whitespace is trimmed
+        ],
+    )
+    def test_default_confirmer_reads_the_real_prompt(self, monkeypatch, typed, accepted):
+        """Drive `_confirm_new_version` through its ACTUAL `input()` path on a fake TTY (every other
+        confirmation test injects `on_existing` and never exercises the prompt itself). Only an
+        explicit yes publishes; everything else -- including a bare Enter -- declines."""
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        prompts = self._interactive(monkeypatch, typed)
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is accepted
+        assert len(prompts) == 1 and "[y/N]" in prompts[0]  # the prompt was actually shown
+
+    def test_assume_yes_publishes_without_ever_prompting(self, monkeypatch):
+        """`TRACEROOT_ASSUME_YES=1` is the documented escape hatch: it must skip the prompt
+        ENTIRELY -- not read stdin and override it -- so it holds on an interactive terminal whose
+        next keystroke would decline."""
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        prompts = self._interactive(monkeypatch, "n")  # a TTY that would say no
+        monkeypatch.setenv("TRACEROOT_ASSUME_YES", "1")
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is True
+        assert prompts == []  # stdin was never consulted
+
+    @pytest.mark.parametrize("value", ["1", "true", "YES", " yes "])
+    def test_assume_yes_accepted_spellings(self, monkeypatch, value):
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        self._interactive(monkeypatch, "n")
+        monkeypatch.setenv("TRACEROOT_ASSUME_YES", value)
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", ""])
+    def test_assume_yes_off_still_honours_the_prompt(self, monkeypatch, value):
+        # An unset-like value must not silently arm the bypass: the TTY's "n" still decides.
+        from traceroot.eval.dataset_sync import _confirm_new_version
+
+        self._interactive(monkeypatch, "n")
+        monkeypatch.setenv("TRACEROOT_ASSUME_YES", value)
+        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is False
+
+    def test_assume_yes_publishes_a_new_version_end_to_end(self, monkeypatch):
+        # The bypass must reach the real push: an existing dataset with changed content publishes.
+        self._interactive(monkeypatch, "n")  # a TTY that would decline
+        monkeypatch.setenv("TRACEROOT_ASSUME_YES", "1")
+        sync = self._sync(exists=True)  # content changed -> the default confirmer is consulted
+        res = sync.push_dataset(self._snap(), None)
+        assert res.dataset_version_id == "dsv_10"
+        assert any(p.endswith("/versions") for _m, p in sync.calls)
 
 
 def test_evaluate_auto_syncs_a_local_dataset(monkeypatch):

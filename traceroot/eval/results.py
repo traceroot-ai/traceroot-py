@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import math
 import os
 from pathlib import Path
 from typing import Any, Literal
@@ -64,9 +65,22 @@ class UploadState:
 
     status: Literal["uploaded"] = "uploaded"
     dashboard_url: str | None = None
+    # Per-case result POSTs that failed and were dropped (reporting is best-effort so the run
+    # still completes). Counted so a run that reports "uploaded" with silently-missing results
+    # is detectable instead of looking green.
+    failed_result_count: int = 0
+
+    @property
+    def partial(self) -> bool:
+        """True when the run was completed but some per-case results never reached the platform."""
+        return self.failed_result_count > 0
 
     def to_dict(self) -> dict[str, Any]:
-        return {"status": self.status, "dashboard_url": self.dashboard_url}
+        return {
+            "status": self.status,
+            "dashboard_url": self.dashboard_url,
+            "failed_result_count": self.failed_result_count,
+        }
 
 
 @dataclasses.dataclass
@@ -97,15 +111,6 @@ class RunDatasetRef:
             "dataset_version_id": self.dataset_version_id,
             "case_count": self.case_count,
         }
-
-
-@dataclasses.dataclass
-class RunView:
-    """The read-only view passed to a whole-run scorer."""
-
-    name: str
-    item_results: list[EvalItemResult]
-    score_summary: dict[str, ScoreSummary]
 
 
 def case_status(item: EvalItemResult) -> str:
@@ -139,7 +144,12 @@ def aggregate_scores(item_results: list[EvalItemResult]) -> dict[str, ScoreSumma
                 order.append(score.name)
                 total_counts[score.name] = 0
             total_counts[score.name] += 1
-            if isinstance(score.value, (int, float)):  # bool -> 1.0/0.0
+            # A non-finite value (NaN/inf) must not fold into the mean: it would make the local
+            # aggregate and run.json disagree with the wire (where a non-finite score is errored)
+            # and .summary(), and a bare `NaN` token makes the artifact invalid per the JSON spec
+            # (strict parsers, including JS `JSON.parse`, reject it). Exclude it from the numeric
+            # aggregate; it still counts as a produced score.
+            if isinstance(score.value, (int, float)) and math.isfinite(float(score.value)):
                 numeric_sums[score.name] = numeric_sums.get(score.name, 0.0) + float(score.value)
                 numeric_counts[score.name] = numeric_counts.get(score.name, 0) + 1
 
@@ -149,6 +159,26 @@ def aggregate_scores(item_results: list[EvalItemResult]) -> dict[str, ScoreSumma
         mean = numeric_sums[name] / n if n else None
         summary[name] = ScoreSummary(name=name, mean=mean, count=total_counts[name])
     return summary
+
+
+def _score_verdict(value: Any, owner: dict[str, Any] | None) -> bool | None:
+    """Whether one score passes, given its ALREADY-RESOLVED owning scorer spec. Parity with
+    ``PlatformTransport._score_passed``: a bool value IS its verdict; a numeric value passes iff it
+    clears the owner's declared threshold in its declared direction (defaulting to higher_is_better).
+    None (no verdict) for a non-finite value, no owner, or an owner with no threshold / 'none'
+    direction — the SDK never fabricates a pass/fail."""
+    if isinstance(value, bool):
+        return value
+    if not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None
+    if owner is None:
+        return None
+    threshold = owner.get("threshold")
+    direction = owner.get("direction")
+    direction = direction if direction is not None else "higher_is_better"
+    if threshold is None or direction == "none":
+        return None
+    return value <= threshold if direction == "lower_is_better" else value >= threshold
 
 
 @dataclasses.dataclass
@@ -163,9 +193,16 @@ class EvalRunResult:
     candidate_version: str | None = None
     dataset: RunDatasetRef | None = None
     run_id: str | None = None  # server-assigned id when uploaded
-    run_scores: list[Score] = dataclasses.field(default_factory=list)  # whole-run scores
-    run_scorer_errors: dict[str, str] = dataclasses.field(default_factory=dict)
     metadata: dict[str, Any] | None = None  # run context (model, prompt, branch, CI, ...)
+    # Declared scorer policy (name/version/value_type/direction/threshold) captured at run time.
+    # Retained so an explicit upload() re-declares each metric's threshold/direction to the platform
+    # instead of re-registering policy-less -- otherwise a re-upload's per-score ``passed`` verdicts
+    # would silently disagree with the original run's.
+    scorer_specs: list[dict[str, Any]] | None = None
+    # The scorer -> emitted-metric ownership map captured at run time (which declared scorer produced
+    # which metric name). Retained so an explicit upload() re-declares it on finish_run; without it a
+    # re-upload omits the manifest the platform keys each emitted metric's owner on.
+    emitted_metrics: dict[str, list[str]] | None = None
 
     # --- inspection ---
     @property
@@ -216,9 +253,9 @@ class EvalRunResult:
             },
             "item_results": [it.to_dict() for it in self.item_results],
             "score_summary": {k: v.to_dict() for k, v in self.score_summary.items()},
-            "run_scores": [dataclasses.asdict(s) for s in self.run_scores],
-            "run_scorer_errors": self.run_scorer_errors,
             "metadata": self.metadata,
+            "scorer_specs": self.scorer_specs,
+            "emitted_metrics": self.emitted_metrics,
             "upload": self.upload_state.to_dict(),
         }
 
@@ -245,9 +282,9 @@ class EvalRunResult:
             candidate_version=d.get("candidate_version"),
             dataset=RunDatasetRef(**ds) if ds else None,
             run_id=d.get("run_id"),
-            run_scores=[Score(**s) for s in d.get("run_scores", [])],
-            run_scorer_errors=d.get("run_scorer_errors", {}),
             metadata=d.get("metadata"),
+            scorer_specs=d.get("scorer_specs"),
+            emitted_metrics=d.get("emitted_metrics"),
         )
 
     @classmethod
@@ -294,6 +331,10 @@ class EvalRunResult:
             dataset=RunDatasetRef(**ds) if ds else None,
             run_id=d.get("run_id"),
             metadata=d.get("metadata"),
+            # Restore the declared policy so a run loaded from a runner artifact re-uploads under
+            # the thresholds it was scored with (older artifacts have none -> falls back to names).
+            scorer_specs=d.get("scorer_specs"),
+            emitted_metrics=d.get("emitted_metrics"),
         )
 
     def save(self, path: str) -> None:
@@ -346,6 +387,10 @@ class EvalRunResult:
                 candidate_version=self.candidate_version,
                 dataset_version_id=self.dataset.dataset_version_id,
                 client_run_id=self.local_run_id,
+                # Re-declare each metric's threshold/direction (captured at run time) so a
+                # re-upload's per-score `passed` matches the original run instead of registering
+                # policy-less. None (an older/loaded run without specs) falls back to names.
+                scorer_specs=self.scorer_specs,
             )
         dataset_name = self.dataset.dataset_id if self.dataset else "<inline>"
         run = active.create_run(
@@ -357,7 +402,9 @@ class EvalRunResult:
         for item in self.item_results:
             active.record_item_result(run, item)
             active.record_scores(run, item.case_id, item.scores)
-        self.upload_state = active.finish_run(run, status=None)
+        # Re-declare the emitted-metric ownership captured at run time, so a re-upload's finish_run
+        # carries the same manifest the original run did (None for a run without it).
+        self.upload_state = active.finish_run(run, status=None, emitted_metrics=self.emitted_metrics)
         # Keep the existing server run id if this transport doesn't expose one (don't erase it).
         self.run_id = getattr(active, "run_id", None) or self.run_id
         return self
@@ -372,7 +419,32 @@ class EvalRunResult:
             f"task_errors={self.task_error_count}, upload={self.upload_state.status})"
         )
         lines = [head]
+        passed, judged = self._pass_tally()
         for name, summ in self.score_summary.items():
             mean = "n/a" if summ.mean is None else f"{summ.mean:.4g}"
-            lines.append(f"  {name}: mean={mean} count={summ.count}")
+            n = judged.get(name, 0)
+            pass_seg = f" pass={passed.get(name, 0)}/{n}" if n else ""
+            lines.append(f"  {name}: mean={mean}{pass_seg} count={summ.count}")
         return "\n".join(lines)
+
+    def _pass_tally(self) -> tuple[dict[str, int], dict[str, int]]:
+        """(passed, judged) counts per metric for ``summary()``. Resolves each score's owning scorer
+        EXACTLY as ``PlatformTransport._score_policy`` does — a lone scorer emitting a lone metric
+        owns it name-agnostically (single emission), otherwise the emitted name must match a declared
+        scorer name — so the local pass-rate equals the platform's. Metrics with no resolvable policy
+        contribute no pass-rate, only a count."""
+        specs = self.scorer_specs or []
+        by_name = {s.get("name"): s for s in specs}
+        passed: dict[str, int] = {}
+        judged: dict[str, int] = {}
+        for item in self.item_results:
+            single = len(item.scores) == 1
+            for score in item.scores:
+                owner = specs[0] if (len(specs) == 1 and single) else by_name.get(score.name)
+                verdict = _score_verdict(score.value, owner)
+                if verdict is None:
+                    continue
+                judged[score.name] = judged.get(score.name, 0) + 1
+                if verdict:
+                    passed[score.name] = passed.get(score.name, 0) + 1
+        return passed, judged

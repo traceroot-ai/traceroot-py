@@ -2,32 +2,55 @@
 
 import traceroot
 
+# The documented public surface. Every symbol a user is told to reference by name -- including
+# the exceptions they are told to CATCH -- must be reachable as ``traceroot.<name>``; a symbol
+# that only exists on ``traceroot.eval`` is not public API.
+PUBLIC_SURFACE = (
+    "Dataset",
+    "DatasetSnapshot",
+    "DatasetConflictError",
+    "DatasetPublishAborted",
+    "EvalCase",
+    "EvalCompletionError",
+    "EvalItemResult",
+    "EvalRunResult",
+    "Score",
+    "Scorer",
+    "ScorerContext",
+    "case_status",
+    "evaluate",
+    "evaluate_async",
+    "llm_judge",
+    "pull_dataset",
+    "pull_dataset_version",
+    "scorer",
+)
+
 
 def test_top_level_exports_importable():
-    from traceroot import (  # noqa: F401
-        Dataset,
-        EvalCase,
-        EvalItemResult,
-        EvalRunResult,
-        Score,
-        ScorerContext,
-        evaluate,
-        evaluate_async,
-    )
+    for name in PUBLIC_SURFACE:
+        assert getattr(traceroot, name, None) is not None, name
 
 
 def test_names_in_dunder_all():
-    for name in (
-        "Dataset",
-        "EvalCase",
-        "Score",
-        "ScorerContext",
-        "evaluate",
-        "evaluate_async",
-        "EvalRunResult",
-        "EvalItemResult",
-    ):
+    for name in PUBLIC_SURFACE:
         assert name in traceroot.__all__, name
+
+
+def test_dunder_all_is_fully_resolvable():
+    # Nothing may be advertised in __all__ that `from traceroot import *` cannot resolve.
+    for name in traceroot.__all__:
+        assert hasattr(traceroot, name), name
+
+
+def test_documented_exceptions_are_catchable_from_top_level():
+    import traceroot.eval.dataset_sync as dataset_sync
+    import traceroot.eval.transport as transport
+    from traceroot import DatasetConflictError, DatasetPublishAborted, EvalCompletionError
+
+    assert DatasetConflictError is dataset_sync.DatasetConflictError
+    assert DatasetPublishAborted is dataset_sync.DatasetPublishAborted
+    assert EvalCompletionError is transport.EvalCompletionError
 
 
 def test_end_to_end_via_top_level():

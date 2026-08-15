@@ -31,13 +31,12 @@ _EXPORTS = {
     "ScoreSummary": "results",
     "UploadState": "results",
     "aggregate_scores": "results",
+    "case_status": "results",
     "describe_scorers": "scorers",
     "llm_judge": "scorers",
     "scorer": "scorers",
     "Scorer": "scorers",
-    "dataset_latest_snippet": "snippets",
-    "dataset_version_snippet": "snippets",
-    "reproduce_run_snippet": "snippets",
+    "EvalCompletionError": "transport",
     "EvalTransport": "transport",
     "FakeTransport": "transport",
     "PublishResult": "transport",
@@ -69,14 +68,16 @@ if TYPE_CHECKING:
         ScoreSummary,
         UploadState,
         aggregate_scores,
+        case_status,
     )
     from traceroot.eval.scorers import Scorer, describe_scorers, llm_judge, scorer
-    from traceroot.eval.snippets import (
-        dataset_latest_snippet,
-        dataset_version_snippet,
-        reproduce_run_snippet,
+    from traceroot.eval.transport import (
+        EvalCompletionError,
+        EvalTransport,
+        FakeTransport,
+        PublishResult,
+        RunHandle,
     )
-    from traceroot.eval.transport import EvalTransport, FakeTransport, PublishResult, RunHandle
     from traceroot.eval.types import (
         Dataset,
         DatasetSnapshot,
@@ -110,7 +111,6 @@ def capabilities() -> dict[str, bool]:
         "compare": True,
         "dataset_push": True,
         "sampling": True,
-        "provenance": True,
         "cancellation": True,
     }
 
@@ -133,6 +133,8 @@ __all__ = [
     "ScoreSummary",
     "UploadState",
     "aggregate_scores",
+    "case_status",
+    "EvalCompletionError",
     "EvalTransport",
     "FakeTransport",
     "RunHandle",
@@ -144,9 +146,6 @@ __all__ = [
     "llm_judge",
     "Scorer",
     "describe_scorers",
-    "dataset_latest_snippet",
-    "dataset_version_snippet",
-    "reproduce_run_snippet",
     "collect_run_provenance",
     "PushResult",
     "DatasetConflictError",

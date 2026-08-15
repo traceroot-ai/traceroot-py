@@ -205,6 +205,20 @@ class TestIndependentErrorFields:
         assert done["counts"]["task_errors"] == 1
         assert done["counts"]["scorer_errors"] == 1
 
+    def test_completed_counts_keys_are_the_cross_sdk_protocol(self, tmp_path):
+        """The counts block is the JSONL protocol traceroot-cli parses; both SDKs emit these
+        exact keys (no `scored`/`passed`/`failed` — the SDK derives no case-level verdict)."""
+        d = _write_eval(tmp_path, "billing_eval.py", SUCCESS_EVAL)
+        events = _collect([d], {"reporting": True, "no_artifact": True})
+        done = next(e for e in events if e["type"] == "evaluation_completed")
+        assert list(done["counts"]) == [
+            "cases",
+            "errored",
+            "task_errors",
+            "scorer_errors",
+            "not_scored",
+        ]
+
 
 class TestArtifacts:
     def test_two_file_artifact(self, tmp_path):
