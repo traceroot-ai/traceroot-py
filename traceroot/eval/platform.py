@@ -256,6 +256,7 @@ class PlatformTransport:
                 # Comparison metadata + the read-only definition (scorer_type + type-specific
                 # fields). Absent fields are omitted, never null-filled.
                 for k in (
+                    "key",
                     "scorer_type",
                     "value_type",
                     "direction",

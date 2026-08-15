@@ -58,6 +58,7 @@ def _validate_required_inputs(value: Any) -> list[str]:
 def scorer(
     fn: Callable | None = None,
     *,
+    key: str | None = None,
     name: str | None = None,
     version: str | None = None,
     value_type: str | None = None,
@@ -89,7 +90,8 @@ def scorer(
 
     def apply(f: Callable) -> Callable:
         meta = dict(getattr(f, _META_ATTR, {}))
-        for key, val in (
+        for mk, val in (
+            ("key", key),
             ("name", name),
             ("version", version),
             ("value_type", value_type),
@@ -101,7 +103,7 @@ def scorer(
             ("required_inputs", required_inputs),
         ):
             if val is not None:
-                meta[key] = val
+                meta[mk] = val
         setattr(f, _META_ATTR, meta)
         return f
 
@@ -151,6 +153,10 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
     one. Absent fields are ``None`` here and omitted at the reporting boundary.
     """
     name = _declared(fn, "name") or getattr(fn, "__name__", None) or fn.__class__.__name__
+    # Stable SEMANTIC identity, independent of function spelling/language. Defaults to the definition
+    # name; set an explicit `key` (identically in Python and TypeScript) to make the SAME logical
+    # scorer resolve across languages. Never derived from source; code/language/version are provenance.
+    key = _declared(fn, "key") or name
     vtype = _declared(fn, "value_type") or value_type
     direction = _declared(fn, "direction")
     if direction is None and vtype is not None:
@@ -168,6 +174,7 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
         required_inputs = _derive_required_inputs(_declared(fn, "messages"))
 
     desc: dict[str, Any] = {
+        "key": key,
         "name": name,
         "version": declared_version(fn),
         "scorer_type": scorer_type,
@@ -182,6 +189,12 @@ def scorer_metadata(fn: Callable, *, value_type: str | None = None) -> dict[str,
     if scorer_type == "llm_judge":
         desc["model"] = _declared(fn, "model")
         desc["messages"] = _declared(fn, "messages")
+        # A DYNAMIC judge also carries its builder-callback provenance (captured at construction);
+        # a static judge has none (its declarative config IS its source, via version=config-hash).
+        builder_source = _declared(fn, "builder_source")
+        if builder_source is not None:
+            desc["language"] = "python"
+            desc["source"] = builder_source
     else:
         src = _capture_source(fn)
         if src is not None:
@@ -231,3 +244,22 @@ def _derive_required_inputs(messages: Any) -> list[str] | None:
 # The llm_judge scorer lives in its own module; re-exported here so existing imports
 # (``from traceroot.eval.scorers import llm_judge``) keep working unchanged.
 from traceroot.eval.judge import _parse_judge_output, llm_judge  # noqa: E402,F401
+
+
+class Scorer:
+    """Unified scorer-definition namespace with NAMED constructors (stronger types + autocomplete
+    than one ``Scorer(type=...)`` constructor whose parameters mostly wouldn't apply):
+
+      - ``Scorer.code(...)``       -- a code scorer. Bare/decorator (``@Scorer.code(...)``) or an
+        adapter over an existing callable (``Scorer.code(fn, threshold=1.0)``). An ordinary function
+        also works with NO wrapper at all (passed straight to ``evaluate(scorers=[...])``).
+      - ``Scorer.llm_judge(...)``  -- an LLM judge. Static (declarative config only -- no function
+        needed) or dynamic (``@Scorer.llm_judge(...)`` over a builder that returns the judge's
+        template variables / messages per case).
+
+    ``kind`` (``code`` | ``llm_judge``) stays INTERNAL on the normalized definition; there is no
+    public ``Scorer(type=...)`` constructor. ``Scorer`` is the executable definition + policy +
+    provenance; ``Score`` (separate) is one emitted result for one case."""
+
+    code = staticmethod(scorer)
+    llm_judge = staticmethod(llm_judge)

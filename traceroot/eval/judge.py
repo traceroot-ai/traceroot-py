@@ -125,11 +125,134 @@ def _default_complete(model: str, messages: list[dict[str, str]]) -> str:
     return resp.choices[0].message.content or ""
 
 
+# A general {{VAR}} placeholder (any identifier), used to render a dynamic judge's builder variables.
+_ANY_PLACEHOLDER = re.compile(r"\{\{\s*(\w+)\s*\}\}")
+
+
+def _config_revision(**config: Any) -> str:
+    """Deterministic revision of a judge's DECLARATIVE configuration (model/messages/policy/...): its
+    versioned 'source'. Canonical JSON (sorted keys) -> sha256, so the same config always hashes the
+    same across processes and languages that canonicalize identically."""
+    import hashlib
+    import json
+
+    canon = json.dumps(config, sort_keys=True, default=str, ensure_ascii=False, separators=(",", ":"))
+    return "cfg_" + hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+
+
+def _render_vars(messages: list[dict[str, str]], variables: dict[str, str]) -> list[dict[str, str]]:
+    """Render {{VAR}} placeholders from an explicit variable map; unknown placeholders are left."""
+    def sub(mo: "re.Match[str]") -> str:
+        return variables.get(mo.group(1), mo.group(0))
+
+    return [
+        {"role": m.get("role", "user"), "content": _ANY_PLACEHOLDER.sub(sub, m.get("content", ""))}
+        for m in messages
+    ]
+
+
+def _render_built(messages: list[dict[str, str]], built: Any, ctx: Any, name: str) -> list[dict[str, str]]:
+    """Render a dynamic judge from its builder's return value. A DICT is a template-variable map
+    ({{VAR}} filled from it, with input/output/expected as fallbacks); a LIST is dynamic messages
+    (used as-is, with {{input/output/expected}} still rendered). Anything else is an actionable
+    error -- the builder supplies prompt inputs, never the final score."""
+    if isinstance(built, dict):
+        base = {
+            "input": _as_text(getattr(ctx, "input", None)),
+            "output": _as_text(getattr(ctx, "output", None)),
+            "expected": _as_text(getattr(ctx, "expected", None)),
+        }
+        return _render_vars(messages, {**base, **{k: _as_text(v) for k, v in built.items()}})
+    if isinstance(built, list):
+        return _render_messages(built, ctx)
+    raise TypeError(
+        f"llm_judge {name!r}: a dynamic builder must return a dict (template variables) or a list "
+        f"(messages), got {type(built).__name__}."
+    )
+
+
+class _JudgeScorer:
+    """An LLM-judge scorer callable. Used directly it runs the judge for a case; applied to a builder
+    function (``@Scorer.llm_judge(...)``) it returns a DYNAMIC judge that builds its prompt per case.
+    Its metadata (config + version=config-hash) is the reported, hashable definition."""
+
+    def __init__(self, *, run: Callable[[Any], Any], meta: dict, name: str,
+                 make_dynamic: Callable[[Callable], "_JudgeScorer"] | None) -> None:
+        from traceroot.eval.scorers import _META_ATTR
+
+        self._run = run
+        self._make_dynamic = make_dynamic
+        self.__name__ = name
+        setattr(self, _META_ATTR, meta)
+
+    def __call__(self, arg: Any) -> Any:
+        import inspect
+
+        # Decorator application: `@Scorer.llm_judge(...)` over a builder function -> a dynamic judge.
+        # Any other arg is a ScorerContext the engine passed to run the judge.
+        if self._make_dynamic is not None and (inspect.isfunction(arg) or inspect.ismethod(arg)):
+            return self._make_dynamic(arg)
+        return self._run(arg)
+
+
+def _build_judge(*, name: str, model: str, messages: list[dict[str, str]], output_type: str,
+                 complete: Callable | None, meta: dict, builder: Callable | None) -> _JudgeScorer:
+    """Construct a (static or dynamic) judge callable that renders the prompt, invokes the model,
+    parses the score, and traces the call. `builder` (dynamic) produces template variables or
+    messages per case; None (static) renders the authored messages from input/output/expected."""
+    from traceroot.constants import SpanKind
+    from traceroot.decorators import observe
+    from traceroot.eval.types import Score
+
+    if builder is not None:
+        # Capture the dynamic judge's builder-callback provenance (in addition to the declarative
+        # config). Missing source (notebook / C callable) is honest -- it just isn't recorded.
+        from traceroot.eval.scorers import _capture_source
+
+        b_src = _capture_source(builder)
+        if b_src is not None:
+            meta = {**meta, "builder_source": b_src}
+
+    def _call(rendered_messages: list[dict[str, str]]) -> str:
+        return (complete or _default_complete)(model, rendered_messages)
+
+    @observe(name=f"llm_judge:{name}", type=SpanKind.LLM, metadata={"model": model})
+    def _call_instrumented(rendered_messages: list[dict[str, str]]) -> str:
+        return _call(rendered_messages)
+
+    def run(ctx: Any) -> Any:
+        if builder is not None:
+            from traceroot.eval.engine import _bind_scorer_args
+
+            b_args, b_kwargs = _bind_scorer_args(builder, ctx)
+            built = builder(*b_args, **b_kwargs)
+            import inspect
+
+            if inspect.isawaitable(built):
+                raise TypeError(f"llm_judge {name!r}: the dynamic builder must be synchronous.")
+            rendered = _render_built(messages, built, ctx, name)
+        else:
+            rendered = _render_messages(messages, ctx)
+        provider_traced = complete is None and _provider_integration_traces(model)
+        invoke = _call if provider_traced else _call_instrumented
+        text = invoke(rendered)
+        return Score(name, _parse_judge_output(text, output_type), comment=(text or "")[:2000])
+
+    def make_dynamic(b: Callable) -> _JudgeScorer:
+        return _build_judge(name=name, model=model, messages=messages, output_type=output_type,
+                            complete=complete, meta=meta, builder=b)
+
+    return _JudgeScorer(run=run, meta=meta, name=name,
+                        make_dynamic=None if builder is not None else make_dynamic)
+
+
 def llm_judge(
     *,
     name: str,
+    key: str | None = None,
     model: str,
-    messages: list[dict[str, str]],
+    messages: list[dict[str, str]] | None = None,
+    rubric: str | None = None,
     version: str | None = None,
     output_type: str = "score",
     threshold: float | None = None,
@@ -148,16 +271,12 @@ def llm_judge(
     sent to the model. ``complete(model, messages) -> str`` overrides the model call (used in
     tests / custom providers); the default lazily dispatches to anthropic/openai.
     """
-    from traceroot.constants import SpanKind
-    from traceroot.decorators import observe
     from traceroot.eval.scorers import (
-        _META_ATTR,
         DIRECTIONS,
         OUTPUT_TYPES,
         VALUE_TYPES,
         _validate_required_inputs,
     )
-    from traceroot.eval.types import Score
 
     if output_type not in OUTPUT_TYPES:
         raise ValueError(f"output_type must be one of {OUTPUT_TYPES}, got {output_type!r}")
@@ -169,43 +288,39 @@ def llm_judge(
         raise ValueError(f"direction must be one of {DIRECTIONS}, got {direction!r}")
     if required_inputs is not None:
         required_inputs = _validate_required_inputs(required_inputs)
-
-    def _call(rendered_messages: list[dict[str, str]]) -> str:
-        return (complete or _default_complete)(model, rendered_messages)
-
-    # Self-instrument the model call as an LLM span (nested under the scorer span) so the
-    # judge's LLM interaction shows in the trace without the caller wiring up provider
-    # auto-instrumentation: the rendered messages are the input, the model response the output.
-    @observe(name=f"llm_judge:{name}", type=SpanKind.LLM, metadata={"model": model})
-    def _call_instrumented(rendered_messages: list[dict[str, str]]) -> str:
-        return _call(rendered_messages)
-
-    def judge(ctx: Any) -> Any:
-        rendered = _render_messages(messages, ctx)
-        # If a provider integration is already tracing this model's calls, let IT own the LLM
-        # span (richer: tokens, native semantics) instead of adding our own — otherwise we'd
-        # nest an LLM span inside an LLM span. This only holds for the DEFAULT dispatch: a
-        # user-supplied `complete` is not provider-instrumented, so it must be self-instrumented
-        # (else its call would have no span at all), regardless of the model id.
-        provider_traced = complete is None and _provider_integration_traces(model)
-        invoke = _call if provider_traced else _call_instrumented
-        text = invoke(rendered)
-        return Score(name, _parse_judge_output(text, output_type), comment=(text or "")[:2000])
-
-    judge.__name__ = name
+    # `rubric` is a shorthand for a system instruction that grades the output; `messages` is the full
+    # authored template. Exactly one source of the prompt is required (no empty function needed).
+    if messages is None and rubric is not None:
+        messages = [
+            {"role": "system", "content": rubric},
+            {"role": "user", "content": "{{output}}"},
+        ]
+    if messages is None:
+        raise ValueError("llm_judge requires `messages` or `rubric`")
+    # The judge's declarative config IS its versioned source: hash it deterministically. An explicit
+    # `version` still wins.
+    resolved_version = version or _config_revision(
+        model=model, messages=messages, output_type=output_type, threshold=threshold,
+        direction=direction, value_type=value_type, metadata=metadata,
+    )
     meta = {
-        "name": name,
-        "version": version,
-        "scorer_type": "llm_judge",
-        "model": model,
-        "messages": messages,
-        "output_type": output_type,
-        "threshold": threshold,
-        "description": description,
-        "metadata": metadata,
-        "direction": direction,
-        "value_type": value_type,
-        "required_inputs": required_inputs,
+        k: v
+        for k, v in {
+            "key": key,  # stable cross-language identity (defaults to name via scorer_metadata)
+            "name": name,
+            "version": resolved_version,
+            "scorer_type": "llm_judge",
+            "model": model,
+            "messages": messages,
+            "output_type": output_type,
+            "threshold": threshold,
+            "description": description,
+            "metadata": metadata,
+            "direction": direction,
+            "value_type": value_type,
+            "required_inputs": required_inputs,
+        }.items()
+        if v is not None
     }
-    setattr(judge, _META_ATTR, {k: v for k, v in meta.items() if v is not None})
-    return judge
+    return _build_judge(name=name, model=model, messages=messages, output_type=output_type,
+                        complete=complete, meta=meta, builder=None)
