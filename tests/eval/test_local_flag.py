@@ -236,3 +236,49 @@ class TestDefaultPathUnchanged:
         assert published == ["local-flag"]
         assert [c[0] for c in reported.calls].count("create_run") == 1
         assert result.dataset.dataset_version_id == "dsv_10"
+
+
+class TestLocalSuppressesGlobalAutoInit:
+    """A local run must not let a task/judge ``@observe`` (or auto-instrumentation) lazily bring up
+    an exporting provider and ship case data off-process: the lazy-init seam is suppressed for the
+    whole run and released after. Parity with the TS ``_suppressGlobalAutoInit`` seam. (Only *lazy*
+    bring-up is blocked; a provider the app already initialized is intentionally left alone.)"""
+
+    def test_local_run_suppresses_lazy_auto_init(
+        self, no_credentials, no_exfiltration, monkeypatch
+    ):
+        from traceroot import decorators
+
+        brought_up: list[int] = []
+        # get_client() is the lazy bring-up _ensure_initialized() would perform; it must NOT run
+        # while a local eval is in flight.
+        monkeypatch.setattr("traceroot.get_client", lambda: brought_up.append(1))
+
+        seen_suppressed: list[bool] = []
+
+        def task(x):
+            decorators._ensure_initialized()  # what a task-side @observe does first
+            seen_suppressed.append(decorators._is_global_auto_init_suppressed())
+            return x
+
+        evaluate(name="r", data=_dataset(), task=task, scorers=[exact], local=True)
+
+        assert seen_suppressed and all(seen_suppressed)  # suppressed during every case
+        assert brought_up == []  # lazy bring-up never happened
+        assert decorators._is_global_auto_init_suppressed() is False  # released after the run
+
+    def test_reported_run_does_not_suppress(self, credentials, monkeypatch):
+        """The default (reporting) path is unchanged: suppression stays off, lazy init still allowed."""
+        from traceroot import decorators
+
+        monkeypatch.setattr(engine, "_auto_transport", lambda *a, **k: FakeTransport())
+
+        seen_suppressed: list[bool] = []
+
+        def task(x):
+            seen_suppressed.append(decorators._is_global_auto_init_suppressed())
+            return x
+
+        evaluate(name="r", data=_synced_dataset(), task=task, scorers=[exact])
+
+        assert seen_suppressed and not any(seen_suppressed)  # never suppressed on the reported path

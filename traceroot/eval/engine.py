@@ -1044,10 +1044,17 @@ async def _run_async(
 
 def _run(**kwargs: Any) -> EvalRunResult:
     """Synchronous core runner. Always returns a completed EvalRunResult."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_run_async(**kwargs))
-    # A loop is already running in this thread: run to completion in a worker thread.
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(lambda: asyncio.run(_run_async(**kwargs))).result()
+    # A local run suppresses lazy global auto-init for its whole duration, so a task/judge @observe
+    # (or auto-instrumentation) can't bring up an exporting provider and leak case data off-process.
+    # Reported runs are unaffected. Mirrors the TS SDK's _suppressGlobalAutoInit.
+    from traceroot.decorators import _suppress_global_auto_init
+
+    guard = _suppress_global_auto_init() if kwargs.get("local") else contextlib.nullcontext()
+    with guard:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_run_async(**kwargs))
+        # A loop is already running in this thread: run to completion in a worker thread.
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(lambda: asyncio.run(_run_async(**kwargs))).result()
