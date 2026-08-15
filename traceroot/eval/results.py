@@ -404,7 +404,9 @@ class EvalRunResult:
             active.record_scores(run, item.case_id, item.scores)
         # Re-declare the emitted-metric ownership captured at run time, so a re-upload's finish_run
         # carries the same manifest the original run did (None for a run without it).
-        self.upload_state = active.finish_run(run, status=None, emitted_metrics=self.emitted_metrics)
+        self.upload_state = active.finish_run(
+            run, status=None, emitted_metrics=self.emitted_metrics
+        )
         # Keep the existing server run id if this transport doesn't expose one (don't erase it).
         self.run_id = getattr(active, "run_id", None) or self.run_id
         return self

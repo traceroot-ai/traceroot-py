@@ -33,7 +33,7 @@ class DatasetConflictError(Exception):
         self.current_version_id = current_version_id
 
 
-class DatasetPublishAborted(RuntimeError):
+class DatasetPublishAborted(RuntimeError):  # noqa: N818 -- public API name (kept for the SDK surface)
     """Raised when publishing a new version to an ALREADY-EXISTING dataset is declined at the
     confirmation step (the push is a no-op: no version was created)."""
 
@@ -140,11 +140,16 @@ class FakeDatasetSync:
         # In-memory sync has no remote existence to double-check; on_existing is accepted for
         # interface parity and only consulted when a prior version already exists here.
         s = self._state_for(snapshot.dataset_id)
-        if s["version_id"] is not None and on_existing is not None:
-            if not on_existing({"name": snapshot.name, "current_dataset_version_id": s["version_id"]}):
-                raise DatasetPublishAborted(
-                    f"publish to existing dataset {snapshot.name!r} declined; no new version created."
-                )
+        if (
+            s["version_id"] is not None
+            and on_existing is not None
+            and not on_existing(
+                {"name": snapshot.name, "current_dataset_version_id": s["version_id"]}
+            )
+        ):
+            raise DatasetPublishAborted(
+                f"publish to existing dataset {snapshot.name!r} declined; no new version created."
+            )
         self._last_dataset_id = snapshot.dataset_id
         # Optimistic concurrency: base must match this dataset's current version.
         if s["version_id"] is not None and base_version_id != s["version_id"]:
@@ -192,9 +197,7 @@ class PlatformDatasetSync:
         everything but a 404 propagates.
         """
         try:
-            meta = self._request(
-                "GET", f"/api/v1/public/datasets/{quote(dataset_id, safe='')}"
-            )
+            meta = self._request("GET", f"/api/v1/public/datasets/{quote(dataset_id, safe='')}")
         except RuntimeError as exc:
             if " HTTP 404:" in str(exc):
                 return None

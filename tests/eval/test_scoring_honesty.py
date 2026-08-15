@@ -25,7 +25,6 @@ def test_non_finite_score_does_not_poison_the_summary_mean():
     # A non-finite score is `errored` on the wire, but the LOCAL aggregate must agree: a NaN
     # folded into the mean makes run.json contain a bare `NaN` (invalid per the JSON spec — strict
     # parsers reject it) and disagrees with .summary() and the platform. It must be excluded.
-    import math
 
     ds = Dataset(name="nan-agg")
     ds.upsert(EvalCase(input=1, id="c0", expected=1))
@@ -43,7 +42,8 @@ def test_non_finite_score_does_not_poison_the_summary_mean():
     def _reject(token):
         raise AssertionError(f"artifact has a bare {token} token (invalid JSON)")
 
-    json.loads(open(path).read(), parse_constant=_reject)
+    with open(path) as fh:
+        json.loads(fh.read(), parse_constant=_reject)
 
 
 def test_aggregate_excludes_non_finite_but_keeps_finite_values():

@@ -220,7 +220,8 @@ def _config_revision(**config: Any) -> str:
 
 def _render_vars(messages: list[dict[str, str]], variables: dict[str, str]) -> list[dict[str, str]]:
     """Render {{VAR}} placeholders from an explicit variable map; unknown placeholders are left."""
-    def sub(mo: "re.Match[str]") -> str:
+
+    def sub(mo: re.Match[str]) -> str:
         return variables.get(mo.group(1), mo.group(0))
 
     return [
@@ -229,7 +230,9 @@ def _render_vars(messages: list[dict[str, str]], variables: dict[str, str]) -> l
     ]
 
 
-def _render_built(messages: list[dict[str, str]], built: Any, ctx: Any, name: str) -> list[dict[str, str]]:
+def _render_built(
+    messages: list[dict[str, str]], built: Any, ctx: Any, name: str
+) -> list[dict[str, str]]:
     """Render a dynamic judge from its builder's return value. A DICT is a template-variable map
     ({{VAR}} filled from it, with input/output/expected as fallbacks); a LIST is dynamic messages
     (used as-is, with {{input/output/expected}} still rendered). Anything else is an actionable
@@ -254,8 +257,14 @@ class _JudgeScorer:
     function (``@Scorer.llm_judge(...)``) it returns a DYNAMIC judge that builds its prompt per case.
     Its metadata (config + version=config-hash) is the reported, hashable definition."""
 
-    def __init__(self, *, run: Callable[[Any], Any], meta: dict, name: str,
-                 make_dynamic: Callable[[Callable], "_JudgeScorer"] | None) -> None:
+    def __init__(
+        self,
+        *,
+        run: Callable[[Any], Any],
+        meta: dict,
+        name: str,
+        make_dynamic: Callable[[Callable], _JudgeScorer] | None,
+    ) -> None:
         from traceroot.eval.scorers import _META_ATTR
 
         self._run = run
@@ -273,8 +282,16 @@ class _JudgeScorer:
         return self._run(arg)
 
 
-def _build_judge(*, name: str, model: str, messages: list[dict[str, str]], output_type: str,
-                 complete: Callable | None, meta: dict, builder: Callable | None) -> _JudgeScorer:
+def _build_judge(
+    *,
+    name: str,
+    model: str,
+    messages: list[dict[str, str]],
+    output_type: str,
+    complete: Callable | None,
+    meta: dict,
+    builder: Callable | None,
+) -> _JudgeScorer:
     """Construct a (static or dynamic) judge callable that renders the prompt, invokes the model,
     parses the score, and traces the call. `builder` (dynamic) produces template variables or
     messages per case; None (static) renders the authored messages from input/output/expected."""
@@ -329,11 +346,19 @@ def _build_judge(*, name: str, model: str, messages: list[dict[str, str]], outpu
         return Score(name, _parse_judge_output(text, output_type), comment=(text or "")[:2000])
 
     def make_dynamic(b: Callable) -> _JudgeScorer:
-        return _build_judge(name=name, model=model, messages=messages, output_type=output_type,
-                            complete=complete, meta=meta, builder=b)
+        return _build_judge(
+            name=name,
+            model=model,
+            messages=messages,
+            output_type=output_type,
+            complete=complete,
+            meta=meta,
+            builder=b,
+        )
 
-    return _JudgeScorer(run=run, meta=meta, name=name,
-                        make_dynamic=None if builder is not None else make_dynamic)
+    return _JudgeScorer(
+        run=run, meta=meta, name=name, make_dynamic=None if builder is not None else make_dynamic
+    )
 
 
 def llm_judge(
@@ -390,8 +415,13 @@ def llm_judge(
     # The judge's declarative config IS its versioned source: hash it deterministically. An explicit
     # `version` still wins.
     resolved_version = version or _config_revision(
-        model=model, messages=messages, output_type=output_type, threshold=threshold,
-        direction=direction, value_type=value_type, metadata=metadata,
+        model=model,
+        messages=messages,
+        output_type=output_type,
+        threshold=threshold,
+        direction=direction,
+        value_type=value_type,
+        metadata=metadata,
     )
     meta = {
         k: v
@@ -412,5 +442,12 @@ def llm_judge(
         }.items()
         if v is not None
     }
-    return _build_judge(name=name, model=model, messages=messages, output_type=output_type,
-                        complete=complete, meta=meta, builder=None)
+    return _build_judge(
+        name=name,
+        model=model,
+        messages=messages,
+        output_type=output_type,
+        complete=complete,
+        meta=meta,
+        builder=None,
+    )

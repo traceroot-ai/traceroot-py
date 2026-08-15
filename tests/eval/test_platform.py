@@ -197,8 +197,13 @@ class TestPlatformTransport:
 
         t = RecordingTransport("ds_1", api_key="tr-x", host_url="https://h")
         t.scorer_specs = [
-            {"name": "grade", "version": "v1", "threshold": 0.2,
-             "direction": "lower_is_better", "value_type": "numeric"}
+            {
+                "name": "grade",
+                "version": "v1",
+                "threshold": 0.2,
+                "direction": "lower_is_better",
+                "value_type": "numeric",
+            }
         ]
         t.create_run("r", "d", None)
         item = EvalItemResult("tc0", "i", "o", "e", [Score("quality", 0.3)], {}, None, "t")
@@ -216,21 +221,31 @@ class TestPlatformTransport:
 
         t = RecordingTransport("ds_1", api_key="tr-x", host_url="https://h")
         t.scorer_specs = [
-            {"name": "accuracy", "version": "v1", "threshold": 1.0,
-             "direction": "higher_is_better", "value_type": "numeric"},
+            {
+                "name": "accuracy",
+                "version": "v1",
+                "threshold": 1.0,
+                "direction": "higher_is_better",
+                "value_type": "numeric",
+            },
             {"name": "is_billing", "version": "v1", "value_type": "boolean"},
             {"name": "route", "version": "v1", "value_type": "categorical"},
         ]
         t.create_run("r", "d", None)
         item = EvalItemResult(
-            "tc0", "i", "o", "e",
+            "tc0",
+            "i",
+            "o",
+            "e",
             [
-                Score("accuracy", 1.0),      # 1.0 >= 1.0 -> passed True
-                Score("is_billing", True),   # boolean true -> passed True
-                Score("route", "billing"),   # categorical -> no pass/fail -> omitted
-                Score("mystery", 0.5),        # numeric, matches no declared scorer -> omitted
+                Score("accuracy", 1.0),  # 1.0 >= 1.0 -> passed True
+                Score("is_billing", True),  # boolean true -> passed True
+                Score("route", "billing"),  # categorical -> no pass/fail -> omitted
+                Score("mystery", 0.5),  # numeric, matches no declared scorer -> omitted
             ],
-            {}, None, "t",
+            {},
+            None,
+            "t",
         )
         t.record_item_result(None, item)
         by_name = {s["scorer_name"]: s for s in t.requests[-1][2]["scores"]}
@@ -247,14 +262,17 @@ class TestPlatformTransport:
 
         t = RecordingTransport("ds_1", api_key="tr-x", host_url="https://h")
         t.scorer_specs = [
-            {"name": "latency_ms", "version": "v1", "threshold": 200.0,
-             "direction": "lower_is_better", "value_type": "numeric"}
+            {
+                "name": "latency_ms",
+                "version": "v1",
+                "threshold": 200.0,
+                "direction": "lower_is_better",
+                "value_type": "numeric",
+            }
         ]
         t.create_run("r", "d", None)
         for value, expected in ((200.0, True), (200.1, False), (199.9, True)):
-            item = EvalItemResult(
-                "tc0", "i", "o", "e", [Score("latency_ms", value)], {}, None, "t"
-            )
+            item = EvalItemResult("tc0", "i", "o", "e", [Score("latency_ms", value)], {}, None, "t")
             t.record_item_result(None, item)
             assert t.requests[-1][2]["scores"][0]["passed"] is expected, value
 
@@ -430,7 +448,11 @@ class TestDatasetLifecycleIntegration:
                 return t
 
         def http_json(method, url, api_key, body=None):
-            if method == "GET" and "/api/v1/public/datasets/" in url and not url.endswith("/versions"):
+            if (
+                method == "GET"
+                and "/api/v1/public/datasets/" in url
+                and not url.endswith("/versions")
+            ):
                 # Existence double-check: 404 for a not-yet-created dataset, else its current version.
                 ds_id = url.rsplit("/datasets/", 1)[1]
                 cur = store["current"].get(ds_id)

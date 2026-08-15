@@ -24,8 +24,8 @@ def test_scorer_key_is_stable_across_languages():
     # Stable SEMANTIC identity — identical to the value the TS fixture asserts.
     assert md["key"] == FIX["scorer_key"]
     # Provenance differs from TS and is NOT the identity:
-    assert md["name"] == FIX["python"]["fn_name"]        # function-name spelling (snake_case)
-    assert md["language"] == FIX["python"]["language"]   # SDK language = python
+    assert md["name"] == FIX["python"]["fn_name"]  # function-name spelling (snake_case)
+    assert md["language"] == FIX["python"]["language"]  # SDK language = python
     assert md["source"] and "def covers_both_cities" in md["source"]
 
 
@@ -34,7 +34,9 @@ def test_key_defaults_to_definition_name_when_unset():
         return 1.0
 
     md = scorer_metadata(scorer(fresh_scorer, threshold=1.0))
-    assert md["key"] == "fresh_scorer"  # no explicit key -> the definition name (diverges by language)
+    assert (
+        md["key"] == "fresh_scorer"
+    )  # no explicit key -> the definition name (diverges by language)
 
 
 # Content-based case ids and the content revision are byte-identical across Python/TypeScript;

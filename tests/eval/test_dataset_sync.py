@@ -150,7 +150,12 @@ class TestRunUpload:
         import traceroot.eval.platform as platform
 
         specs = [
-            {"name": "acc", "value_type": "numeric", "direction": "higher_is_better", "threshold": 0.8}
+            {
+                "name": "acc",
+                "value_type": "numeric",
+                "direction": "higher_is_better",
+                "threshold": 0.8,
+            }
         ]
         captured: dict = {}
 
@@ -194,7 +199,9 @@ class TestRunUpload:
         run.save(str(path))
         assert EvalRunResult.load(str(path)).emitted_metrics == {"acc": ["acc", "acc_detail"]}
 
-        transport = _StubPlatform("ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h")
+        transport = _StubPlatform(
+            "ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h"
+        )
         captured: dict = {}
         orig = transport.finish_run
 
@@ -273,7 +280,9 @@ class TestExistingDatasetConfirmation:
             return True
 
         snap = self._snap()
-        sync = self._sync(exists=True, published_rev=snap.revision)  # content matches current version
+        sync = self._sync(
+            exists=True, published_rev=snap.revision
+        )  # content matches current version
         res = sync.push_dataset(snap, None, on_existing=confirm)
         assert res.dataset_version_id == "dsv_9"  # reuses the current version
         assert seen["called"] is False  # unchanged -> never prompts
@@ -381,7 +390,9 @@ class TestExistingDatasetConfirmation:
         from traceroot.eval.dataset_sync import _confirm_new_version
 
         prompts = self._interactive(monkeypatch, typed)
-        assert _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is accepted
+        assert (
+            _confirm_new_version({"name": "d", "current_dataset_version_id": "dsv_9"}) is accepted
+        )
         assert len(prompts) == 1 and "[y/N]" in prompts[0]  # the prompt was actually shown
 
     def test_assume_yes_publishes_without_ever_prompting(self, monkeypatch):
@@ -425,9 +436,9 @@ class TestExistingDatasetConfirmation:
 def test_evaluate_auto_syncs_a_local_dataset(monkeypatch):
     """evaluate() provisions a locally-authored Dataset automatically (no manual push/ensure_synced):
     when it has no server version and credentials resolve, it pushes and attaches the version."""
-    from traceroot.eval import Dataset, evaluate
-    import traceroot.eval.platform as platform
     import traceroot.eval.dataset_sync as ds
+    import traceroot.eval.platform as platform
+    from traceroot.eval import Dataset, evaluate
 
     monkeypatch.setattr(platform, "_resolve_credentials", lambda a, b: ("k", "https://h"))
     pushed = {"n": 0}

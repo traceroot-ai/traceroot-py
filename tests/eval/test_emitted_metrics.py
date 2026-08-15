@@ -46,18 +46,27 @@ def _complete(requests):
 
 def test_completion_carries_emitted_metric_ownership():
     t = _Capture("ds_1", api_key="tr-x", host_url="https://h", dataset_version_id="v1")
-    evaluate(name="r", dataset=_ds(), task=lambda x: "out", scorers=[grade, length],
-             report_to=t)
+    evaluate(name="r", dataset=_ds(), task=lambda x: "out", scorers=[grade, length], report_to=t)
     by = {s["name"]: s for s in _complete(t.requests)["scorers"]}
     # Definition 'grade' declares it emits metric 'quality' with grade's OWN policy -- the platform
     # can now key quality's threshold/direction on the emitted name, not the definition name.
     assert by["grade"]["emitted_metrics"] == [
-        {"name": "quality", "value_type": "numeric", "direction": "lower_is_better", "threshold": 0.62}
+        {
+            "name": "quality",
+            "value_type": "numeric",
+            "direction": "lower_is_better",
+            "threshold": 0.62,
+        }
     ]
     # Function identity stays separate from metric identity.
     assert by["grade"]["name"] == "grade"
     assert by["length"]["emitted_metrics"] == [
-        {"name": "length", "value_type": "numeric", "direction": "higher_is_better", "threshold": 0.0}
+        {
+            "name": "length",
+            "value_type": "numeric",
+            "direction": "higher_is_better",
+            "threshold": 0.0,
+        }
     ]
 
 
@@ -68,5 +77,10 @@ def test_single_scorer_name_divergent_metric_manifest():
     evaluate(name="r", dataset=_ds(), task=lambda x: "out", scorers=[grade], report_to=t)
     by = {s["name"]: s for s in _complete(t.requests)["scorers"]}
     assert by["grade"]["emitted_metrics"] == [
-        {"name": "quality", "value_type": "numeric", "direction": "lower_is_better", "threshold": 0.62}
+        {
+            "name": "quality",
+            "value_type": "numeric",
+            "direction": "lower_is_better",
+            "threshold": 0.62,
+        }
     ]

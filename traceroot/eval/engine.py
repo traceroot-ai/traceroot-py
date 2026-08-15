@@ -275,7 +275,7 @@ _PLAIN_FIELDS = ("input", "output", "expected", "metadata")
 def _scorer_target(scorer: Any) -> Any:
     if inspect.isfunction(scorer) or inspect.ismethod(scorer) or inspect.isbuiltin(scorer):
         return scorer
-    return getattr(scorer, "__call__", scorer)
+    return scorer.__call__ if callable(scorer) else scorer
 
 
 def _scorer_call_plan(scorer: Any) -> tuple[str, tuple[str, ...]]:
@@ -322,12 +322,16 @@ def _scorer_call_plan(scorer: Any) -> tuple[str, tuple[str, ...]]:
     return ("ctx", ())
 
 
-def _bind_scorer_args(scorer: Any, ctx: "ScorerContext") -> tuple[tuple, dict]:
+def _bind_scorer_args(scorer: Any, ctx: ScorerContext) -> tuple[tuple, dict]:
     """(args, kwargs) to invoke a scorer for one case, per its call plan (see _scorer_call_plan)."""
     kind, fields = _scorer_call_plan(scorer)
     if kind == "plain":
-        by = {"input": ctx.input, "output": ctx.output, "expected": ctx.expected,
-              "metadata": ctx.metadata}
+        by = {
+            "input": ctx.input,
+            "output": ctx.output,
+            "expected": ctx.expected,
+            "metadata": ctx.metadata,
+        }
         return ((), {f: by[f] for f in fields})
     return ((ctx,), {})
 
@@ -526,9 +530,7 @@ async def _run_case(
                             )
                             scores.extend(produced)
                             if emitted_ownership is not None:
-                                emitted_ownership[name].update(
-                                    s.name for s in produced if s.name
-                                )
+                                emitted_ownership[name].update(s.name for s in produced if s.name)
                             _record_scorer_span(scorer_span, produced)
                             if produced:  # span.output = the score value(s) + explanation
                                 set_span_attribute(
@@ -542,9 +544,7 @@ async def _run_case(
                             # whole case below.
                             case_timeout = exc
                             scorer_span.set_status(Status(StatusCode.ERROR, str(exc)))
-                            scorer_span.set_attribute(
-                                SpanAttributes.EVAL_ERROR, _fmt_error(exc)
-                            )
+                            scorer_span.set_attribute(SpanAttributes.EVAL_ERROR, _fmt_error(exc))
                             set_span_attribute(
                                 scorer_span, SpanAttributes.SPAN_OUTPUT, _fmt_error(exc)
                             )
@@ -1000,9 +1000,7 @@ async def _run_async(
             )
         else:
             if dropped_results and isinstance(upload, UploadState):
-                upload = dataclasses.replace(
-                    upload, failed_result_count=len(dropped_results)
-                )
+                upload = dataclasses.replace(upload, failed_result_count=len(dropped_results))
 
     result = EvalRunResult(
         name=name,

@@ -463,14 +463,10 @@ class TestLlmJudgeTokenCounts:
         user-supplied complete has no usage to report by construction."""
         from traceroot.eval import judge as judge_mod
 
-        monkeypatch.setattr(
-            judge_mod, "_default_complete", lambda model, messages: ("0.8", usage)
-        )
+        monkeypatch.setattr(judge_mod, "_default_complete", lambda model, messages: ("0.8", usage))
 
     def _run(self, judge, memory_exporter):
-        result = evaluate(
-            name="r", data=_ds(1), task=echo, scorers=[judge], report_to=_reported()
-        )
+        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[judge], report_to=_reported())
         return result, _by_name(memory_exporter.get_finished_spans())
 
     def test_judge_span_carries_the_provider_token_counts(self, memory_exporter, monkeypatch):
@@ -507,9 +503,7 @@ class TestLlmJudgeTokenCounts:
 
     def test_custom_complete_records_no_token_attrs(self, memory_exporter):
         # ``complete=`` returns text only -- there are no tokens to report, so none are invented.
-        result, by = self._run(
-            self._judge(complete=lambda model, messages: "0.8"), memory_exporter
-        )
+        result, by = self._run(self._judge(complete=lambda model, messages: "0.8"), memory_exporter)
 
         keys = set(by["llm_judge:conciseness"].attributes or {})
         assert not any(k.startswith("llm.token_count") for k in keys), keys

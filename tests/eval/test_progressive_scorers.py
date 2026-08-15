@@ -5,7 +5,7 @@ existing single-ScorerContext form. Returns may be a scalar, a {name,value} obje
 map, a Score, a Score[], or None. Everything normalizes to the same internal Score list.
 """
 
-from traceroot.eval import Dataset, Score, evaluate
+from traceroot.eval import Dataset, evaluate
 from traceroot.eval.transport import FakeTransport
 
 
@@ -17,7 +17,10 @@ def _ds():
 
 def _run(scorers):
     return evaluate(
-        name="r", dataset=_ds(), task=lambda x: "hi", scorers=scorers,
+        name="r",
+        dataset=_ds(),
+        task=lambda x: "hi",
+        scorers=scorers,
         transport=FakeTransport(),
     )
 
@@ -28,6 +31,7 @@ def _scores(run):
 
 def test_plain_four_arg_function_scorer():
     """An ordinary function (input, output, expected=None, metadata=None) works as a scorer."""
+
     def accuracy(input, output, expected=None, metadata=None):
         return 1.0 if output == expected else 0.0
 
@@ -44,6 +48,7 @@ def test_plain_two_arg_function_scorer():
 
 def test_backward_compatible_single_ctx_scorer():
     """The existing single-ScorerContext form still works (arity 1 == ctx)."""
+
     def by_ctx(ctx):
         return 1.0 if ctx.output == ctx.expected else 0.0
 
@@ -52,6 +57,7 @@ def test_backward_compatible_single_ctx_scorer():
 
 def test_metric_map_return():
     """A dict with no 'name' key is a metric->value map yielding one Score per entry."""
+
     def multi(input, output):
         return {"len_ok": len(output) > 0, "starts_h": output.startswith("h")}
 
@@ -60,6 +66,7 @@ def test_metric_map_return():
 
 def test_named_object_return_still_single_score():
     """A dict WITH a 'name' key stays a single named Score (unchanged)."""
+
     def one(input, output):
         return {"name": "quality", "value": 0.7}
 

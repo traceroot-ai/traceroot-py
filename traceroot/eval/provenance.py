@@ -26,9 +26,7 @@ from typing import Any
 # (env flag that marks the provider, provider name, env var holding the build/run id)
 # Only GitHub Actions is parsed as a named provider (it also feeds git context); every other
 # CI is caught by the generic `env["CI"]` fallback in _ci_block below.
-_CI_PROVIDERS = (
-    ("GITHUB_ACTIONS", "github", "GITHUB_RUN_ID"),
-)
+_CI_PROVIDERS = (("GITHUB_ACTIONS", "github", "GITHUB_RUN_ID"),)
 
 
 def _resolved_git(env: dict[str, str]) -> tuple[str | None, str | None]:

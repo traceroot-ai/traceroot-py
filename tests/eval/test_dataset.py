@@ -110,7 +110,9 @@ class TestContentBasedCaseIds:
         b.add(input={"q": "b"})
         after = {c.input["q"]: c.id for c in b.cases()}
 
-        assert after["a"] == base["a"]  # unchanged despite z inserted first (positional would shift)
+        assert (
+            after["a"] == base["a"]
+        )  # unchanged despite z inserted first (positional would shift)
         assert after["b"] == base["b"]
 
     def test_reorder_yields_same_revision(self):

@@ -35,9 +35,11 @@ def test_scorer_code_adapter_over_callable():
 # ── Scorer.llm_judge — static (no function, rubric only) ──────────────────────
 def test_static_judge_runs_and_hashes_config():
     judge = Scorer.llm_judge(
-        name="no_conclusion", model=MODEL,
+        name="no_conclusion",
+        model=MODEL,
         rubric="Return 1 if the answer has no conclusion, otherwise 0.",
-        threshold=1.0, direction="higher_is_better",
+        threshold=1.0,
+        direction="higher_is_better",
         complete=lambda model, messages: "1.0",  # deterministic, offline
     )
     md = scorer_metadata(judge)
@@ -48,7 +50,9 @@ def test_static_judge_runs_and_hashes_config():
 
 
 def test_static_judge_config_hash_is_deterministic():
-    mk = lambda: Scorer.llm_judge(name="j", model=MODEL, rubric="Grade it 0..1.", threshold=1.0)
+    def mk():
+        return Scorer.llm_judge(name="j", model=MODEL, rubric="Grade it 0..1.", threshold=1.0)
+
     assert scorer_metadata(mk())["version"] == scorer_metadata(mk())["version"]
 
 
@@ -87,8 +91,10 @@ def test_dynamic_judge_builder_variable_map():
     seen = {}
 
     @Scorer.llm_judge(
-        name="nc", model=MODEL,
-        rubric="Evaluate {{ANSWER}} against {{USER_REQUEST}}.", threshold=1.0,
+        name="nc",
+        model=MODEL,
+        rubric="Evaluate {{ANSWER}} against {{USER_REQUEST}}.",
+        threshold=1.0,
         complete=lambda model, messages: (seen.update(prompt=messages), "1")[1],
     )
     def nc(input, output, expected=None):
@@ -103,8 +109,13 @@ def test_dynamic_judge_builder_variable_map():
 def test_dynamic_judge_builder_messages_list():
     seen = {}
 
-    @Scorer.llm_judge(name="nc", model=MODEL, rubric="unused", threshold=1.0,
-                      complete=lambda model, messages: (seen.update(p=messages), "0")[1])
+    @Scorer.llm_judge(
+        name="nc",
+        model=MODEL,
+        rubric="unused",
+        threshold=1.0,
+        complete=lambda model, messages: (seen.update(p=messages), "0")[1],
+    )
     def nc(input, output, expected=None):
         return [{"role": "user", "content": f"Judge: {output}"}]
 
@@ -113,8 +124,9 @@ def test_dynamic_judge_builder_messages_list():
 
 
 def test_dynamic_judge_unsupported_builder_return_is_actionable_error():
-    @Scorer.llm_judge(name="nc", model=MODEL, rubric="r", threshold=1.0,
-                      complete=lambda m, msgs: "1")
+    @Scorer.llm_judge(
+        name="nc", model=MODEL, rubric="r", threshold=1.0, complete=lambda m, msgs: "1"
+    )
     def nc(input, output, expected=None):
         return 0.5  # a number is NOT a valid builder return (that's the judge's job)
 
@@ -131,16 +143,23 @@ def test_old_scorer_alias_is_scorer_code():
 
 
 def test_old_llm_judge_alias_still_works():
-    j = llm_judge(name="j", model=MODEL, messages=[{"role": "user", "content": "{{output}}"}],
-                  threshold=1.0, complete=lambda m, msgs: "1")
+    j = llm_judge(
+        name="j",
+        model=MODEL,
+        messages=[{"role": "user", "content": "{{output}}"}],
+        threshold=1.0,
+        complete=lambda m, msgs: "1",
+    )
     assert scorer_metadata(j)["scorer_type"] == "llm_judge"
     assert j(_ctx("hello")).value == 1.0
 
 
 def test_static_judge_runs_in_evaluate():
     ds = [{"input": {"query": "q"}, "id": "c0"}]
-    judge = Scorer.llm_judge(name="nc", model=MODEL, rubric="Grade 0..1.", threshold=1.0,
-                             complete=lambda m, msgs: "1")
-    run = evaluate(name="r", dataset=ds, task=lambda x: "ans", scorers=[judge],
-                   transport=FakeTransport())
+    judge = Scorer.llm_judge(
+        name="nc", model=MODEL, rubric="Grade 0..1.", threshold=1.0, complete=lambda m, msgs: "1"
+    )
+    run = evaluate(
+        name="r", dataset=ds, task=lambda x: "ans", scorers=[judge], transport=FakeTransport()
+    )
     assert run.item_results[0].scores[0].value == 1.0

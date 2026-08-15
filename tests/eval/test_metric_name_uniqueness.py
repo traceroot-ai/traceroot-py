@@ -60,8 +60,7 @@ def test_duplicate_scorer_names_raise_before_the_run_starts():
         return "out"
 
     with pytest.raises(ValueError) as exc:
-        evaluate(name="r", dataset=_ds(), task=task, scorers=[exact, fuzzy],
-                 report_to=_transport())
+        evaluate(name="r", dataset=_ds(), task=task, scorers=[exact, fuzzy], report_to=_transport())
     msg = str(exc.value)
     assert "'accuracy'" in msg
     assert "metric names must be unique within a run" in msg
@@ -82,8 +81,13 @@ def test_duplicate_undecorated_function_names_raise():
         return relevance
 
     with pytest.raises(ValueError, match="metric names must be unique within a run"):
-        evaluate(name="r", dataset=_ds(), task=lambda x: "out", scorers=[make(), make()],
-                 report_to=_transport())
+        evaluate(
+            name="r",
+            dataset=_ds(),
+            task=lambda x: "out",
+            scorers=[make(), make()],
+            report_to=_transport(),
+        )
 
 
 def test_error_lists_every_duplicated_name():
@@ -104,8 +108,13 @@ def test_error_lists_every_duplicated_name():
         return 1.0
 
     with pytest.raises(ValueError) as exc:
-        evaluate(name="r", dataset=_ds(), task=lambda x: "out",
-                 scorers=[one, two, three, four], report_to=_transport())
+        evaluate(
+            name="r",
+            dataset=_ds(),
+            task=lambda x: "out",
+            scorers=[one, two, three, four],
+            report_to=_transport(),
+        )
     assert "'a', 'b'" in str(exc.value)
 
 
@@ -125,8 +134,9 @@ def test_metric_map_collision_warns_once_and_the_run_still_completes():
 
     t = _transport()
     with pytest.warns(UserWarning) as rec:
-        result = evaluate(name="r", dataset=_ds(), task=lambda x: "out",
-                          scorers=[rubric, quality], report_to=t)
+        result = evaluate(
+            name="r", dataset=_ds(), task=lambda x: "out", scorers=[rubric, quality], report_to=t
+        )
     collisions = [w for w in rec if "metric name" in str(w.message)]
     assert len(collisions) == 1
     msg = str(collisions[0].message)
@@ -152,8 +162,9 @@ def test_unique_names_produce_no_error_and_no_warning(recwarn):
         return Score("latency", 0.2)
 
     t = _transport()
-    result = evaluate(name="r", dataset=_ds(), task=lambda x: "out",
-                      scorers=[accuracy, latency], report_to=t)
+    result = evaluate(
+        name="r", dataset=_ds(), task=lambda x: "out", scorers=[accuracy, latency], report_to=t
+    )
     assert result.case_count == 1
     assert _complete(t.requests)["status"] == "completed"
     assert [str(w.message) for w in recwarn if "metric name" in str(w.message)] == []
@@ -165,8 +176,7 @@ def test_single_metric_map_scorer_with_internally_unique_names_does_not_warn(rec
         return {"quality": 0.8, "fluency": 0.9}
 
     t = _transport()
-    result = evaluate(name="r", dataset=_ds(), task=lambda x: "out", scorers=[rubric],
-                      report_to=t)
+    result = evaluate(name="r", dataset=_ds(), task=lambda x: "out", scorers=[rubric], report_to=t)
     assert result.case_count == 1
     assert _complete(t.requests)["status"] == "completed"
     assert [str(w.message) for w in recwarn if "metric name" in str(w.message)] == []

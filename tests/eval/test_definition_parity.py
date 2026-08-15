@@ -28,9 +28,13 @@ def test_code_definition_matches_parity_fixture():
 
 def test_static_judge_definition_matches_parity_fixture():
     j = Scorer.llm_judge(
-        key="nc", name="nc", model="claude-sonnet-5",
+        key="nc",
+        name="nc",
+        model="claude-sonnet-5",
         rubric="Return 1 if the answer has no conclusion, otherwise 0.",
-        output_type="score", threshold=1.0, direction="higher_is_better",
+        output_type="score",
+        threshold=1.0,
+        direction="higher_is_better",
     )
     md = scorer_metadata(j)
     for k, v in FIX["static_judge"].items():
@@ -39,6 +43,7 @@ def test_static_judge_definition_matches_parity_fixture():
 
 def test_plain_callable_captures_source_without_decorator():
     """A plain function passed to evaluate() captures provenance WITHOUT any decorator/wrapper."""
+
     def plain(input, output, expected=None):
         return 1.0
 
@@ -49,14 +54,19 @@ def test_plain_callable_captures_source_without_decorator():
 
 
 def test_dynamic_judge_captures_config_and_builder_provenance():
-    @Scorer.llm_judge(name="nc", model="claude-sonnet-5", rubric="Evaluate {{X}}.",
-                      threshold=1.0, complete=lambda m, msgs: "1")
+    @Scorer.llm_judge(
+        name="nc",
+        model="claude-sonnet-5",
+        rubric="Evaluate {{X}}.",
+        threshold=1.0,
+        complete=lambda m, msgs: "1",
+    )
     def nc(input, output, expected=None):
         return {"X": output}
 
     md = scorer_metadata(nc)
-    assert md["version"].startswith("cfg_")   # declarative config hashed
-    assert "def nc" in md["source"]           # AND the builder callback's provenance captured
+    assert md["version"].startswith("cfg_")  # declarative config hashed
+    assert "def nc" in md["source"]  # AND the builder callback's provenance captured
 
 
 def test_static_judge_needs_no_source_and_no_function():

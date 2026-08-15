@@ -34,17 +34,28 @@ def two_metrics(ctx):
 
 def test_multiple_metrics_does_not_error():
     """Multiple numeric metrics complete and store all scores."""
-    run = evaluate(name="r", dataset=_ds(), task=lambda x: "hi",
-                   scorers=[two_metrics], transport=FakeTransport())
+    run = evaluate(
+        name="r",
+        dataset=_ds(),
+        task=lambda x: "hi",
+        scorers=[two_metrics],
+        transport=FakeTransport(),
+    )
     scores = {s.name: s.value for s in run.item_results[0].scores}
     assert scores == {"accuracy": 1.0, "coverage": 0.5}
 
 
 def test_invents_no_case_level_pass_rate():
     """No case is marked passed/failed at the case level (no invented headline verdict)."""
-    run = evaluate(name="r", dataset=_ds(), task=lambda x: "hi",
-                   scorers=[two_metrics], transport=FakeTransport())
+    run = evaluate(
+        name="r",
+        dataset=_ds(),
+        task=lambda x: "hi",
+        scorers=[two_metrics],
+        transport=FakeTransport(),
+    )
     from traceroot.eval.results import case_status
+
     assert case_status(run.item_results[0]) == "not_scored"
 
 
@@ -59,5 +70,5 @@ def test_numeric_without_threshold_is_scored_but_no_passfail():
     evaluate(name="r", dataset=_ds(), task=lambda x: "hi", scorers=[unbounded], report_to=t)
     results = next(b for _m, p, b in t.requests if p.endswith("/results"))
     (score,) = results["scores"]
-    assert score["numeric_value"] == 0.3          # scored
-    assert "passed" not in score                  # but no fabricated pass/fail
+    assert score["numeric_value"] == 0.3  # scored
+    assert "passed" not in score  # but no fabricated pass/fail
