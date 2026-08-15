@@ -103,12 +103,27 @@ def _normalize_score_like(raw: Any, default_name: str) -> list[Score]:
                 )
         return list(raw)
     if isinstance(raw, dict):
-        if "name" not in raw or "value" not in raw:
-            raise ValueError("scorer dict result must contain 'name' and 'value'")
-        unknown = set(raw) - {"name", "value", "comment", "metadata"}
-        if unknown:
-            raise ValueError(f"scorer dict result has unknown key(s): {sorted(unknown)}")
-        return [Score(**raw)]
+        if "name" in raw or "value" in raw:
+            # Single named Score: {"name", "value", comment?, metadata?}. Presence of EITHER reserved
+            # key means the single-Score shape is intended, so both are required (a {"value": ...}
+            # without a name stays an error, not a metric named "value").
+            if "name" not in raw or "value" not in raw:
+                raise ValueError("scorer dict result must contain 'name' and 'value'")
+            unknown = set(raw) - {"name", "value", "comment", "metadata"}
+            if unknown:
+                raise ValueError(f"scorer dict result has unknown key(s): {sorted(unknown)}")
+            return [Score(**raw)]
+        # Neither 'name' nor 'value' -> a metric->value mapping; one Score per entry, keyed by the
+        # metric name. (A metric literally named "name"/"value" must use the single-Score form.)
+        scores: list[Score] = []
+        for k, v in raw.items():
+            if not isinstance(v, (bool, int, float, str)):
+                raise TypeError(
+                    f"metric-map value for {k!r} must be a scalar (bool/int/float/str), "
+                    f"got {type(v).__name__}"
+                )
+            scores.append(Score(name=str(k), value=v))
+        return scores
     # bool is a subclass of int; str is categorical - all valid scalars.
     if isinstance(raw, (bool, int, float, str)):
         return [Score(name=default_name, value=raw)]
@@ -132,9 +147,12 @@ def _sync_executor(max_workers: int) -> ThreadPoolExecutor:
 
 
 async def _await_or_run(
-    fn: Callable[[Any], Any], arg: Any, executor: ThreadPoolExecutor | None = None
+    fn: Callable[..., Any],
+    args: tuple,
+    kwargs: dict | None = None,
+    executor: ThreadPoolExecutor | None = None,
 ) -> Any:
-    """Call fn(arg) whether it is sync or async.
+    """Call fn(*args, **kwargs) whether it is sync or async.
 
     Coroutine functions — and callable *instances* whose ``__call__`` is async — are awaited on
     the loop. Plain sync callables run in ``executor`` (a bounded per-run thread pool) so that a
@@ -143,17 +161,81 @@ async def _await_or_run(
     is copied into the worker so the OTel span active at the call site still parents any spans the
     sync callable creates.
     """
+    kwargs = kwargs or {}
     if inspect.iscoroutinefunction(fn):
-        return await fn(arg)
+        return await fn(*args, **kwargs)
     loop = asyncio.get_running_loop()
     ctx = contextvars.copy_context()
-    result = await loop.run_in_executor(executor, lambda: ctx.run(fn, arg))
+    result = await loop.run_in_executor(executor, lambda: ctx.run(fn, *args, **kwargs))
     # A callable *instance* whose __call__ is async is NOT a coroutine function, so it ran in the
     # thread and returned an un-awaited coroutine; await it on the loop so the coroutine is never
     # surfaced as the task/scorer output.
     if inspect.isawaitable(result):
         result = await result
     return result
+
+
+_PLAIN_FIELDS = ("input", "output", "expected", "metadata")
+
+
+def _scorer_target(scorer: Any) -> Any:
+    if inspect.isfunction(scorer) or inspect.ismethod(scorer) or inspect.isbuiltin(scorer):
+        return scorer
+    return getattr(scorer, "__call__", scorer)
+
+
+def _scorer_call_plan(scorer: Any) -> tuple[str, tuple[str, ...]]:
+    """Decide how to invoke a scorer, by PARAMETER NAME (never by bare arity, so a closure default
+    like ``def fn(ctx, _cfg=X)`` is not mistaken for a two-arg plain scorer):
+
+      - a parameter named ``input`` or ``output`` -> PLAIN form; called by keyword with the declared
+        subset of (input, output, expected, metadata);
+      - otherwise -> the ScorerContext form ``scorer(ctx)`` (any extra parameters keep their defaults).
+
+    Returns ``("plain", fields)`` or ``("ctx", ())``. Raises an actionable error for a signature that
+    fits neither (e.g. a plain scorer with an undeclared required parameter, or a ctx scorer that
+    requires more than the single context argument). Un-introspectable callables default to ctx."""
+    try:
+        params = list(inspect.signature(_scorer_target(scorer)).parameters.values())
+    except (ValueError, TypeError):
+        return ("ctx", ())
+    pos = [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    names = [p.name for p in pos]
+    has_kwargs = any(p.kind == p.VAR_KEYWORD for p in params)
+    has_varargs = any(p.kind == p.VAR_POSITIONAL for p in params)
+    label = getattr(scorer, "__name__", type(scorer).__name__)
+    if "input" in names or "output" in names:
+        unsupported = [p.name for p in pos if p.default is p.empty and p.name not in _PLAIN_FIELDS]
+        if unsupported and not has_kwargs:
+            raise TypeError(
+                f"scorer {label!r} declares unsupported required parameter(s) {unsupported}; a plain "
+                f"scorer may take only {list(_PLAIN_FIELDS)} (e.g. "
+                f"def scorer(input, output, expected=None, metadata=None))."
+            )
+        return ("plain", tuple(nm for nm in _PLAIN_FIELDS if nm in names))
+    required = [p for p in pos if p.default is p.empty]
+    if len(required) > 1 and not has_varargs:
+        raise TypeError(
+            f"scorer {label!r} has an unsupported signature: {len(required)} required positional "
+            f"parameters. Use `def scorer(ctx)` or "
+            f"`def scorer(input, output, expected=None, metadata=None)`."
+        )
+    if not pos and not has_varargs:
+        raise TypeError(
+            f"scorer {label!r} takes no arguments; a scorer must accept a ScorerContext or "
+            f"(input, output, ...)."
+        )
+    return ("ctx", ())
+
+
+def _bind_scorer_args(scorer: Any, ctx: "ScorerContext") -> tuple[tuple, dict]:
+    """(args, kwargs) to invoke a scorer for one case, per its call plan (see _scorer_call_plan)."""
+    kind, fields = _scorer_call_plan(scorer)
+    if kind == "plain":
+        by = {"input": ctx.input, "output": ctx.output, "expected": ctx.expected,
+              "metadata": ctx.metadata}
+        return ((), {f: by[f] for f in fields})
+    return ((ctx,), {})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -241,6 +323,7 @@ async def _run_case(
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
     executor: ThreadPoolExecutor | None = None,
+    emitted_ownership: dict[str, set[str]] | None = None,
 ) -> EvalItemResult:
     tracer = _eval_tracer()
     async with semaphore:
@@ -286,10 +369,10 @@ async def _run_case(
                 try:
                     if timeout is not None:
                         output = await asyncio.wait_for(
-                            _await_or_run(task, case.input, executor), timeout
+                            _await_or_run(task, (case.input,), executor=executor), timeout
                         )
                     else:
-                        output = await _await_or_run(task, case.input, executor)
+                        output = await _await_or_run(task, (case.input,), executor=executor)
                     set_span_attribute(
                         task_span, SpanAttributes.SPAN_OUTPUT, serialize_value(output)
                     )
@@ -312,6 +395,11 @@ async def _run_case(
                 )
                 for scorer in scorers:
                     name = getattr(scorer, "__name__", scorer.__class__.__name__)
+                    # Record scorer->metric ownership AT THE POINT OF PRODUCTION (never inferred
+                    # afterward by matching names). Seed the definition now so a scorer that errors
+                    # before emitting still appears in the completion manifest with no metrics.
+                    if emitted_ownership is not None:
+                        emitted_ownership.setdefault(name, set())
                     with tracer.start_as_current_span(name) as scorer_span:
                         scorer_span.set_attribute(SpanAttributes.SPAN_TYPE, SpanKind.SCORER)
                         scorer_span.set_attribute(SpanAttributes.EVAL_RUN_NAME, identity.name)
@@ -328,11 +416,16 @@ async def _run_case(
                             scorer_span, SpanAttributes.SPAN_INPUT, serialize_value(scorer_input)
                         )
                         try:
-                            raw = await _await_or_run(scorer, ctx, executor)
+                            s_args, s_kwargs = _bind_scorer_args(scorer, ctx)
+                            raw = await _await_or_run(scorer, s_args, s_kwargs, executor)
                             produced = _stamp_scorer_version(
                                 _normalize_score_like(raw, name), scorer
                             )
                             scores.extend(produced)
+                            if emitted_ownership is not None:
+                                emitted_ownership[name].update(
+                                    s.name for s in produced if s.name
+                                )
                             _record_scorer_span(scorer_span, produced)
                             if produced:  # span.output = the score value(s) + explanation
                                 set_span_attribute(
@@ -428,6 +521,7 @@ def _validate_config(name, task, scorers, max_concurrency) -> None:
     for s in scorers:
         if not callable(s):
             raise TypeError(f"scorer {s!r} is not callable")
+        _scorer_call_plan(s)  # fail fast on an unsupported scorer signature (not a per-case error)
     if max_concurrency < 1:
         raise ValueError("'max_concurrency' must be >= 1")
 
@@ -613,6 +707,9 @@ async def _run_async(
     summary: dict[str, Any] = {}
     resolved_main: str | None = None
     resolve_error: MainScoreError | None = None
+    # definition name -> the metric names it emitted, accumulated across cases (union: a metric
+    # emitted by only some cases still counts). Recorded during execution, sent at completion.
+    emitted_ownership: dict[str, set[str]] = {}
     try:
         item_results = await asyncio.gather(
             *[
@@ -628,6 +725,7 @@ async def _run_async(
                     on_case_start=case_start_hook,
                     on_case_complete=case_complete_hook,
                     executor=sync_executor,
+                    emitted_ownership=emitted_ownership,
                 )
                 for c in cases
             ]
@@ -653,6 +751,7 @@ async def _run_async(
             run_handle,
             status="failed" if resolve_error is not None else None,
             main_score_name=resolved_main,
+            emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
         )
 
     if resolve_error is not None:

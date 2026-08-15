@@ -156,13 +156,14 @@ class PlatformTransport:
         #    function name differs from its emitted Score name can no longer silently zero the run;
         #  - multiple scorers with no explicit main have no headline metric here (the engine
         #    requires an explicit main_score for a reported multi-scorer run).
-        n_scorers = len(self.scorer_names) or (len(self.scorer_specs) if self.scorer_specs else 0)
-        self._main_configured = main_score_name is not None
         # Registration reports main_score_name ONLY when the user configured it. A single
         # scorer's metric is late-bound (resolved from what it actually emits) and reported at
         # completion -- never fabricated from the scorer's function name here.
         self.main_score_name = main_score_name
-        self._name_agnostic_main = (not self._main_configured) and n_scorers == 1
+        # NB: `_name_agnostic_main` is a COMPUTED property (below), never cached here. The engine
+        # injects `scorer_specs` AFTER construction (and callers may build the transport explicitly
+        # with no scorer_names), so a value frozen from the empty constructor would leave a single
+        # scorer unresolved and make every case report not_scored / null main.
         self.dataset_version_id = dataset_version_id
         self.client_run_id = client_run_id
         self.pass_threshold = pass_threshold
@@ -181,6 +182,20 @@ class PlatformTransport:
         self._scorer_errors = 0
         self._main_sum = 0.0  # aggregate of the main-score values for run.mainScore
         self._main_count = 0
+
+    @property
+    def _name_agnostic_main(self) -> bool:
+        """A single scorer resolves its emitted metric name-agnostically (its one numeric/boolean
+        score IS the main metric, even when the fn name differs from the emitted Score name).
+
+        Derived from the CURRENT config on every access -- deliberately NOT cached at __init__ --
+        so it reflects `scorer_specs` the engine injects after construction. An explicit
+        `main_score_name` opts out (the configured metric owns it); zero or multiple scorers have
+        no single headline metric here (a reported multi-scorer run requires an explicit main)."""
+        if self.main_score_name is not None:
+            return False
+        n_scorers = len(self.scorer_names) or (len(self.scorer_specs) if self.scorer_specs else 0)
+        return n_scorers == 1
 
     # --- HTTP seam (overridable in tests) ---
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
@@ -317,11 +332,33 @@ class PlatformTransport:
         # Already sent inside record_item_result (which carries the full item).
         return None
 
+    def _resolved_scorer_manifest(self, emitted: dict[str, list[str]]) -> list[dict]:
+        """The registration scorer refs augmented with the metrics each DEFINITION actually emitted
+        during the run. The platform keys a metric's policy on the EMITTED-metric name, so a
+        definition whose function name differs from its emitted metric (``grade`` -> ``quality``)
+        must declare that ownership here or the platform can't resolve the metric's threshold/
+        direction. Each emitted metric carries the definition's declared policy (a scorer's
+        declaration governs whatever metric it emits). Rebuilt from the SAME refs registration sent,
+        so completion merges by definition name without dropping the definition's detail."""
+        out: list[dict] = []
+        for ref in self._scorer_refs():
+            metrics = emitted.get(ref["name"])
+            if metrics:
+                policy = {
+                    k: ref[k]
+                    for k in ("value_type", "direction", "threshold")
+                    if ref.get(k) is not None
+                }
+                ref = {**ref, "emitted_metrics": [{"name": m, **policy} for m in metrics]}
+            out.append(ref)
+        return out
+
     def finish_run(
         self,
         run: RunHandle,
         status: str | None = None,
         main_score_name: str | None = None,
+        emitted_metrics: dict[str, list[str]] | None = None,
     ) -> UploadState:
         # Pure reporter: the engine owns the ONE main-score resolution and passes the terminal
         # ``status`` (e.g. "failed" on a misconfiguration) and the resolved ``main_score_name``.
@@ -343,6 +380,13 @@ class PlatformTransport:
         # dependency: deploy that before this SDK, or completion 400s on the unknown key).
         if main_score_name is not None:
             body["main_score_name"] = main_score_name
+        # The RESOLVED scorer->emitted-metric manifest, discovered during execution. The platform
+        # merges it (by definition name) into the stored manifest so each emitted metric's policy is
+        # keyed on the metric name for reconciliation, read-back, and comparison. Additive.
+        if emitted_metrics:
+            manifest = self._resolved_scorer_manifest(emitted_metrics)
+            if manifest:
+                body["scorers"] = manifest
         self._request(
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
@@ -377,6 +421,9 @@ class PlatformTransport:
                 entry["string_value"] = str(v)
             if s.comment is not None:
                 entry["explanation"] = s.comment
+            passed = self._score_passed(s)
+            if passed is not None:
+                entry["passed"] = passed
             payload.append(entry)
         # A failing scorer is a score with an error and null value (never 0). Use the scorer's
         # DECLARED version (from the manifest) so an errored versioned scorer isn't misattributed
@@ -393,6 +440,49 @@ class PlatformTransport:
             if spec.get("name") == name:
                 return spec.get("version") or _UNVERSIONED_SCORER
         return _UNVERSIONED_SCORER
+
+    def _score_policy(self, name: str | None) -> tuple[float, str] | None:
+        """(threshold, direction) for ONE emitted metric, or None when it can't be resolved
+        without guessing. A single scorer's declared policy owns whatever metric it emits, even
+        when the function name differs from the emitted Score name (name-agnostic). With multiple
+        scorers the emitted name must match a declared scorer; an unmatched metric returns None so
+        the platform is told 'unknown', never a fabricated pass/fail. Mirrors the OWNING-scorer
+        rule of ``resolve_main_score_policy`` at per-score granularity."""
+        specs = self.scorer_specs or []
+        owner = specs[0] if len(specs) == 1 else next(
+            (s for s in specs if s.get("name") == name), None
+        )
+        if owner is None:
+            return None
+        threshold = owner.get("threshold")
+        direction = owner.get("direction")
+        return (
+            threshold if threshold is not None else _DEFAULT_PASS_THRESHOLD,
+            str(direction) if direction is not None else "higher_is_better",
+        )
+
+    def _score_passed(self, score: Score) -> bool | None:
+        """SDK-computed pass/fail for one emitted metric, derived at serialization time and never
+        stored on the Score. Boolean: true = pass. Numeric: compared against the OWNING scorer's
+        threshold+direction (the same policy that decides the case status, so a single scorer's
+        main score and its per-score `passed` always agree). Categorical values, a 'none'-direction
+        metric, or a numeric metric whose policy can't be resolved have no pass/fail -> None (the
+        SDK does not guess; the platform stores null)."""
+        v = score.value
+        if isinstance(v, bool):
+            return v
+        n = _numeric_score(v)
+        if n is None:
+            return None
+        policy = self._score_policy(score.name)
+        if policy is None:
+            return None
+        threshold, direction = policy
+        if direction == "lower_is_better":
+            return n <= threshold
+        if direction == "none":
+            return None
+        return n >= threshold  # higher_is_better (the default)
 
     def _main_value(self, scores: list[Score]) -> float | None:
         """The run's main-metric value for one case, or None when unresolved.
