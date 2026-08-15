@@ -411,6 +411,13 @@ class TestDatasetLifecycleIntegration:
                 return t
 
         def http_json(method, url, api_key, body=None):
+            if method == "GET" and "/api/v1/public/datasets/" in url and not url.endswith("/versions"):
+                # Existence double-check: 404 for a not-yet-created dataset, else its current version.
+                ds_id = url.rsplit("/datasets/", 1)[1]
+                cur = store["current"].get(ds_id)
+                if cur is None:
+                    raise RuntimeError(f"GET {url} -> HTTP 404: not found")
+                return {"name": ds_id, "current_dataset_version_id": cur}
             if url.endswith("/datasets"):
                 return {}
             if url.endswith("/versions") and method == "POST":
@@ -691,12 +698,15 @@ class TestReportingDefaults:
         assert calls == []
 
     @pytest.mark.no_default_transport
-    def test_inline_dataset_raises_even_with_creds(self, monkeypatch):
-        # A purely local dataset (no dataset_id/version) can't be created server-side, so
-        # there is nothing to report against -> raise even with credentials.
+    def test_inline_list_raises_even_with_creds(self, monkeypatch):
+        # A raw INLINE LIST has no dataset identity to create server-side, so there is nothing to
+        # report against -> raise even with credentials. (A local Dataset OBJECT is auto-synced
+        # instead -- see test_dataset_sync.test_evaluate_auto_syncs_a_local_dataset.)
         calls = self._spy(monkeypatch)
         with pytest.raises(RuntimeError, match="reports to the TraceRoot platform"):
-            self._with_creds(lambda: evaluate(name="r", data=_ds(1), task=echo, scorers=[acc]))
+            self._with_creds(
+                lambda: evaluate(name="r", data=[{"input": {"m": 0}}], task=echo, scorers=[acc])
+            )
         assert calls == []
 
     @pytest.mark.no_default_transport
