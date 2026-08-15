@@ -146,6 +146,26 @@ class TestEvalRunResult:
         assert loaded.upload_state.status == r.upload_state.status
         assert not (tmp_path / "run.json.tmp").exists()  # atomic save leaves no temp file behind
 
+    def test_nonfinite_score_round_trips_as_nonfinite_not_categorical(self, tmp_path):
+        # serialize_value() stringifies NaN/inf to the JSON tokens "NaN"/"Infinity"; on load they
+        # must restore to non-finite FLOATS, not become categorical string scores that would read
+        # as legitimate successful metrics. A scorer's non-finite result stays excluded from the mean.
+        import math
+
+        items = [_item("a", [Score("acc", math.nan)]), _item("b", [Score("acc", 1.0)])]
+        r = EvalRunResult(
+            name="r",
+            item_results=items,
+            score_summary=aggregate_scores(items),
+            upload_state=UploadState(),
+        )
+        p = tmp_path / "run.json"
+        r.save(str(p))
+        loaded = EvalRunResult.load(str(p))
+        v = loaded.item_results[0].scores[0].value
+        assert isinstance(v, float) and math.isnan(v)  # restored to float NaN, not the string "NaN"
+        assert loaded.score_summary["acc"].mean == 1.0  # non-finite excluded; only 1.0 contributes
+
 
 class TestReuploadRegistration:
     """The transport a re-upload builds must register every scorer the run saw — including one

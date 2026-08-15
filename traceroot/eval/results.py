@@ -16,6 +16,17 @@ from typing import Any, Literal
 from traceroot.eval.types import Score
 from traceroot.utils import serialize_value
 
+# ``serialize_value`` stringifies non-finite score values to these JSON tokens on save. Restore
+# them on load so a scorer's non-finite result round-trips AS non-finite (no pass verdict, excluded
+# from the mean) instead of masquerading as a legitimate categorical string score on re-upload.
+_NONFINITE_TOKENS = {"NaN": math.nan, "Infinity": math.inf, "-Infinity": -math.inf}
+
+
+def _restore_score_value(value: Any) -> Any:
+    return (
+        _NONFINITE_TOKENS[value] if isinstance(value, str) and value in _NONFINITE_TOKENS else value
+    )
+
 
 @dataclasses.dataclass
 class EvalItemResult:
@@ -51,7 +62,10 @@ class EvalItemResult:
             input=d.get("input"),
             output=d.get("output"),
             expected=d.get("expected"),
-            scores=[Score(**s) for s in d.get("scores", [])],
+            scores=[
+                Score(**{**s, "value": _restore_score_value(s.get("value"))})
+                for s in d.get("scores", [])
+            ],
             scorer_errors=d.get("scorer_errors", {}),
             error=d.get("error"),
             trace_id=d.get("trace_id"),
@@ -298,7 +312,7 @@ class EvalRunResult:
             scores = [
                 Score(
                     name=s["scorer_name"],
-                    value=s["value"],
+                    value=_restore_score_value(s["value"]),
                     comment=s.get("explanation"),
                     version=s.get("scorer_version"),
                 )
