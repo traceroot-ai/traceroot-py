@@ -663,7 +663,9 @@ def _recovered_key(name: str, dataset_id: str | None) -> str | None:
     return None
 
 
-def _dataset_from_version(snapshot: dict, name: str, key: str | None = None) -> Dataset:
+def _dataset_from_version(
+    snapshot: dict, name: str, key: str | None = None, description: str | None = None
+) -> Dataset:
     """Build a local Dataset pinned to the exact version described by ``snapshot``.
 
     ``key`` is the key the platform echoed for the dataset. It is the authoritative one -- taken
@@ -673,7 +675,7 @@ def _dataset_from_version(snapshot: dict, name: str, key: str | None = None) -> 
     """
     dataset_id = snapshot.get("dataset_id")
     key = key or snapshot.get("key") or _recovered_key(name, dataset_id) or dataset_id
-    ds = Dataset(name=name, key=key)
+    ds = Dataset(name=name, description=description or snapshot.get("description"), key=key)
     ds.dataset_id = dataset_id  # type: ignore[assignment]
     ds.dataset_version_id = snapshot.get("dataset_version_id")
     for item in snapshot.get("items", []):
@@ -733,9 +735,11 @@ def pull_dataset(
         version_id,
         dataset_id=dataset_id,
         name=name,
-        # The dataset response echoes the authoring key (null for datasets that predate the
-        # contract or were authored in the UI); the version endpoint does not carry it.
+        # The dataset response echoes the authoring key + description (null for datasets that
+        # predate the contract or were authored in the UI); the version endpoint carries neither,
+        # so thread them through -- otherwise a pull -> edit -> push blanks the server description.
         key=meta.get("key"),
+        description=meta.get("description"),
         api_key=key,
         host_url=host,
     )
@@ -747,6 +751,7 @@ def pull_dataset_version(
     dataset_id: str | None = None,
     name: str | None = None,
     key: str | None = None,
+    description: str | None = None,
     api_key: str | None = None,
     host_url: str | None = None,
 ) -> Dataset:
@@ -788,7 +793,7 @@ def pull_dataset_version(
             f"not {dataset_id!r}"
         )
     ds = _dataset_from_version(
-        snapshot, name or returned_dataset_id or dataset_id or version_id, key
+        snapshot, name or returned_dataset_id or dataset_id or version_id, key, description
     )
     # Pin ids even if the snapshot omitted them.
     ds.dataset_version_id = ds.dataset_version_id or version_id

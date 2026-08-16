@@ -429,6 +429,25 @@ class TestPullDataset:
         assert ds.get("s").expected == "42" and type(ds.get("s").expected) is str
         assert ds.get("n").input == 7 and ds.get("n").expected is True
 
+    def test_pull_carries_the_description(self, monkeypatch):
+        # The pulled dataset must keep the server-side description, or a pull -> edit -> push
+        # round-trip would blank it (push sends snapshot.description).
+        def fake_get(url, api_key):
+            if "/datasets/" in url:
+                return {
+                    "name": "Weather",
+                    "description": "the canonical weather set",
+                    "key": "weather",
+                    "current_dataset_version_id": "dsv_9",
+                }
+            return {"dataset_id": "ds_1", "items": [{"test_case_id": "t0", "input": {"m": 1}}]}
+
+        monkeypatch.setattr("traceroot.eval.platform._http_get_json", fake_get)
+        ds = pull_dataset("ds_1", api_key="tr-x", host_url="https://h")
+        assert ds.description == "the canonical weather set"
+        # and it survives into the push snapshot (the value a re-push would send back)
+        assert ds.snapshot().description == "the canonical weather set"
+
 
 class TestDatasetLifecycleIntegration:
     """End-to-end push -> pull through a faithful in-memory double of the backend routes

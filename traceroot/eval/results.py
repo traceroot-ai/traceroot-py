@@ -162,10 +162,17 @@ def aggregate_scores(item_results: list[EvalItemResult]) -> dict[str, ScoreSumma
             # aggregate and run.json disagree with the wire (where a non-finite score is errored)
             # and .summary(), and a bare `NaN` token makes the artifact invalid per the JSON spec
             # (strict parsers, including JS `JSON.parse`, reject it). Exclude it from the numeric
-            # aggregate; it still counts as a produced score.
-            if isinstance(score.value, (int, float)) and math.isfinite(float(score.value)):
-                numeric_sums[score.name] = numeric_sums.get(score.name, 0.0) + float(score.value)
-                numeric_counts[score.name] = numeric_counts.get(score.name, 0) + 1
+            # aggregate; it still counts as a produced score. An int too large for a float raises
+            # OverflowError on the conversion itself -- treat it the same (excluded, not a crash
+            # that would lose the whole finished run at the final aggregation step).
+            if isinstance(score.value, (int, float)):
+                try:
+                    fvalue = float(score.value)
+                except (OverflowError, ValueError):
+                    fvalue = None
+                if fvalue is not None and math.isfinite(fvalue):
+                    numeric_sums[score.name] = numeric_sums.get(score.name, 0.0) + fvalue
+                    numeric_counts[score.name] = numeric_counts.get(score.name, 0) + 1
 
     summary: dict[str, ScoreSummary] = {}
     for name in order:

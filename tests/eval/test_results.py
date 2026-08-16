@@ -65,6 +65,14 @@ class TestAggregateScores:
         assert summ["acc"].mean == 1.0
         assert summ["acc"].count == 1
 
+    def test_huge_int_score_does_not_crash_aggregation(self):
+        # An int too large for a float raises OverflowError on float() -- it must be excluded like a
+        # non-finite value (kept in the count), never crash the whole finished run at aggregation.
+        items = [_item("a", [Score("x", 1.0)]), _item("b", [Score("x", 10**400)])]
+        summ = aggregate_scores(items)
+        assert summ["x"].mean == 1.0  # huge int excluded from the mean
+        assert summ["x"].count == 2  # still counted as a produced score
+
     def test_empty(self):
         assert aggregate_scores([]) == {}
 
