@@ -1,7 +1,9 @@
 """Offline evaluation SDK for TraceRoot.
 
-Cloud-only, trace-native evaluation: dataset / test cases -> execute a task ->
-score each result -> structured results (and evaluation traces).
+Local-first, trace-native evaluation: dataset / test cases -> execute a task ->
+score each result -> structured results (and evaluation traces). Authoring a
+dataset and running an eval are free and offline; reporting to the platform is
+opt-in (the default when credentials resolve, suppressible with local=True).
 
 See ``offline-eval/design-spec-offline-eval-sdk.md``.
 """
