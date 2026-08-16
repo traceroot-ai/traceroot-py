@@ -1,6 +1,6 @@
 """Tests for integration smoothness fixes.
 
-Covers the four issues identified by comparing against lmnr-python:
+Covers four integration-smoothness fixes:
   1. Warning logged when API key is missing
   2. Re-initialization guard (second initialize() call is a no-op)
   3. Missing instrumentation lib warns + skips instead of crashing

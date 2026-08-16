@@ -1,9 +1,10 @@
 """Decorator-based instrumentation using OpenTelemetry."""
 
+import contextlib
 import functools
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
 from openinference.instrumentation import get_attributes_from_context
@@ -20,6 +21,36 @@ logger = logging.getLogger(__name__)
 F = TypeVar("F", bound=Callable[..., Any])
 
 
+# Local-eval guard: while a local evaluation runs, suppress LAZY global auto-init so a task's or
+# judge's @observe (or auto-instrumentation) cannot bring up an exporting provider and ship case
+# inputs/outputs off-process. A module-level, re-entrant depth counter. This blocks only *lazy*
+# bring-up; a provider the app has already initialized is left as-is. Mirrors the TS SDK seam.
+_suppress_global_auto_init_depth = 0
+
+
+def _push_suppress_global_auto_init() -> None:
+    global _suppress_global_auto_init_depth
+    _suppress_global_auto_init_depth += 1
+
+
+def _pop_suppress_global_auto_init() -> None:
+    global _suppress_global_auto_init_depth
+    _suppress_global_auto_init_depth = max(0, _suppress_global_auto_init_depth - 1)
+
+
+def _is_global_auto_init_suppressed() -> bool:
+    return _suppress_global_auto_init_depth > 0
+
+
+@contextlib.contextmanager
+def _suppress_global_auto_init() -> Iterator[None]:
+    _push_suppress_global_auto_init()
+    try:
+        yield
+    finally:
+        _pop_suppress_global_auto_init()
+
+
 def _ensure_initialized() -> None:
     """Ensure traceroot client is initialized (for auto-init from env vars).
 
@@ -27,8 +58,11 @@ def _ensure_initialized() -> None:
     without explicit traceroot.initialize() if env vars are set.
 
     Note: This doesn't block tracing if client is disabled. The decorator
-    always creates spans using whatever TracerProvider is configured.
+    always creates spans using whatever TracerProvider is configured. During a local
+    evaluation the lazy bring-up is suppressed so nothing exports off-process.
     """
+    if _is_global_auto_init_suppressed():
+        return
     # Import here to avoid circular import
     from traceroot import get_client
 

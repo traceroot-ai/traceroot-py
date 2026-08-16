@@ -3,6 +3,7 @@
 import enum
 import json
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
@@ -45,8 +46,17 @@ def _serialize(value: Any, _seen: set[int]) -> Any:
     # Collections
     if isinstance(value, dict):
         return {_serialize(k, _seen): _serialize(v, _seen) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, (list, tuple)):
         return [_serialize(v, _seen) for v in value]
+    if isinstance(value, (set, frozenset)):
+        # set/frozenset iteration order is not stable across processes (hash randomization),
+        # which would make a content-addressed dataset revision change spuriously for the same
+        # data. Emit the serialized elements in a deterministic order (by canonical JSON form).
+        items = [_serialize(v, _seen) for v in value]
+        return sorted(
+            items,
+            key=lambda x: json.dumps(x, sort_keys=True, ensure_ascii=False, default=str),
+        )
 
     # Standard library types
     if isinstance(value, datetime):  # datetime before date (datetime is subclass)
@@ -115,11 +125,19 @@ def _serialize_object(value: Any, _seen: set[int]) -> Any:
     if hasattr(value, "__dict__"):
         return _serialize_dict_object(value, _seen)
 
-    # Last resort — stringify
+    # Last resort — stringify, but NEVER embed object identity. The default object repr includes
+    # the memory address (`<Foo object at 0x...>`), which would make content hashes / dataset
+    # revisions non-deterministic across processes and deep copies. Strip that to a stable type tag.
     try:
-        return str(value)
+        text = str(value)
     except Exception:
-        return f"<{type(value).__name__}>"
+        text = ""
+    if not text or _DEFAULT_REPR_RE.search(text):
+        return f"<{type(value).__module__}.{type(value).__qualname__}>"
+    return text
+
+
+_DEFAULT_REPR_RE = re.compile(r" object at 0x[0-9A-Fa-f]+|at 0x[0-9A-Fa-f]+")
 
 
 def _serialize_dict_object(value: Any, _seen: set[int]) -> Any:

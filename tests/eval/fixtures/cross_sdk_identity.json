@@ -1,0 +1,7 @@
+{
+  "_comment": "Shared cross-SDK identity fixture. Equivalent Python and TypeScript scorer definitions must generate the SAME logical scorer key while retaining DIFFERENT implementation provenance (function-name spelling, SDK language, captured source).",
+  "scorer_key": "grade",
+  "evaluation_key": "weather-no-conclusion",
+  "python": { "language": "python", "fn_name": "covers_both_cities" },
+  "typescript": { "language": "typescript", "fn_name": "coversBothCities" }
+}

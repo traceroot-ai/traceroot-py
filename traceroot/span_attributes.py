@@ -46,3 +46,31 @@ class SpanAttributes:
     # System Attributes
     # =========================================================================
     ENVIRONMENT = "traceroot.environment"
+
+    # =========================================================================
+    # Offline-evaluation Attributes
+    #
+    # Additive, versioned identity contract for evaluation traces (see
+    # offline-eval/contract-notes/eval-trace-attributes.md). EVAL_CONTRACT_VERSION
+    # is bumped only on a breaking change; new keys are added, never repurposed.
+    # =========================================================================
+    EVAL_CONTRACT_VERSION = "traceroot.eval.contract_version"
+    EVAL_NAME = "traceroot.eval.name"  # stable evaluation identity/purpose
+    EVAL_RUN_NAME = "traceroot.eval.run_name"  # retained: run label (== name today)
+    EVAL_RUN_ID = "traceroot.eval.run_id"  # platform run id when reported
+    EVAL_LOCAL_RUN_ID = "traceroot.eval.local_run_id"  # client-side run id (always present)
+    EVAL_DATASET_NAME = "traceroot.eval.dataset_name"
+    EVAL_DATASET_ID = "traceroot.eval.dataset_id"
+    EVAL_DATASET_VERSION_ID = "traceroot.eval.dataset_version_id"
+    EVAL_CASE_ID = "traceroot.eval.case_id"
+    EVAL_CANDIDATE_VERSION = "traceroot.eval.candidate_version"
+    EVAL_ENVIRONMENT = "traceroot.eval.environment"
+    EVAL_HAS_EXPECTED = "traceroot.eval.has_expected"
+    EVAL_SOURCE_TRACE_ID = "traceroot.eval.source_trace_id"
+    EVAL_SOURCE_SPAN_ID = "traceroot.eval.source_span_id"
+    EVAL_SCORE_TARGET_SPAN_ID = "traceroot.eval.score_target_span_id"
+    EVAL_TASK_NAME = "traceroot.eval.task_name"
+    EVAL_ERROR = "traceroot.eval.error"
+    EVAL_SCORER_NAME = "traceroot.eval.scorer_name"
+    EVAL_SCORE_VALUE = "traceroot.eval.score_value"
+    EVAL_SCORE_COMMENT = "traceroot.eval.score_comment"
