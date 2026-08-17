@@ -66,9 +66,15 @@ _BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
         class_name="AnthropicInstrumentor",
     ),
     Integration.LANGCHAIN: InstrumentorEntry(
-        package="langchain",
+        # The instrumentor patches `langchain_core.callbacks.BaseCallbackManager`
+        # (its `_MODULE` is "langchain_core"), so langchain-core is the real
+        # dependency. The umbrella `langchain` distribution is optional: a LangGraph
+        # app typically installs only langchain-core + langgraph + provider packages,
+        # and gating on `langchain` skipped instrumentation for those apps entirely.
+        package="langchain-core",
         module_path="openinference.instrumentation.langchain",
         class_name="LangChainInstrumentor",
+        alt_packages=("langchain",),
     ),
     Integration.GOOGLE_GENAI: InstrumentorEntry(
         package="google-genai",
@@ -114,6 +120,9 @@ _BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
         package="dspy",
         module_path="openinference.instrumentation.dspy",
         class_name="DSPyInstrumentor",
+        # DSPy publishes the same release under both names (`dspy-ai` is the legacy
+        # distribution), so accept either.
+        alt_packages=("dspy-ai",),
     ),
     Integration.GOOGLE_ADK: InstrumentorEntry(
         package="google-adk",
