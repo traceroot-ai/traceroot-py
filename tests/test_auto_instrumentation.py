@@ -13,6 +13,7 @@ from traceroot.instrumentation._instrumentors import (
     PydanticAIInstrumentor,
 )
 from traceroot.instrumentation.registry import (
+    _BUILTIN_REGISTRY,
     Integration,
     _is_package_installed,
     initialize_integrations,
@@ -38,6 +39,56 @@ def test_integration_enum_values():
 
 def test_integration_exported_from_traceroot():
     assert traceroot.Integration is Integration
+
+
+# =============================================================================
+# Package gating: an entry must gate on the distribution the instrumentor
+# actually patches, not on an umbrella package that is merely conventional.
+# =============================================================================
+
+
+def test_langchain_gates_on_langchain_core():
+    """The LangChain instrumentor patches `langchain_core.callbacks` (its `_MODULE` is
+    "langchain_core"), so langchain-core alone must enable the integration.
+
+    Regression: gating on the umbrella `langchain` distribution silently skipped
+    instrumentation for LangGraph apps, which install langchain-core + langgraph +
+    provider packages and have no reason to pull in `langchain`. The whole agent went
+    untraced -- eval task spans arrived with no children and no cost.
+    """
+    entry = _BUILTIN_REGISTRY[Integration.LANGCHAIN]
+    assert "langchain-core" in entry.all_packages
+    # langchain-core must be FIRST: the skip warning builds its "pip install X" hint
+    # from all_packages[0], so a wrong primary sends users to the wrong package.
+    assert entry.all_packages[0] == "langchain-core"
+    # The umbrella package must still satisfy the gate for existing installs.
+    assert "langchain" in entry.all_packages
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_langchain_instruments_with_only_langchain_core_installed(mock_installed):
+    """End-to-end of the above through initialize_integrations: a LangGraph-style
+    install (langchain-core present, umbrella `langchain` absent) must instrument."""
+    mock_installed.side_effect = lambda pkg: pkg == "langchain-core"
+
+    mock_instrumentor = MagicMock()
+    mock_module = MagicMock()
+    mock_module.LangChainInstrumentor = MagicMock(return_value=mock_instrumentor)
+
+    provider = TracerProvider()
+    with patch("importlib.import_module", return_value=mock_module):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.LANGCHAIN],
+        )
+
+    assert result == [Integration.LANGCHAIN]
+    mock_instrumentor.instrument.assert_called_once_with(tracer_provider=provider)
+
+
+def test_dspy_accepts_legacy_distribution_name():
+    """DSPy ships the same release as both `dspy` and the legacy `dspy-ai`."""
+    assert set(_BUILTIN_REGISTRY[Integration.DSPY].all_packages) == {"dspy", "dspy-ai"}
 
 
 # =============================================================================
