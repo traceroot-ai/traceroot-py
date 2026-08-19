@@ -1042,15 +1042,31 @@ async def _run_async(
     return result
 
 
+@contextlib.contextmanager
+def _local_run_guards(local: bool):
+    """Guards a ``local=True`` run so NOTHING leaves the process for its duration.
+
+    Two independent leaks have to be closed together:
+    - ``_suppress_global_auto_init``: a task/judge ``@observe`` (or lazy auto-instrumentation)
+      must not bring up an exporting provider mid-run.
+    - ``suppress_span_export``: an app that ALREADY called ``initialize()`` has a live exporting
+      provider; its auto-instrumented library spans (OpenAI/Anthropic/...) flow through the global
+      provider and would otherwise be exported despite ``local=True``. Drop them for the run.
+    Reported (non-local) runs are unaffected. Mirrors the TS SDK's local guards.
+    """
+    if not local:
+        yield
+        return
+    from traceroot.decorators import _suppress_global_auto_init
+    from traceroot.transport.span_processor import suppress_span_export
+
+    with _suppress_global_auto_init(), suppress_span_export():
+        yield
+
+
 def _run(**kwargs: Any) -> EvalRunResult:
     """Synchronous core runner. Always returns a completed EvalRunResult."""
-    # A local run suppresses lazy global auto-init for its whole duration, so a task/judge @observe
-    # (or auto-instrumentation) can't bring up an exporting provider and leak case data off-process.
-    # Reported runs are unaffected. Mirrors the TS SDK's _suppressGlobalAutoInit.
-    from traceroot.decorators import _suppress_global_auto_init
-
-    guard = _suppress_global_auto_init() if kwargs.get("local") else contextlib.nullcontext()
-    with guard:
+    with _local_run_guards(bool(kwargs.get("local"))):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
