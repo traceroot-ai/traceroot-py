@@ -27,13 +27,13 @@ class TestCloudOnlyDefault:
         # Cloud-only: with no credentials + an unsynced (inline) dataset there is nothing to
         # report to, so evaluate() raises rather than silently running locally.
         with pytest.raises(RuntimeError, match="reports to the TraceRoot platform"):
-            evaluate(name="r", data=_ds(1), task=echo, scorers=[exact])
+            evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact])
 
 
 class TestFakeTransportWiring:
     def test_call_order_single_case(self):
         fake = FakeTransport()
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], transport=fake)
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], transport=fake)
         kinds = [c[0] for c in fake.calls]
         assert kinds[0] == "create_run"
         assert kinds[-1] == "finish_run"
@@ -44,7 +44,7 @@ class TestFakeTransportWiring:
     def test_register_before_result_for_every_case(self):
         fake = FakeTransport()
         evaluate(
-            name="r", data=_ds(4), task=echo, scorers=[exact], transport=fake, max_concurrency=1
+            name="r", dataset=_ds(4), task=echo, scorers=[exact], transport=fake, max_concurrency=1
         )
         for cid in ("c0", "c1", "c2", "c3"):
             reg = next(
@@ -62,17 +62,17 @@ class TestFakeTransportWiring:
             return x
 
         fake = FakeTransport()
-        evaluate(name="r", data=_ds(3), task=boom, scorers=[exact], transport=fake)
+        evaluate(name="r", dataset=_ds(3), task=boom, scorers=[exact], transport=fake)
         registered = {c[1] for c in fake.calls if c[0] == "register_item"}
         assert registered == {"c0", "c1", "c2"}  # including the failing c1
 
     def test_single_finish_run(self):
         fake = FakeTransport()
-        evaluate(name="r", data=_ds(3), task=echo, scorers=[exact], transport=fake)
+        evaluate(name="r", dataset=_ds(3), task=echo, scorers=[exact], transport=fake)
         assert sum(1 for c in fake.calls if c[0] == "finish_run") == 1
 
     def test_explicit_transport_reports_uploaded(self):
         fake = FakeTransport()
-        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], transport=fake)
+        result = evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], transport=fake)
         assert any(c[0] == "create_run" for c in fake.calls)
         assert result.upload_state.status == "uploaded"

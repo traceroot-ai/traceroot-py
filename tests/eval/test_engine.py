@@ -24,7 +24,7 @@ def exact(ctx):
 
 class TestBasicRuns:
     def test_sync_task_sync_scorer(self):
-        result = evaluate(name="r", data=_ds(3), task=echo_task, scorers=[exact])
+        result = evaluate(name="r", dataset=_ds(3), task=echo_task, scorers=[exact])
         assert isinstance(result, EvalRunResult)
         assert [it.case_id for it in result.item_results] == ["c0", "c1", "c2"]
         assert result.score_summary["exact"].mean == 1.0
@@ -39,25 +39,25 @@ class TestBasicRuns:
             await asyncio.sleep(0)
             return 1.0 if ctx.output == ctx.expected else 0.0
 
-        result = await evaluate_async(name="r", data=_ds(2), task=atask, scorers=[ascore])
+        result = await evaluate_async(name="r", dataset=_ds(2), task=atask, scorers=[ascore])
         assert result.score_summary["ascore"].mean == 1.0
 
     def test_mixed_sync_async(self):
         async def ascore(ctx):
             return 1.0
 
-        result = evaluate(name="r", data=_ds(2), task=echo_task, scorers=[exact, ascore])
+        result = evaluate(name="r", dataset=_ds(2), task=echo_task, scorers=[exact, ascore])
         assert result.score_summary["exact"].mean == 1.0
         assert result.score_summary["ascore"].mean == 1.0
 
     def test_evaluate_returns_completed_result_not_coroutine(self):
-        result = evaluate(name="r", data=_ds(1), task=echo_task, scorers=[exact])
+        result = evaluate(name="r", dataset=_ds(1), task=echo_task, scorers=[exact])
         assert isinstance(result, EvalRunResult)
         assert not asyncio.iscoroutine(result)
 
     def test_evaluate_works_inside_running_loop(self):
         async def outer():
-            return evaluate(name="r", data=_ds(2), task=echo_task, scorers=[exact])
+            return evaluate(name="r", dataset=_ds(2), task=echo_task, scorers=[exact])
 
         result = asyncio.run(outer())
         assert isinstance(result, EvalRunResult)
@@ -71,7 +71,7 @@ class TestOrderingAndConcurrency:
             await asyncio.sleep((5 - x) * 0.01)
             return x
 
-        result = await evaluate_async(name="r", data=_ds(5), task=slow, scorers=[exact])
+        result = await evaluate_async(name="r", dataset=_ds(5), task=slow, scorers=[exact])
         assert [it.case_id for it in result.item_results] == ["c0", "c1", "c2", "c3", "c4"]
         assert [it.output for it in result.item_results] == [0, 1, 2, 3, 4]
 
@@ -86,7 +86,7 @@ class TestOrderingAndConcurrency:
             return x
 
         await evaluate_async(
-            name="r", data=_ds(10), task=tracked, scorers=[exact], max_concurrency=2
+            name="r", dataset=_ds(10), task=tracked, scorers=[exact], max_concurrency=2
         )
         assert state["peak"] <= 2
 
@@ -98,7 +98,7 @@ class TestFailureIsolation:
                 raise ValueError("nope")
             return x
 
-        result = evaluate(name="r", data=_ds(3), task=boom, scorers=[exact])
+        result = evaluate(name="r", dataset=_ds(3), task=boom, scorers=[exact])
         by_id = {it.case_id: it for it in result.item_results}
         assert by_id["c1"].error is not None
         assert "nope" in by_id["c1"].error
@@ -110,7 +110,7 @@ class TestFailureIsolation:
         def bad(ctx):
             raise RuntimeError("scorer boom")
 
-        result = evaluate(name="r", data=_ds(2), task=echo_task, scorers=[exact, bad])
+        result = evaluate(name="r", dataset=_ds(2), task=echo_task, scorers=[exact, bad])
         it = result.item_results[0]
         assert "bad" in it.scorer_errors
         assert "scorer boom" in it.scorer_errors["bad"]
@@ -120,14 +120,14 @@ class TestFailureIsolation:
         def malformed(ctx):
             return {"value": 1.0}  # missing 'name'
 
-        result = evaluate(name="r", data=_ds(1), task=echo_task, scorers=[malformed])
+        result = evaluate(name="r", dataset=_ds(1), task=echo_task, scorers=[malformed])
         it = result.item_results[0]
         assert "malformed" in it.scorer_errors
 
 
 class TestScoreNormalization:
     def _one(self, scorer):
-        return evaluate(name="r", data=_ds(1), task=echo_task, scorers=[scorer]).item_results[0]
+        return evaluate(name="r", dataset=_ds(1), task=echo_task, scorers=[scorer]).item_results[0]
 
     def test_scalar(self):
         def s(ctx):
@@ -179,53 +179,53 @@ class TestScoreNormalization:
 class TestDataCoercion:
     def test_list_of_eval_cases(self):
         cases = [EvalCase(input=1, id="a", expected=1), EvalCase(input=2, id="b", expected=2)]
-        result = evaluate(name="r", data=cases, task=echo_task, scorers=[exact])
+        result = evaluate(name="r", dataset=cases, task=echo_task, scorers=[exact])
         assert [it.case_id for it in result.item_results] == ["a", "b"]
 
     def test_list_of_dicts(self):
         data = [{"input": 1, "expected": 1}, {"input": 2, "expected": 2}]
-        result = evaluate(name="r", data=data, task=echo_task, scorers=[exact])
+        result = evaluate(name="r", dataset=data, task=echo_task, scorers=[exact])
         assert result.score_summary["exact"].mean == 1.0
 
     def test_dict_missing_input_raises(self):
         with pytest.raises((ValueError, TypeError)):
-            evaluate(name="r", data=[{"expected": 1}], task=echo_task, scorers=[exact])
+            evaluate(name="r", dataset=[{"expected": 1}], task=echo_task, scorers=[exact])
 
     def test_dict_unknown_key_raises(self):
         with pytest.raises((ValueError, TypeError)):
-            evaluate(name="r", data=[{"input": 1, "bogus": 2}], task=echo_task, scorers=[exact])
+            evaluate(name="r", dataset=[{"input": 1, "bogus": 2}], task=echo_task, scorers=[exact])
 
 
 class TestConfigErrors:
     def test_empty_name(self):
         with pytest.raises(ValueError):
-            evaluate(name="", data=_ds(1), task=echo_task, scorers=[exact])
+            evaluate(name="", dataset=_ds(1), task=echo_task, scorers=[exact])
 
     def test_empty_data(self):
         with pytest.raises(ValueError):
-            evaluate(name="r", data=_ds(0), task=echo_task, scorers=[exact])
+            evaluate(name="r", dataset=_ds(0), task=echo_task, scorers=[exact])
 
     def test_non_callable_task(self):
         with pytest.raises((ValueError, TypeError)):
-            evaluate(name="r", data=_ds(1), task="nope", scorers=[exact])
+            evaluate(name="r", dataset=_ds(1), task="nope", scorers=[exact])
 
     def test_empty_scorers(self):
         with pytest.raises(ValueError):
-            evaluate(name="r", data=_ds(1), task=echo_task, scorers=[])
+            evaluate(name="r", dataset=_ds(1), task=echo_task, scorers=[])
 
     def test_non_callable_scorer(self):
         with pytest.raises((ValueError, TypeError)):
-            evaluate(name="r", data=_ds(1), task=echo_task, scorers=["nope"])
+            evaluate(name="r", dataset=_ds(1), task=echo_task, scorers=["nope"])
 
     def test_bad_max_concurrency(self):
         with pytest.raises(ValueError):
-            evaluate(name="r", data=_ds(1), task=echo_task, scorers=[exact], max_concurrency=0)
+            evaluate(name="r", dataset=_ds(1), task=echo_task, scorers=[exact], max_concurrency=0)
 
 
 class TestResultShape:
     def test_uploaded_status_and_no_trace_id_without_provider(self):
         # Cloud-only: the run reports (status uploaded). With no tracer provider registered
         # in this test, the no-op span has no valid context, so the item carries no trace id.
-        result = evaluate(name="r", data=_ds(1), task=echo_task, scorers=[exact])
+        result = evaluate(name="r", dataset=_ds(1), task=echo_task, scorers=[exact])
         assert result.item_results[0].trace_id is None
         assert result.upload_state.status == "uploaded"

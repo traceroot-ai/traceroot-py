@@ -754,7 +754,7 @@ class TestReportingDefaults:
         # A remote dataset but no credentials -> nothing to report to -> raise (cloud-only).
         calls = self._spy(monkeypatch)
         with pytest.raises(RuntimeError, match="reports to the TraceRoot platform"):
-            evaluate(name="r", data=self._remote_ds(), task=echo, scorers=[acc])
+            evaluate(name="r", dataset=self._remote_ds(), task=echo, scorers=[acc])
         assert calls == []
 
     @pytest.mark.no_default_transport
@@ -765,7 +765,7 @@ class TestReportingDefaults:
         calls = self._spy(monkeypatch)
         with pytest.raises(RuntimeError, match="reports to the TraceRoot platform"):
             self._with_creds(
-                lambda: evaluate(name="r", data=[{"input": {"m": 0}}], task=echo, scorers=[acc])
+                lambda: evaluate(name="r", dataset=[{"input": {"m": 0}}], task=echo, scorers=[acc])
             )
         assert calls == []
 
@@ -773,7 +773,7 @@ class TestReportingDefaults:
     def test_remote_dataset_with_creds_uploads(self, monkeypatch):
         calls = self._spy(monkeypatch)
         result = self._with_creds(
-            lambda: evaluate(name="r", data=self._remote_ds(), task=echo, scorers=[acc])
+            lambda: evaluate(name="r", dataset=self._remote_ds(), task=echo, scorers=[acc])
         )
         assert result.upload_state.status == "uploaded"
         assert result.run_id == "run_1"
@@ -783,7 +783,7 @@ class TestReportingDefaults:
     def test_dataset_id_with_creds_uploads(self, monkeypatch):
         calls = self._spy(monkeypatch)
         result = self._with_creds(
-            lambda: evaluate(name="r", data=_ds(2), task=echo, scorers=[acc], dataset_id="ds_1")
+            lambda: evaluate(name="r", dataset=_ds(2), task=echo, scorers=[acc], dataset_id="ds_1")
         )
         assert result.upload_state.status == "uploaded"
         assert result.dataset.dataset_id == "ds_1"
@@ -805,7 +805,7 @@ class TestReportingDefaults:
         transport = PlatformTransport(
             "ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h"
         )
-        result = evaluate(name="r", data=_ds(2), task=echo, scorers=[acc], report_to=transport)
+        result = evaluate(name="r", dataset=_ds(2), task=echo, scorers=[acc], report_to=transport)
         assert result.upload_state.status == "uploaded"
         paths = recorded["paths"]
         assert paths[0] == "/api/v1/public/evaluation-runs"

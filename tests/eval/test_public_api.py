@@ -63,6 +63,6 @@ def test_end_to_end_via_top_level():
     def routing(ctx):
         return 1.0 if ctx.output == ctx.expected else 0.0
 
-    result = traceroot.evaluate(name="routing-v2", data=ds, task=task, scorers=[routing])
+    result = traceroot.evaluate(name="routing-v2", dataset=ds, task=task, scorers=[routing])
     assert result.score_summary["routing"].mean == 1.0
     assert result.upload_state.status == "uploaded"

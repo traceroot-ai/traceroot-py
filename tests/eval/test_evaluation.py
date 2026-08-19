@@ -1,5 +1,7 @@
 """DS-2: Evaluation object + evaluate() convenience + enriched run result."""
 
+import pytest
+
 from traceroot.eval import (
     Dataset,
     EvalRunResult,
@@ -54,9 +56,10 @@ class TestConvenience:
         run = evaluate(name="q", dataset=_ds(), task=route, scorers=[acc])
         assert run.score_summary["acc"].mean == 1.0
 
-    def test_data_alias(self):
-        run = evaluate(name="q", data=_ds(), task=route, scorers=[acc])
-        assert run.score_summary["acc"].mean == 1.0
+    def test_data_alias_removed(self):
+        # The `data=` alias was dropped; only `dataset=` is accepted now.
+        with pytest.raises(TypeError):
+            evaluate(name="q", data=_ds(), task=route, scorers=[acc])
 
     def test_list_data(self):
         run = evaluate(

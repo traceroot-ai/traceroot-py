@@ -84,7 +84,7 @@ class TestEvaluateNeverPrompts:
         sync = _existing_sync("rev_from_an_older_push")
         monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: sync)
 
-        result = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        result = evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
 
         assert declining_prompt == []  # the confirmer was never consulted
         assert _published(sync)  # ...and the changed content really was versioned
@@ -99,7 +99,7 @@ class TestEvaluateNeverPrompts:
         sync = _existing_sync(d.snapshot().revision)
         monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: sync)
 
-        result = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        result = evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
 
         assert declining_prompt == []
         assert not _published(sync)  # no new version for identical content
@@ -130,7 +130,7 @@ class TestAutoPublishFailureIsActionable:
         monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: sync)
 
         with pytest.raises(RuntimeError) as excinfo:
-            evaluate(name="r", data=_dataset(), task=lambda x: x, scorers=[lambda ctx: 1.0])
+            evaluate(name="r", dataset=_dataset(), task=lambda x: x, scorers=[lambda ctx: 1.0])
 
         assert not isinstance(excinfo.value, DatasetConflictError)
         message = str(excinfo.value)
@@ -145,7 +145,7 @@ class TestAutoPublishFailureIsActionable:
         monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: sync)
 
         with pytest.raises(RuntimeError) as excinfo:
-            evaluate(name="r", data=_dataset(), task=lambda x: x, scorers=[lambda ctx: 1.0])
+            evaluate(name="r", dataset=_dataset(), task=lambda x: x, scorers=[lambda ctx: 1.0])
 
         message = str(excinfo.value)
         assert "could not auto-publish dataset 'auto' before the run" in message
@@ -163,11 +163,11 @@ class TestTheRunPinsWhatItScored:
         monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: fake)
         d = _dataset()
 
-        first = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        first = evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
         assert first.dataset.dataset_version_id == "dsv_1"
 
         d.add(input={"m": 2}, expected={"m": 2})  # the content the SECOND run actually scores
-        second = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        second = evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
 
         assert second.dataset.dataset_version_id == "dsv_2"
         assert len(fake.pushes) == 2
@@ -178,8 +178,8 @@ class TestTheRunPinsWhatItScored:
         monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: fake)
         d = _dataset()
 
-        first = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
-        second = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        first = evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        second = evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
 
         assert second.dataset.dataset_version_id == first.dataset.dataset_version_id
         assert len(fake.pushes) == 1  # unchanged content never versions
@@ -193,7 +193,7 @@ class TestTheRunPinsWhatItScored:
         platform.remember_pinned_content(d)  # exactly what pull_dataset records
         d.add(input={"m": 3}, expected={"m": 3})
 
-        result = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        result = evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
 
         assert result.dataset.dataset_version_id == "dsv_1"  # the version that has the new case
         assert len(fake.pushes) == 1
@@ -206,7 +206,7 @@ class TestTheRunPinsWhatItScored:
         sync = _existing_sync(d.snapshot().revision)
         monkeypatch.setattr(sync_mod, "PlatformDatasetSync", lambda *a, **k: sync)
 
-        result = evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+        result = evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
 
         assert not _published(sync)
         assert result.dataset.dataset_version_id == "dsv_9"
