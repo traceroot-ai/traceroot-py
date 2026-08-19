@@ -180,7 +180,9 @@ class TestEvalAttributes:
         assert scorer.attributes["traceroot.eval.score_value"] == 1.0
 
     def test_run_name_on_all_spans(self, memory_exporter):
-        evaluate(name="routing-v2", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(
+            name="routing-v2", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported()
+        )
         by = _by_name(memory_exporter.get_finished_spans())
         for span in (by["evaluation-item"], by["task"], by["exact"]):
             assert span.attributes["traceroot.eval.run_name"] == "routing-v2"
@@ -303,7 +305,9 @@ class TestEvalTraceIdentityContract:
 
 class TestTraceIdAndErrors:
     def test_trace_id_returned_with_provider(self, memory_exporter):
-        result = evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported()
+        )
         item = result.item_results[0]
         assert item.trace_id is not None
         # matches the emitted evaluation-item root trace id
@@ -316,7 +320,9 @@ class TestTraceIdAndErrors:
                 raise ValueError("kaboom")
             return x
 
-        result = evaluate(name="r", dataset=_ds(3), task=boom, scorers=[exact], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(3), task=boom, scorers=[exact], report_to=_reported()
+        )
         by_id = {it.case_id: it for it in result.item_results}
         assert "kaboom" in by_id["c1"].error
         assert by_id["c0"].error is None and by_id["c2"].error is None
@@ -333,7 +339,9 @@ class TestReportedTraceExport:
     to its emitted trace id."""
 
     def test_reported_eval_exports_and_links_trace_id(self, memory_exporter):
-        result = evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported()
+        )
         spans = memory_exporter.get_finished_spans()
         assert sorted(s.name for s in spans) == ["evaluation-item", "exact", "task"]
         item = result.item_results[0]
@@ -371,7 +379,9 @@ class TestUsageAttributionHierarchy:
                 assert not any(("token" in k) or ("cost" in k) for k in keys), keys
 
     def test_trace_id_links_result_to_the_emitted_trace(self, memory_exporter):
-        result = evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported()
+        )
         root = _by_name(memory_exporter.get_finished_spans())["evaluation-item"]
         assert result.item_results[0].trace_id == format(root.context.trace_id, "032x")
 
@@ -426,7 +436,9 @@ class TestLlmJudgeTrace:
             messages=[{"role": "user", "content": "ANSWER:\n{{output}}"}],
             complete=lambda model, messages: "0.8",
         )
-        result = evaluate(name="r", dataset=_ds(1), task=echo, scorers=[judge], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[judge], report_to=_reported()
+        )
 
         by = _by_name(memory_exporter.get_finished_spans())
         assert "llm_judge:conciseness" in by  # a custom complete is self-instrumented
@@ -466,7 +478,9 @@ class TestLlmJudgeTokenCounts:
         monkeypatch.setattr(judge_mod, "_default_complete", lambda model, messages: ("0.8", usage))
 
     def _run(self, judge, memory_exporter):
-        result = evaluate(name="r", dataset=_ds(1), task=echo, scorers=[judge], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[judge], report_to=_reported()
+        )
         return result, _by_name(memory_exporter.get_finished_spans())
 
     def test_judge_span_carries_the_provider_token_counts(self, memory_exporter, monkeypatch):
