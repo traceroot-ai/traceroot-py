@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from traceroot.eval.engine import _LOCAL_AND_TRANSPORT, _local_run_guards, _run, _run_async
+from traceroot.eval.engine import _LOCAL_AND_TRANSPORT, _run, _run_async
 from traceroot.eval.results import EvalRunResult
 from traceroot.eval.transport import EvalTransport
 from traceroot.eval.types import Dataset, DatasetSnapshot, EvalCase, ScorerContext
@@ -106,12 +106,9 @@ class Evaluation:
         return _run(**self._kwargs(overrides))
 
     async def run_async(self, **overrides: Any) -> EvalRunResult:
-        # _run (sync) applies the local guards itself; the async path calls _run_async directly,
-        # so apply them here too — otherwise a local=True run via evaluate_async()/run_async()
-        # would still export auto-instrumented spans through an already-initialized provider.
-        kwargs = self._kwargs(overrides)
-        with _local_run_guards(bool(kwargs.get("local"))):
-            return await _run_async(**kwargs)
+        # _run_async is the single chokepoint that applies the local=True export guard, so both the
+        # sync (_run) and async paths inherit it -- nothing to do here beyond the direct await.
+        return await _run_async(**self._kwargs(overrides))
 
 
 def _resolve_dataset(dataset: DataSource | None, data: DataSource | None) -> DataSource:

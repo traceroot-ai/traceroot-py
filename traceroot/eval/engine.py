@@ -740,7 +740,21 @@ def _to_snapshot(
     )
 
 
-async def _run_async(
+async def _run_async(**kwargs: Any) -> EvalRunResult:
+    """Core async runner and the single chokepoint for the local export guard.
+
+    Every entry path funnels through here -- ``_run`` (sync, via ``asyncio.run`` on this thread or a
+    worker thread) and ``Evaluation.run_async`` (direct ``await``) -- so applying the ``local=True``
+    guard here covers all of them. The guard sets the origin marker in THIS coroutine's context;
+    per-case asyncio tasks copy it automatically and sync tasks copy it into their thread-pool
+    worker, so every span the run originates is stamped and dropped. Reported runs pass straight
+    through. See ``_run_async_inner`` for the body.
+    """
+    with _local_run_guards(bool(kwargs.get("local"))):
+        return await _run_async_inner(**kwargs)
+
+
+async def _run_async_inner(
     *,
     name: str,
     data: Dataset | DatasetSnapshot | Sequence[EvalCase | dict],
@@ -761,7 +775,7 @@ async def _run_async(
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
     on_run_start: Callable[[str, str | None], None] | None = None,
 ) -> EvalRunResult:
-    """Core async runner. Public entry is ``evaluate``/``Evaluation`` (evaluation.py).
+    """Core async runner body. Public entry is ``evaluate``/``Evaluation`` (evaluation.py).
 
     ``timeout`` bounds each task (seconds; a timeout is an isolated per-case error).
     ``local`` runs fully but reports nowhere (see the transport block below).
@@ -1044,33 +1058,39 @@ async def _run_async(
 
 @contextlib.contextmanager
 def _local_run_guards(local: bool):
-    """Guards a ``local=True`` run so NOTHING leaves the process for its duration.
+    """Guards a ``local=True`` run so NOTHING it originates leaves the process for its duration.
 
-    Two independent leaks have to be closed together:
+    Two independent leaks are closed together:
     - ``_suppress_global_auto_init``: a task/judge ``@observe`` (or lazy auto-instrumentation)
       must not bring up an exporting provider mid-run.
-    - ``suppress_span_export``: an app that ALREADY called ``initialize()`` has a live exporting
-      provider; its auto-instrumented library spans (OpenAI/Anthropic/...) flow through the global
-      provider and would otherwise be exported despite ``local=True``. Drop them for the run.
+    - ``mark_local_eval_run``: an app that ALREADY called ``initialize()`` has a live exporting
+      provider; the library spans its task creates (OpenAI/Anthropic/...) flow through it. They are
+      ORIGIN-stamped at creation and dropped at the exporter boundary, so nothing this run
+      originates is exported -- while a concurrent *reported* run's spans, born outside this
+      context, still export. Applied at the ``_run_async`` chokepoint, so the marker rides the
+      contextvar into every per-case asyncio task and thread-pool worker.
     Reported (non-local) runs are unaffected. Mirrors the TS SDK's local guards.
     """
     if not local:
         yield
         return
     from traceroot.decorators import _suppress_global_auto_init
-    from traceroot.transport.span_processor import suppress_span_export
+    from traceroot.transport.span_processor import mark_local_eval_run
 
-    with _suppress_global_auto_init(), suppress_span_export():
+    with _suppress_global_auto_init(), mark_local_eval_run():
         yield
 
 
 def _run(**kwargs: Any) -> EvalRunResult:
     """Synchronous core runner. Always returns a completed EvalRunResult."""
-    with _local_run_guards(bool(kwargs.get("local"))):
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(_run_async(**kwargs))
-        # A loop is already running in this thread: run to completion in a worker thread.
-        with ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(lambda: asyncio.run(_run_async(**kwargs))).result()
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_run_async(**kwargs))
+    # A loop is already running in this thread: run to completion in a worker thread. A bare
+    # ThreadPoolExecutor.submit drops the caller's contextvars, so run the work through a copy of
+    # the current context -- the local-eval marker (set inside _run_async) and any active parent
+    # context then survive the thread hop instead of starting from a blank context.
+    ctx = contextvars.copy_context()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(lambda: ctx.run(lambda: asyncio.run(_run_async(**kwargs)))).result()

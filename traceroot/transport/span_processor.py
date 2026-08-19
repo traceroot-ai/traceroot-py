@@ -4,6 +4,7 @@ This module defines the TracerootSpanProcessor class, which extends
 OpenTelemetry's BatchSpanProcessor with Traceroot-specific configuration.
 """
 
+import contextvars
 import logging
 import os
 import threading
@@ -35,33 +36,44 @@ logger = logging.getLogger(__name__)
 _PATH_MAP_MAX: int = 1024
 _PathMap = OrderedDict[str, list[str]]
 
-# --- Scoped export suppression -------------------------------------------------
-# When active, TracerootSpanProcessor.on_end DROPS the span instead of queueing it for export.
-# A local=True eval run turns this on for its whole duration so that an app which already called
-# initialize() exports NOTHING during the run -- including auto-instrumented library spans
-# (OpenAI/Anthropic/...), which flow through the global provider and would otherwise leak. This is
-# the missing half of the local-only guarantee: _suppress_global_auto_init only stops a *lazy*
-# provider from coming up; it cannot stop an *already-initialized* exporting provider. Process-global
-# and reentrant (a depth counter), so it survives concurrent cases and nested runs.
-_export_suppress_depth: int = 0
-_export_suppress_lock = threading.Lock()
+# --- Origin-scoped local-eval export gate --------------------------------------
+# A local=True eval run must not let its OWN instrumented spans leave the process, even when the app
+# already called initialize() and has a live exporting provider (auto-instrumented OpenAI/Anthropic
+# /... spans flow through it and would otherwise export despite local=True). _suppress_global_auto_init
+# only stops a *lazy* provider from coming up; it cannot stop an *already-initialized* one -- this
+# gate is the other half.
+#
+# The gate is ORIGIN-scoped: the decision to drop is made from WHERE a span came from, marked at
+# creation, not from WHEN it ends. A ContextVar records "inside a local eval run" (the engine sets
+# it for the run's duration; it follows asyncio tasks and any worker whose context is copied in). In
+# on_start, if the var is set, the span is STAMPED; in on_end, any stamped span is dropped. This
+# fixes the process-global gate's two failures: a concurrent *reported* run's spans (born outside
+# the marked context) still export, and a span born inside the run but ending after it still drops.
+#
+# The stamp is a span ATTRIBUTE rather than a side-table of span-ids: it rides with the span, so a
+# span that ends long after the run's context has exited is still recognized (no lifetime bound, no
+# eviction race, trivially correct for late-ending spans). It is visible to other span processors on
+# the same provider, which is acceptable -- a span marked for a local eval run is never exported.
+_LOCAL_EVAL_SPAN_ATTR = "traceroot.eval.local_only"
 
-
-def _is_export_suppressed() -> bool:
-    return _export_suppress_depth > 0
+_in_local_eval_run: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "traceroot_in_local_eval_run", default=False
+)
 
 
 @contextmanager
-def suppress_span_export():
-    """Drop every TracerootSpanProcessor export for the duration of the block."""
-    global _export_suppress_depth
-    with _export_suppress_lock:
-        _export_suppress_depth += 1
+def mark_local_eval_run():
+    """Mark the current context as inside a ``local=True`` eval run.
+
+    Spans STARTED while this is active are stamped so ``on_end`` drops them instead of exporting.
+    Token-based set/reset so nested or concurrent runs restore the exact prior state. Reported
+    (non-local) runs never enter here, so their spans are never stamped and export normally.
+    """
+    token = _in_local_eval_run.set(True)
     try:
         yield
     finally:
-        with _export_suppress_lock:
-            _export_suppress_depth -= 1
+        _in_local_eval_run.reset(token)
 
 
 class TracerootSpanProcessor(BatchSpanProcessor):
@@ -161,6 +173,10 @@ class TracerootSpanProcessor(BatchSpanProcessor):
 
     def on_start(self, span, parent_context=None):
         if span.is_recording():
+            # ORIGIN gate: a span born inside a local=True eval run is stamped at creation so that
+            # on_end can drop it regardless of when (or in what context) it ends.
+            if _in_local_eval_run.get():
+                span.set_attribute(_LOCAL_EVAL_SPAN_ATTR, True)
             span.set_attribute("traceroot.sdk.name", SDK_NAME)
             span.set_attribute("traceroot.sdk.version", SDK_VERSION)
             if self._git_repo:
@@ -246,9 +262,12 @@ class TracerootSpanProcessor(BatchSpanProcessor):
             span_id_hex = format(span.context.span_id, "016x")
             self._ids_path_by_span_id.pop(span_id_hex, None)
             self._name_path_by_span_id.pop(span_id_hex, None)
-        if _is_export_suppressed():
-            # A local=True eval run is in progress: drop the span instead of queueing it for
-            # export, so nothing (including auto-instrumented spans) leaves the process.
+        attrs = getattr(span, "attributes", None)
+        if attrs is not None and attrs.get(_LOCAL_EVAL_SPAN_ATTR):
+            # Born inside a local=True eval run (stamped at on_start): drop it instead of queueing
+            # for export, so nothing the run originates leaves the process -- even if it ends after
+            # the run's context has exited. Spans born outside that context (e.g. a concurrent
+            # reported run) carry no stamp and export normally.
             return
         super().on_end(span)
 
