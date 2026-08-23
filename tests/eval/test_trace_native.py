@@ -49,13 +49,13 @@ class TestSpanKindExtension:
 
 class TestSpanHierarchy:
     def test_three_span_kinds_per_case(self, memory_exporter):
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         spans = memory_exporter.get_finished_spans()
         names = sorted(s.name for s in spans)
         assert names == ["evaluation-item", "exact", "task"]
 
     def test_task_parents_under_root_scorer_sibling_of_task(self, memory_exporter):
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         by = _by_name(memory_exporter.get_finished_spans())
         root, task, scorer = by["evaluation-item"], by["task"], by["exact"]
         assert root.parent is None
@@ -72,7 +72,7 @@ class TestSpanHierarchy:
             return inner(x)
 
         evaluate(
-            name="r", data=_ds(1), task=task_with_inner, scorers=[exact], report_to=_reported()
+            name="r", dataset=_ds(1), task=task_with_inner, scorers=[exact], report_to=_reported()
         )
         by = _by_name(memory_exporter.get_finished_spans())
         assert "inner_llm" in by
@@ -89,7 +89,7 @@ class TestSpanHierarchy:
         from traceroot.eval import evaluate_async
 
         await evaluate_async(
-            name="r", data=_ds(1), task=atask, scorers=[exact], report_to=_reported()
+            name="r", dataset=_ds(1), task=atask, scorers=[exact], report_to=_reported()
         )
         by = _by_name(memory_exporter.get_finished_spans())
         assert by["inner_async"].parent.span_id == by["task"].context.span_id
@@ -99,7 +99,7 @@ class TestConcurrencyIsolation:
     def test_concurrent_cases_do_not_tangle(self, memory_exporter):
         evaluate(
             name="r",
-            data=_ds(5),
+            dataset=_ds(5),
             task=echo,
             scorers=[exact],
             max_concurrency=5,
@@ -127,15 +127,15 @@ class TestLocalTracePrivacy:
     either -- even when the process has a configured, exporting tracer provider."""
 
     def test_local_run_exports_no_spans(self, memory_exporter):
-        evaluate(name="r", data=_ds(3), task=echo, scorers=[exact], local=True)
+        evaluate(name="r", dataset=_ds(3), task=echo, scorers=[exact], local=True)
         assert memory_exporter.get_finished_spans() == ()
 
     def test_the_same_run_reported_does_export(self, memory_exporter):
-        evaluate(name="r", data=_ds(3), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(3), task=echo, scorers=[exact], report_to=_reported())
         assert len(memory_exporter.get_finished_spans()) == 9  # 3 cases x root/task/scorer
 
     def test_local_case_carries_no_trace_id(self, memory_exporter):
-        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], local=True)
+        result = evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], local=True)
         # No exported trace exists, so there is nothing for the item to link to.
         assert result.item_results[0].trace_id is None
 
@@ -151,7 +151,7 @@ class TestLocalTracePrivacy:
 class TestEvalAttributes:
     def test_root_attributes(self, memory_exporter):
         ds = _ds(1, metadata={"cat": "x"}, source_trace_id="t1", source_span_id="s1")
-        evaluate(name="routing-v2", data=ds, task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="routing-v2", dataset=ds, task=echo, scorers=[exact], report_to=_reported())
         root = _by_name(memory_exporter.get_finished_spans())["evaluation-item"]
         a = root.attributes
         assert a[SpanAttributes.SPAN_TYPE] == "evaluation"
@@ -165,12 +165,12 @@ class TestEvalAttributes:
     def test_has_expected_false_when_absent(self, memory_exporter):
         ds = Dataset(name="d")
         ds.upsert(EvalCase(input=1, id="c0"))  # no expected
-        evaluate(name="r", data=ds, task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=ds, task=echo, scorers=[exact], report_to=_reported())
         root = _by_name(memory_exporter.get_finished_spans())["evaluation-item"]
         assert root.attributes["traceroot.eval.has_expected"] is False
 
     def test_task_and_scorer_attributes(self, memory_exporter):
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         by = _by_name(memory_exporter.get_finished_spans())
         assert by["task"].attributes[SpanAttributes.SPAN_TYPE] == "task"
         assert by["task"].attributes["traceroot.eval.task_name"] == "echo"
@@ -180,13 +180,15 @@ class TestEvalAttributes:
         assert scorer.attributes["traceroot.eval.score_value"] == 1.0
 
     def test_run_name_on_all_spans(self, memory_exporter):
-        evaluate(name="routing-v2", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(
+            name="routing-v2", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported()
+        )
         by = _by_name(memory_exporter.get_finished_spans())
         for span in (by["evaluation-item"], by["task"], by["exact"]):
             assert span.attributes["traceroot.eval.run_name"] == "routing-v2"
 
     def test_task_input_output_captured(self, memory_exporter):
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         task = _by_name(memory_exporter.get_finished_spans())["task"]
         assert SpanAttributes.SPAN_INPUT in task.attributes
         assert SpanAttributes.SPAN_OUTPUT in task.attributes
@@ -197,7 +199,7 @@ class TestEvalSpanIO:
     so the trace viewer renders them like any other span (and diff mode has content)."""
 
     def test_root_carries_case_input_and_candidate_output(self, memory_exporter):
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         root = _by_name(memory_exporter.get_finished_spans())["evaluation-item"]
         assert root.attributes[SpanAttributes.SPAN_INPUT] == 0  # the case input
         assert root.attributes[SpanAttributes.SPAN_OUTPUT] == 0  # the candidate output
@@ -206,19 +208,19 @@ class TestEvalSpanIO:
         def boom(x):
             raise ValueError("kaboom")
 
-        evaluate(name="r", data=_ds(1), task=boom, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=boom, scorers=[exact], report_to=_reported())
         root = _by_name(memory_exporter.get_finished_spans())["evaluation-item"]
         assert root.attributes[SpanAttributes.SPAN_INPUT] == 0
         assert "kaboom" in root.attributes[SpanAttributes.SPAN_OUTPUT]  # task error as output
 
     def test_scorer_input_has_candidate_and_expected(self, memory_exporter):
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         scorer = _by_name(memory_exporter.get_finished_spans())["exact"]
         inp = scorer.attributes[SpanAttributes.SPAN_INPUT]
         assert "candidate" in inp and "expected" in inp  # what the scorer compared
 
     def test_scorer_output_has_score_value(self, memory_exporter):
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         scorer = _by_name(memory_exporter.get_finished_spans())["exact"]
         out = scorer.attributes[SpanAttributes.SPAN_OUTPUT]
         assert "value" in out and "1.0" in out  # score value + explanation slot
@@ -227,14 +229,14 @@ class TestEvalSpanIO:
         def broken(ctx):
             raise RuntimeError("judge down")
 
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[broken], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[broken], report_to=_reported())
         scorer = _by_name(memory_exporter.get_finished_spans())["broken"]
         assert "judge down" in scorer.attributes[SpanAttributes.SPAN_OUTPUT]
 
     def test_scorer_input_includes_target_span_id_when_present(self, memory_exporter):
         ds = Dataset(name="d")
         ds.upsert(EvalCase(input=0, id="c0", expected=0, score_target_span_id="span-xyz"))
-        evaluate(name="r", data=ds, task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=ds, task=echo, scorers=[exact], report_to=_reported())
         scorer = _by_name(memory_exporter.get_finished_spans())["exact"]
         assert "span-xyz" in scorer.attributes[SpanAttributes.SPAN_INPUT]
 
@@ -263,7 +265,7 @@ class TestEvalTraceIdentityContract:
         )
         result = evaluate(
             name="billing-routing",
-            data=ds,
+            dataset=ds,
             task=echo,
             scorers=[exact],
             candidate_version="cand-42",
@@ -292,7 +294,7 @@ class TestEvalTraceIdentityContract:
     def test_optional_identity_absent_when_unknown(self, memory_exporter):
         # A local inline run has no run_id / dataset_version_id / candidate_version:
         # those keys are omitted (not stamped as empty), but core identity stays.
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         a = _by_name(memory_exporter.get_finished_spans())["evaluation-item"].attributes
         assert SpanAttributes.EVAL_RUN_ID not in a
         assert SpanAttributes.EVAL_DATASET_VERSION_ID not in a
@@ -303,7 +305,9 @@ class TestEvalTraceIdentityContract:
 
 class TestTraceIdAndErrors:
     def test_trace_id_returned_with_provider(self, memory_exporter):
-        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported()
+        )
         item = result.item_results[0]
         assert item.trace_id is not None
         # matches the emitted evaluation-item root trace id
@@ -316,7 +320,9 @@ class TestTraceIdAndErrors:
                 raise ValueError("kaboom")
             return x
 
-        result = evaluate(name="r", data=_ds(3), task=boom, scorers=[exact], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(3), task=boom, scorers=[exact], report_to=_reported()
+        )
         by_id = {it.case_id: it for it in result.item_results}
         assert "kaboom" in by_id["c1"].error
         assert by_id["c0"].error is None and by_id["c2"].error is None
@@ -333,7 +339,9 @@ class TestReportedTraceExport:
     to its emitted trace id."""
 
     def test_reported_eval_exports_and_links_trace_id(self, memory_exporter):
-        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported()
+        )
         spans = memory_exporter.get_finished_spans()
         assert sorted(s.name for s in spans) == ["evaluation-item", "exact", "task"]
         item = result.item_results[0]
@@ -354,7 +362,7 @@ class TestUsageAttributionHierarchy:
         def llm_scorer(ctx):
             return judge(ctx.output)  # a judge LLM call inside a scorer
 
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[llm_scorer], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[llm_scorer], report_to=_reported())
         by = _by_name(memory_exporter.get_finished_spans())
         # the judge LLM span is a child of the SCORER span (usage attributes to the judge),
         # NOT the task span.
@@ -362,7 +370,7 @@ class TestUsageAttributionHierarchy:
         assert by["llm_scorer"].parent.span_id == by["evaluation-item"].context.span_id
 
     def test_eval_wrapper_spans_fabricate_no_tokens_or_cost(self, memory_exporter):
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported())
         wrapper_names = {"evaluation-item", "task", "exact"}
         for span in memory_exporter.get_finished_spans():
             if span.name in wrapper_names:
@@ -371,7 +379,9 @@ class TestUsageAttributionHierarchy:
                 assert not any(("token" in k) or ("cost" in k) for k in keys), keys
 
     def test_trace_id_links_result_to_the_emitted_trace(self, memory_exporter):
-        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[exact], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[exact], report_to=_reported()
+        )
         root = _by_name(memory_exporter.get_finished_spans())["evaluation-item"]
         assert result.item_results[0].trace_id == format(root.context.trace_id, "032x")
 
@@ -386,7 +396,7 @@ class TestLlmJudgeTrace:
             messages=[{"role": "user", "content": "ANSWER:\n{{output}}"}],
             complete=lambda model, messages: "0.8",  # deterministic, no network
         )
-        evaluate(name="r", data=_ds(1), task=echo, scorers=[judge], report_to=_reported())
+        evaluate(name="r", dataset=_ds(1), task=echo, scorers=[judge], report_to=_reported())
 
         by = _by_name(memory_exporter.get_finished_spans())
         # the judge's model call is its own LLM span, nested under the scorer span
@@ -426,7 +436,9 @@ class TestLlmJudgeTrace:
             messages=[{"role": "user", "content": "ANSWER:\n{{output}}"}],
             complete=lambda model, messages: "0.8",
         )
-        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[judge], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[judge], report_to=_reported()
+        )
 
         by = _by_name(memory_exporter.get_finished_spans())
         assert "llm_judge:conciseness" in by  # a custom complete is self-instrumented
@@ -466,7 +478,9 @@ class TestLlmJudgeTokenCounts:
         monkeypatch.setattr(judge_mod, "_default_complete", lambda model, messages: ("0.8", usage))
 
     def _run(self, judge, memory_exporter):
-        result = evaluate(name="r", data=_ds(1), task=echo, scorers=[judge], report_to=_reported())
+        result = evaluate(
+            name="r", dataset=_ds(1), task=echo, scorers=[judge], report_to=_reported()
+        )
         return result, _by_name(memory_exporter.get_finished_spans())
 
     def test_judge_span_carries_the_provider_token_counts(self, memory_exporter, monkeypatch):

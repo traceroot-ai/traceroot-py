@@ -26,7 +26,7 @@ def exact(ctx):
 
 
 try:
-    evaluate(name="r", data=ds, task=task, scorers=[exact])
+    evaluate(name="r", dataset=ds, task=task, scorers=[exact])
 except RuntimeError as e:
     assert "reports to the TraceRoot platform" in str(e), str(e)
     print("CLOUD_ONLY_RAISED")

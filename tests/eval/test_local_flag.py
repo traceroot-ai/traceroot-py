@@ -101,7 +101,7 @@ def spy_transport(monkeypatch):
 
 class TestLocalRunsFullyAndReportsNothing:
     def test_completes_without_credentials(self, no_credentials, no_exfiltration):
-        result = evaluate(name="r", data=_dataset(), task=echo, scorers=[exact], local=True)
+        result = evaluate(name="r", dataset=_dataset(), task=echo, scorers=[exact], local=True)
 
         assert result.case_count == 2
         assert result.errored == 0
@@ -115,13 +115,13 @@ class TestLocalRunsFullyAndReportsNothing:
         self, no_credentials, no_exfiltration
     ):
         result = await evaluate_async(
-            name="r", data=_dataset(), task=echo, scorers=[exact], local=True
+            name="r", dataset=_dataset(), task=echo, scorers=[exact], local=True
         )
         assert result.case_count == 2
         assert result.score_summary["exact"].mean == 1.0
 
     def test_the_run_is_recorded_in_memory(self, no_credentials, no_exfiltration, spy_transport):
-        evaluate(name="r", data=_dataset(), task=echo, scorers=[exact], local=True)
+        evaluate(name="r", dataset=_dataset(), task=echo, scorers=[exact], local=True)
 
         assert len(spy_transport) == 1
         kinds = [c[0] for c in spy_transport[0].calls]
@@ -145,7 +145,7 @@ class TestLocalOnASyncedDataset:
     def test_synced_dataset_runs_local(self, credentials, no_exfiltration):
         d = _synced_dataset()
 
-        result = evaluate(name="r", data=d, task=echo, scorers=[exact], local=True)
+        result = evaluate(name="r", dataset=d, task=echo, scorers=[exact], local=True)
 
         assert result.case_count == 2
         assert result.run_id is None
@@ -160,7 +160,7 @@ class TestMutualExclusion:
         with pytest.raises(ValueError, match=_MUTUALLY_EXCLUSIVE):
             evaluate(
                 name="r",
-                data=_dataset(),
+                dataset=_dataset(),
                 task=echo,
                 scorers=[exact],
                 local=True,
@@ -171,7 +171,7 @@ class TestMutualExclusion:
         with pytest.raises(ValueError, match=_MUTUALLY_EXCLUSIVE):
             evaluate(
                 name="r",
-                data=_dataset(),
+                dataset=_dataset(),
                 task=echo,
                 scorers=[exact],
                 local=True,
@@ -196,9 +196,9 @@ class TestEquivalentToAnExplicitFakeTransport:
     ):
         explicit = FakeTransport()
         via_transport = evaluate(
-            name="r", data=_dataset(), task=echo, scorers=[exact], transport=explicit
+            name="r", dataset=_dataset(), task=echo, scorers=[exact], transport=explicit
         )
-        via_local = evaluate(name="r", data=_dataset(), task=echo, scorers=[exact], local=True)
+        via_local = evaluate(name="r", dataset=_dataset(), task=echo, scorers=[exact], local=True)
 
         assert _summary(via_local) == _summary(via_transport)
         assert len(spy_transport) == 1  # only the local run selected one for itself
@@ -231,7 +231,7 @@ class TestDefaultPathUnchanged:
         reported = FakeTransport()
         monkeypatch.setattr(engine, "_auto_transport", lambda *a, **k: reported)
 
-        result = evaluate(name="r", data=_dataset(), task=echo, scorers=[exact])
+        result = evaluate(name="r", dataset=_dataset(), task=echo, scorers=[exact])
 
         assert published == ["local-flag"]
         assert [c[0] for c in reported.calls].count("create_run") == 1
@@ -261,7 +261,7 @@ class TestLocalSuppressesGlobalAutoInit:
             seen_suppressed.append(decorators._is_global_auto_init_suppressed())
             return x
 
-        evaluate(name="r", data=_dataset(), task=task, scorers=[exact], local=True)
+        evaluate(name="r", dataset=_dataset(), task=task, scorers=[exact], local=True)
 
         assert seen_suppressed and all(seen_suppressed)  # suppressed during every case
         assert brought_up == []  # lazy bring-up never happened
@@ -279,6 +279,6 @@ class TestLocalSuppressesGlobalAutoInit:
             seen_suppressed.append(decorators._is_global_auto_init_suppressed())
             return x
 
-        evaluate(name="r", data=_synced_dataset(), task=task, scorers=[exact])
+        evaluate(name="r", dataset=_synced_dataset(), task=task, scorers=[exact])
 
         assert seen_suppressed and not any(seen_suppressed)  # never suppressed on the reported path

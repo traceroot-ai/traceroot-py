@@ -71,7 +71,7 @@ class TestEvaluateThreadsTheKey:
         t = _transport()
         evaluate(
             name="Nightly regression",
-            data=_ds(),
+            dataset=_ds(),
             task=lambda x: x,
             scorers=[lambda ctx: 1.0],
             transport=t,
@@ -83,7 +83,7 @@ class TestEvaluateThreadsTheKey:
         t = _transport()
         evaluate(
             name="Nightly regression",
-            data=_ds(),
+            dataset=_ds(),
             task=lambda x: x,
             scorers=[lambda ctx: 1.0],
             transport=t,
@@ -94,7 +94,7 @@ class TestEvaluateThreadsTheKey:
         t = _transport(evaluation_key="from-the-transport")
         evaluate(
             name="n",
-            data=_ds(),
+            dataset=_ds(),
             task=lambda x: x,
             scorers=[lambda ctx: 1.0],
             transport=t,

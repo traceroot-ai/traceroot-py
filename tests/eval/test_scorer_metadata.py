@@ -162,7 +162,7 @@ class TestRetainedSpecsMatchTheRunsEffectivePolicy:
         ds = Dataset(name="d")
         ds.upsert(EvalCase(input=1, id="c0", expected=1))
 
-        run = evaluate(name="r", data=ds, task=lambda x: x, scorers=[acc], transport=t)
+        run = evaluate(name="r", dataset=ds, task=lambda x: x, scorers=[acc], transport=t)
 
         assert run.scorer_specs == custom  # not describe_scorers([acc]) (threshold 0.9)
 
@@ -177,7 +177,7 @@ class TestRetainedSpecsMatchTheRunsEffectivePolicy:
         ds.upsert(EvalCase(input=1, id="c0", expected=1))
 
         run = evaluate(
-            name="r", data=ds, task=lambda x: x, scorers=[acc], transport=FakeTransport()
+            name="r", dataset=ds, task=lambda x: x, scorers=[acc], transport=FakeTransport()
         )
 
         assert run.scorer_specs == describe_scorers([acc])

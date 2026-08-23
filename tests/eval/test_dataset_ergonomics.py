@@ -162,7 +162,7 @@ class TestCloudOnlyErrorIsAccurate:
         with pytest.raises(RuntimeError) as exc:
             evaluate(
                 name="r",
-                data=[EvalCase(input=1, id="c0", expected=1)],
+                dataset=[EvalCase(input=1, id="c0", expected=1)],
                 task=lambda x: x,
                 scorers=[lambda ctx: 1.0],
             )
@@ -179,7 +179,7 @@ class TestCloudOnlyErrorIsAccurate:
         d = Dataset("d")
         d.add(input=1, expected=1)
         with pytest.raises(RuntimeError, match="no credentials were found"):
-            evaluate(name="r", data=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
+            evaluate(name="r", dataset=d, task=lambda x: x, scorers=[lambda ctx: 1.0])
 
 
 class TestMetadataOnlyPush:

@@ -109,18 +109,10 @@ class Evaluation:
         return await _run_async(**self._kwargs(overrides))
 
 
-def _resolve_dataset(dataset: DataSource | None, data: DataSource | None) -> DataSource:
-    source = dataset if dataset is not None else data
-    if source is None:
-        raise ValueError("evaluate() requires 'dataset' (or the 'data' alias)")
-    return source
-
-
 def evaluate(
     *,
     name: str,
-    dataset: DataSource | None = None,
-    data: DataSource | None = None,  # alias for dataset
+    dataset: DataSource,
     task: Callable[[Any], Any],
     scorers: Sequence[Callable[[ScorerContext], Any]],
     max_concurrency: int = 10,
@@ -137,15 +129,16 @@ def evaluate(
     progress: bool | None = None,
     retry: Any = None,
 ) -> EvalRunResult:
-    """Construct-and-run an :class:`Evaluation`. ``dataset=`` is primary; ``data=`` is an alias.
+    """Construct-and-run an :class:`Evaluation`.
 
+    ``dataset`` is a ``Dataset`` / ``DatasetSnapshot`` or an inline ``list`` of cases. Reporting to
+    the platform requires a synced dataset, so an inline list must be run with ``local=True``.
     ``local=True`` is the shortcut for ``transport=FakeTransport()``: the run executes in full and
-    returns a complete result, but reports nowhere -- no credentials, no dataset publish, no run
-    record. Pass one or the other, never both.
+    returns a complete result, but reports nowhere -- no credentials, no dataset publish, no run record.
     """
     return Evaluation(
         name=name,
-        dataset=_resolve_dataset(dataset, data),
+        dataset=dataset,
         task=task,
         scorers=scorers,
         max_concurrency=max_concurrency,
@@ -166,8 +159,7 @@ def evaluate(
 async def evaluate_async(
     *,
     name: str,
-    dataset: DataSource | None = None,
-    data: DataSource | None = None,
+    dataset: DataSource,
     task: Callable[[Any], Any],
     scorers: Sequence[Callable[[ScorerContext], Any]],
     max_concurrency: int = 10,
@@ -187,7 +179,7 @@ async def evaluate_async(
     """Async form of :func:`evaluate`."""
     return await Evaluation(
         name=name,
-        dataset=_resolve_dataset(dataset, data),
+        dataset=dataset,
         task=task,
         scorers=scorers,
         max_concurrency=max_concurrency,
