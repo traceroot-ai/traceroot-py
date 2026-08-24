@@ -391,15 +391,24 @@ class TestLocalSuppressesGlobalAutoInit:
         """Origin-scoping (#1969): a local run being active must not reach an unrelated, concurrently
         reporting provider. The local marker is set in one context; a reported span born in a
         SEPARATE context (its own run) is never stamped, so it still exports -- the process-global
-        gate this replaced dropped it too."""
+        gate this replaced dropped it too.
+
+        The reported provider's sampler is wrapped with ``LocalEvalSampler`` -- exactly what
+        ``TracerootClient`` does in ``client.py`` -- so this test actually exercises the real gate.
+        A bare ``TracerProvider()``'s default sampler never consults the suppression flag at all, so
+        without this wrapping the assertion below would pass unconditionally, whether the gate is
+        correctly context-scoped or regressed to process-global: it would never observe the
+        difference either way."""
         from opentelemetry.sdk.trace import TracerProvider
 
         from traceroot.transport.span_processor import (
+            LocalEvalSampler,
             TracerootSpanProcessor,
             mark_local_eval_run,
         )
 
         reported_provider = TracerProvider()
+        reported_provider.sampler = LocalEvalSampler(reported_provider.sampler)
         reported_proc = TracerootSpanProcessor(api_key="k2", host_url="https://reported.invalid")
         reported_provider.add_span_processor(reported_proc)
         # The reported run's context, captured independently of any local run (marker unset in it).
