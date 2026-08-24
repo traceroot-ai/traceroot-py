@@ -99,6 +99,23 @@ def spy_transport(monkeypatch):
     return made
 
 
+@pytest.fixture
+def export_spy(monkeypatch):
+    """Spy at the exporter boundary. ``TracerootSpanProcessor.on_end`` delegates to
+    ``BatchSpanProcessor.on_end`` (queue-for-export) only for spans it does NOT drop, so recording
+    the name of every span that reaches it is exactly what makes "exported vs dropped" observable.
+    Restored automatically in teardown by monkeypatch."""
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    exported: list[str] = []
+
+    def _record(self, span):
+        exported.append(span.name)
+
+    monkeypatch.setattr(BatchSpanProcessor, "on_end", _record)
+    return exported
+
+
 class TestLocalRunsFullyAndReportsNothing:
     def test_completes_without_credentials(self, no_credentials, no_exfiltration):
         result = evaluate(name="r", dataset=_dataset(), task=echo, scorers=[exact], local=True)
@@ -241,8 +258,14 @@ class TestDefaultPathUnchanged:
 class TestLocalSuppressesGlobalAutoInit:
     """A local run must not let a task/judge ``@observe`` (or auto-instrumentation) lazily bring up
     an exporting provider and ship case data off-process: the lazy-init seam is suppressed for the
-    whole run and released after. Parity with the TS ``_suppressGlobalAutoInit`` seam. (Only *lazy*
-    bring-up is blocked; a provider the app already initialized is intentionally left alone.)"""
+    whole run and released after. Parity with the TS ``_suppressGlobalAutoInit`` seam.
+
+    A ``local=True`` run also suppresses export from a provider the app ALREADY initialized: an
+    ``initialize()`` call before the eval leaves a live exporting provider whose auto-instrumented
+    spans (OpenAI/Anthropic/...) would otherwise ship despite ``local=True``, so they are dropped at
+    the exporter boundary for the run's duration. That drop is currently process-global, so it also
+    over-reaches onto an unrelated concurrent reported run's spans; that known limitation is tracked
+    in traceroot-ai/traceroot#1969 (origin-scoped redesign) and pinned by the xfail below."""
 
     def test_local_run_suppresses_lazy_auto_init(
         self, no_credentials, no_exfiltration, monkeypatch
@@ -282,3 +305,67 @@ class TestLocalSuppressesGlobalAutoInit:
         evaluate(name="r", dataset=_synced_dataset(), task=task, scorers=[exact])
 
         assert seen_suppressed and not any(seen_suppressed)  # never suppressed on the reported path
+
+    def test_already_initialized_provider_exports_nothing_during_local_run(
+        self, no_credentials, no_exfiltration, export_spy, monkeypatch
+    ):
+        """The fix: an app that already called ``initialize()`` has a live exporting provider; a
+        ``local=True`` run drops its spans at the exporter boundary for the whole run. A task span
+        named like an auto-instrumented LLM call ("messages.create"), created through that
+        already-initialized provider, forwards NOTHING to export."""
+        import traceroot
+        from traceroot import Integration
+
+        # Fresh, fully-initialized (enabled, exporting) provider with a real instrumentation
+        # integration -- the "app already called initialize()" starting point. Fake host: the spy
+        # sits before export, so nothing touches the network regardless. Don't let initialize()
+        # claim OTel's process-global tracer-provider slot (set-once): the run is driven through
+        # the client's own provider below, and claiming the slot would poison sibling tests.
+        monkeypatch.setattr("opentelemetry.trace.set_tracer_provider", lambda *a, **k: None)
+        traceroot.shutdown()
+        traceroot._client = None
+        client = traceroot.initialize(
+            api_key="k", host_url="https://host.invalid", integrations=[Integration.OPENAI]
+        )
+        try:
+
+            def task(x):
+                client._provider.get_tracer("app").start_span("messages.create").end()
+                return x
+
+            evaluate(name="r", data=_dataset(), task=task, scorers=[exact], local=True)
+
+            assert export_spy == []  # nothing left the process during the local run
+        finally:
+            # Real openai instrumentation globally patches the library; undo it so it can't leak
+            # onto sibling tests (the rest of the suite mocks the instrumentor for this reason).
+            from openinference.instrumentation.openai import OpenAIInstrumentor
+
+            OpenAIInstrumentor().uninstrument()
+            traceroot.shutdown()
+            traceroot._client = None
+
+    @pytest.mark.xfail(
+        reason="over-reach: origin-scoping, traceroot-ai/traceroot#1969", strict=False
+    )
+    def test_unrelated_reported_span_still_exports_during_suppression(self, export_spy):
+        """DESIRED (post-#1969): suppression engaged for a local run must not reach an unrelated,
+        concurrently reporting provider. Today the drop is process-global, so this span is dropped
+        too -- so this xfails now and will xpass once export suppression is origin-scoped."""
+        from opentelemetry.sdk.trace import TracerProvider
+
+        from traceroot.transport.span_processor import (
+            TracerootSpanProcessor,
+            suppress_span_export,
+        )
+
+        reported_provider = TracerProvider()
+        reported_proc = TracerootSpanProcessor(api_key="k2", host_url="https://reported.invalid")
+        reported_provider.add_span_processor(reported_proc)
+        try:
+            with suppress_span_export():
+                reported_provider.get_tracer("reported-app").start_span("reported.work").end()
+
+            assert "reported.work" in export_spy  # the unrelated reported run still exported
+        finally:
+            reported_proc.shutdown()

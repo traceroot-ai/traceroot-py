@@ -8,6 +8,7 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from contextlib import contextmanager
 
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
@@ -33,6 +34,34 @@ logger = logging.getLogger(__name__)
 
 _PATH_MAP_MAX: int = 1024
 _PathMap = OrderedDict[str, list[str]]
+
+# --- Scoped export suppression -------------------------------------------------
+# When active, TracerootSpanProcessor.on_end DROPS the span instead of queueing it for export.
+# A local=True eval run turns this on for its whole duration so that an app which already called
+# initialize() exports NOTHING during the run -- including auto-instrumented library spans
+# (OpenAI/Anthropic/...), which flow through the global provider and would otherwise leak. This is
+# the missing half of the local-only guarantee: _suppress_global_auto_init only stops a *lazy*
+# provider from coming up; it cannot stop an *already-initialized* exporting provider. Process-global
+# and reentrant (a depth counter), so it survives concurrent cases and nested runs.
+_export_suppress_depth: int = 0
+_export_suppress_lock = threading.Lock()
+
+
+def _is_export_suppressed() -> bool:
+    return _export_suppress_depth > 0
+
+
+@contextmanager
+def suppress_span_export():
+    """Drop every TracerootSpanProcessor export for the duration of the block."""
+    global _export_suppress_depth
+    with _export_suppress_lock:
+        _export_suppress_depth += 1
+    try:
+        yield
+    finally:
+        with _export_suppress_lock:
+            _export_suppress_depth -= 1
 
 
 class TracerootSpanProcessor(BatchSpanProcessor):
@@ -217,6 +246,10 @@ class TracerootSpanProcessor(BatchSpanProcessor):
             span_id_hex = format(span.context.span_id, "016x")
             self._ids_path_by_span_id.pop(span_id_hex, None)
             self._name_path_by_span_id.pop(span_id_hex, None)
+        if _is_export_suppressed():
+            # A local=True eval run is in progress: drop the span instead of queueing it for
+            # export, so nothing (including auto-instrumented spans) leaves the process.
+            return
         super().on_end(span)
 
     @property
