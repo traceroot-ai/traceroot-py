@@ -12,6 +12,7 @@ from traceroot.instrumentation._instrumentors import (
     AutogenInstrumentor,
     PydanticAIInstrumentor,
 )
+from traceroot.instrumentation.livekit import LiveKitInstrumentor, LiveKitSpanProcessor
 from traceroot.instrumentation.registry import (
     _BUILTIN_REGISTRY,
     Integration,
@@ -35,6 +36,7 @@ def test_integration_enum_values():
     assert Integration.DSPY == "dspy"
     assert Integration.PYDANTIC_AI == "pydantic_ai"
     assert Integration.BEDROCK == "bedrock"
+    assert Integration.LIVEKIT == "livekit"
 
 
 def test_integration_exported_from_traceroot():
@@ -822,3 +824,164 @@ def test_agent_framework_idempotent(mock_installed):
 
     assert provider.add_span_processor.call_count == 1
     assert mock_enable.call_count == 1
+
+
+# =============================================================================
+# LiveKit integration
+# =============================================================================
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_livekit_missing_warns_and_skips(mock_installed, caplog):
+    import logging
+
+    mock_installed.return_value = False
+
+    provider = TracerProvider()
+    with caplog.at_level(logging.WARNING, logger="traceroot.instrumentation.registry"):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.LIVEKIT],
+        )
+
+    assert result == []
+    assert "skipping" in caplog.text
+    assert "livekit-agents" in caplog.text
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_livekit_integration_sets_livekit_tracer_provider(mock_installed, monkeypatch):
+    import sys
+    import types
+
+    LiveKitInstrumentor._instrumented = False
+    mock_installed.return_value = True
+    calls = []
+
+    telemetry_module = types.ModuleType("livekit.agents.telemetry")
+
+    def set_tracer_provider(tracer_provider):
+        calls.append(tracer_provider)
+
+    telemetry_module.set_tracer_provider = set_tracer_provider
+
+    agents_module = types.ModuleType("livekit.agents")
+    agents_module.telemetry = telemetry_module
+
+    livekit_module = types.ModuleType("livekit")
+    livekit_module.agents = agents_module
+
+    monkeypatch.setitem(sys.modules, "livekit", livekit_module)
+    monkeypatch.setitem(sys.modules, "livekit.agents", agents_module)
+    monkeypatch.setitem(sys.modules, "livekit.agents.telemetry", telemetry_module)
+
+    provider = TracerProvider()
+    result = initialize_integrations(
+        tracer_provider=provider,
+        integrations=[Integration.LIVEKIT],
+    )
+
+    assert result == [Integration.LIVEKIT]
+    assert calls == [provider]
+
+
+def test_livekit_instrumentor_imports_livekit_only_during_instrument(monkeypatch):
+    import builtins
+
+    LiveKitInstrumentor._instrumented = False
+    imported_names = []
+    original_import = builtins.__import__
+
+    def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+        imported_names.append(name)
+        if name == "livekit.agents.telemetry":
+            raise ModuleNotFoundError(name)
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", tracking_import)
+
+    instrumentor = LiveKitInstrumentor()
+    assert "livekit.agents.telemetry" not in imported_names
+
+    with pytest.raises(ModuleNotFoundError):
+        instrumentor.instrument(tracer_provider=TracerProvider())
+
+    assert "livekit.agents.telemetry" in imported_names
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_livekit_contract_uses_existing_trace_context(mock_installed, monkeypatch):
+    import sys
+    import types
+
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExportResult
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from traceroot import using_attributes
+    from traceroot.transport.span_processor import TracerootSpanProcessor
+
+    LiveKitInstrumentor._instrumented = False
+    mock_installed.return_value = True
+    provider_calls = []
+
+    telemetry_module = types.ModuleType("livekit.agents.telemetry")
+
+    def set_tracer_provider(tracer_provider):
+        provider_calls.append(tracer_provider)
+
+    telemetry_module.set_tracer_provider = set_tracer_provider
+
+    agents_module = types.ModuleType("livekit.agents")
+    agents_module.telemetry = telemetry_module
+
+    livekit_module = types.ModuleType("livekit")
+    livekit_module.agents = agents_module
+
+    monkeypatch.setitem(sys.modules, "livekit", livekit_module)
+    monkeypatch.setitem(sys.modules, "livekit.agents", agents_module)
+    monkeypatch.setitem(sys.modules, "livekit.agents.telemetry", telemetry_module)
+    monkeypatch.setattr(
+        "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter.export",
+        lambda _self, _spans: SpanExportResult.SUCCESS,
+    )
+    monkeypatch.setattr(
+        "traceroot.transport.span_processor.OTLPSpanExporter.export",
+        lambda _self, _spans: SpanExportResult.SUCCESS,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(
+        TracerootSpanProcessor(
+            api_key="test-key",
+            host_url="http://127.0.0.1",
+            flush_interval=9999,
+        )
+    )
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    result = initialize_integrations(
+        tracer_provider=provider,
+        integrations=[Integration.LIVEKIT],
+    )
+
+    assert result == [Integration.LIVEKIT]
+    assert provider_calls == [provider]
+    assert isinstance(
+        provider._active_span_processor._span_processors[0],
+        LiveKitSpanProcessor,
+    )
+
+    tracer = provider.get_tracer("fake-livekit")
+    with (
+        using_attributes(session_id="room-contract"),
+        tracer.start_as_current_span("agent_turn") as span,
+    ):
+        span.set_attribute("lk.response.text", "ready")
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].attributes.get("openinference.span.kind") == "AGENT"
+    assert spans[0].attributes.get("output.value") == "ready"
+    assert spans[0].attributes.get("session.id") == "room-contract"
+    provider.shutdown()

@@ -8,7 +8,9 @@ import logging
 import os
 import threading
 from collections import OrderedDict
+from typing import Any
 
+from openinference.instrumentation import get_attributes_from_context
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
     Compression,
@@ -28,11 +30,21 @@ from traceroot.env import (
     TRACEROOT_FLUSH_INTERVAL,
     TRACEROOT_TIMEOUT,
 )
+from traceroot.utils import set_span_attribute
 
 logger = logging.getLogger(__name__)
 
 _PATH_MAP_MAX: int = 1024
 _PathMap = OrderedDict[str, list[str]]
+
+
+def _apply_context_attributes(span: Any) -> None:
+    """Apply OpenInference context attributes to any recording span."""
+    try:
+        for key, value in get_attributes_from_context():
+            set_span_attribute(span, key, value)
+    except Exception as exc:
+        logger.debug("TracerootSpanProcessor: failed to apply context attributes: %s", exc)
 
 
 class TracerootSpanProcessor(BatchSpanProcessor):
@@ -138,6 +150,8 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 span.set_attribute("traceroot.git.repo", self._git_repo)
             if self._git_ref:
                 span.set_attribute("traceroot.git.ref", self._git_ref)
+
+            _apply_context_attributes(span)
 
             try:
                 # span.parent is the SpanContext of the parent (set by the SDK at

@@ -36,6 +36,7 @@ class Integration(StrEnum):
     PYDANTIC_AI = "pydantic_ai"
     BEDROCK = "bedrock"
     AGENT_FRAMEWORK = "agent_framework"
+    LIVEKIT = "livekit"
 
 
 @dataclass
@@ -149,6 +150,11 @@ _BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
         package="agent-framework-core",
         module_path="traceroot.instrumentation._instrumentors",
         class_name="AgentFrameworkInstrumentor",
+    ),
+    Integration.LIVEKIT: InstrumentorEntry(
+        package="livekit-agents",
+        module_path="traceroot.instrumentation.livekit",
+        class_name="LiveKitInstrumentor",
     ),
 }
 

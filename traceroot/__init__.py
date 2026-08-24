@@ -128,6 +128,11 @@ def flush() -> None:
         _client.flush()
 
 
+async def flush_async() -> None:
+    """Flush all pending traces from async shutdown hooks."""
+    flush()
+
+
 def shutdown() -> None:
     """Shutdown the SDK gracefully."""
     if _client:
@@ -141,6 +146,7 @@ __all__ = [
     "initialize",
     "get_client",
     "flush",
+    "flush_async",
     "shutdown",
     "observe",
     "TracerootClient",
