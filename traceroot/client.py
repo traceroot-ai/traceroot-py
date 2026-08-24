@@ -29,7 +29,7 @@ from traceroot.git_context import (
     harvest_ci_git_context,
 )
 from traceroot.instrumentation.registry import Integration
-from traceroot.transport.span_processor import TracerootSpanProcessor
+from traceroot.transport.span_processor import LocalEvalSampler, TracerootSpanProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -167,8 +167,11 @@ class TracerootClient:
             git_ref=self.git_ref,
         )
 
-        # Create and configure TracerProvider
+        # Create and configure TracerProvider. Wrap whatever sampler the SDK resolved (default, or
+        # OTEL_TRACES_SAMPLER) so a local=True eval run samples its own spans DROP -- they are never
+        # recorded, so they cannot be exported by this or any other processor on the provider.
         self._provider = TracerProvider()
+        self._provider.sampler = LocalEvalSampler(self._provider.sampler)
         self._provider.add_span_processor(self._span_processor)
 
         # Set as global provider so @observe decorator uses it

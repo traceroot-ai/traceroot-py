@@ -8,14 +8,16 @@ import logging
 import os
 import threading
 from collections import OrderedDict
-from contextlib import contextmanager
 
+from openinference.instrumentation import suppress_tracing
 from opentelemetry import trace as otel_trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
     Compression,
     OTLPSpanExporter,
 )
+from opentelemetry.instrumentation.utils import is_instrumentation_enabled
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import Decision, Sampler, SamplingResult
 
 from traceroot.constants import (
     DEFAULT_FLUSH_AT,
@@ -35,33 +37,74 @@ logger = logging.getLogger(__name__)
 _PATH_MAP_MAX: int = 1024
 _PathMap = OrderedDict[str, list[str]]
 
-# --- Scoped export suppression -------------------------------------------------
-# When active, TracerootSpanProcessor.on_end DROPS the span instead of queueing it for export.
-# A local=True eval run turns this on for its whole duration so that an app which already called
-# initialize() exports NOTHING during the run -- including auto-instrumented library spans
-# (OpenAI/Anthropic/...), which flow through the global provider and would otherwise leak. This is
-# the missing half of the local-only guarantee: _suppress_global_auto_init only stops a *lazy*
-# provider from coming up; it cannot stop an *already-initialized* exporting provider. Process-global
-# and reentrant (a depth counter), so it survives concurrent cases and nested runs.
-_export_suppress_depth: int = 0
-_export_suppress_lock = threading.Lock()
+# --- Local-eval gate: OTel's own tracing-suppression flag, enforced at span CREATION -------------
+# A local=True eval run must not let the spans it originates leave the process, even when the app
+# already called initialize() and has a live exporting provider. _suppress_global_auto_init only
+# stops a *lazy* provider coming up; it cannot stop an already-initialized one -- this is the
+# other half.
+#
+# The marker is OpenTelemetry's own tracing-suppression context flag -- the exact mechanism the TS
+# SDK uses (context.with(suppressTracing(...))) and the one the instrumentation ecosystem already
+# honours. Setting it buys two things:
+#   1. every OpenInference instrumentor short-circuits in its own tracer and returns INVALID_SPAN,
+#      so an instrumented LLM/tool span is never even built (no attribute work at all); and
+#   2. LocalEvalSampler below returns DROP for anything else, so a raw tracer.start_span() -- which
+#      no instrumentor mediates -- is non-recording too.
+#
+# Step 2 exists only because OTel-Python's SDK does not consult the flag in Tracer.start_span the
+# way OTel-JS does (its _is_enabled() checks the per-scope tracer configurator and nothing else), so
+# the sampler is the shim that teaches the Python SDK to honour the same flag. Both SDKs therefore
+# set the same kind of marker and get the same result: a span born inside a local run is
+# non-recording, never reaches a span processor, and cannot be exported -- whenever it ends. This is
+# the principle every local-mode implementation we surveyed converges on: suppress where the span is
+# BORN, not where it is sent.
+#
+# The flag is read through opentelemetry-instrumentation's public is_instrumentation_enabled(), so no
+# private OTel constant sits in the guarantee path, and both the current and legacy key spellings are
+# covered. It reads the AMBIENT context, which is what we want: the engine sets the flag ambiently for
+# the run, so a caller passing an explicit parent Context (as the engine does for its per-case roots)
+# cannot step around the gate. Same ambient read OpenInference's own tracer does.
 
 
-def _is_export_suppressed() -> bool:
-    return _export_suppress_depth > 0
+def mark_local_eval_run():
+    """Suppress tracing for the current context for the duration of a ``local=True`` eval run.
+
+    Returns OpenInference's ``suppress_tracing`` context manager, which sets OTel's tracing
+    suppression flag -- the Python counterpart of the TS SDK's ``suppressTracing(context.active())``.
+    Context-scoped, so it follows asyncio tasks and any worker whose context is copied in, and a
+    concurrent *reported* run in its own context is untouched.
+    """
+    return suppress_tracing()
 
 
-@contextmanager
-def suppress_span_export():
-    """Drop every TracerootSpanProcessor export for the duration of the block."""
-    global _export_suppress_depth
-    with _export_suppress_lock:
-        _export_suppress_depth += 1
-    try:
-        yield
-    finally:
-        with _export_suppress_lock:
-            _export_suppress_depth -= 1
+class LocalEvalSampler(Sampler):
+    """Makes OTel-Python honour the tracing-suppression flag that OTel-JS honours natively.
+
+    Delegates to the provider's real sampler unless tracing is suppressed for this context, in
+    which case the span is DROPped and OTel returns a NonRecordingSpan.
+    """
+
+    def __init__(self, inner: Sampler):
+        self._inner = inner
+
+    def should_sample(
+        self,
+        parent_context=None,
+        trace_id=0,
+        name="",
+        kind=None,
+        attributes=None,
+        links=None,
+        trace_state=None,
+    ) -> SamplingResult:
+        if not is_instrumentation_enabled():
+            return SamplingResult(Decision.DROP, None, trace_state)
+        return self._inner.should_sample(
+            parent_context, trace_id, name, kind, attributes, links, trace_state
+        )
+
+    def get_description(self) -> str:
+        return f"LocalEvalSampler({self._inner.get_description()})"
 
 
 class TracerootSpanProcessor(BatchSpanProcessor):
@@ -246,10 +289,6 @@ class TracerootSpanProcessor(BatchSpanProcessor):
             span_id_hex = format(span.context.span_id, "016x")
             self._ids_path_by_span_id.pop(span_id_hex, None)
             self._name_path_by_span_id.pop(span_id_hex, None)
-        if _is_export_suppressed():
-            # A local=True eval run is in progress: drop the span instead of queueing it for
-            # export, so nothing (including auto-instrumented spans) leaves the process.
-            return
         super().on_end(span)
 
     @property
