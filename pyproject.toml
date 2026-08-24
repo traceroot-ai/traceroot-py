@@ -23,6 +23,10 @@ dependencies = [
     "opentelemetry-api>=1.34.0,<2.0",
     "opentelemetry-sdk>=1.34.0,<2.0",
     "opentelemetry-exporter-otlp-proto-http>=1.34.0,<2.0",
+    # is_instrumentation_enabled(): the public reader for OTel's tracing-suppression
+    # flag, which the local=True eval gate keys on. Already present transitively via
+    # every openinference-instrumentation-* package; declared because we import it.
+    "opentelemetry-instrumentation>=0.46b0",
     "openinference-instrumentation>=0.1.40,<1.0",
     "openinference-instrumentation-agno>=0.1.29,<1.0",
     "openinference-instrumentation-groq>=0.1.13,<1.0",

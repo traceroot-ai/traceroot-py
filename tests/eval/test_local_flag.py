@@ -419,26 +419,26 @@ class TestLocalSuppressesGlobalAutoInit:
         finally:
             reported_proc.shutdown()
 
-    def test_span_started_in_local_run_but_ended_after_is_dropped(self, export_spy):
-        """A span BORN inside the local run whose ``on_end`` fires AFTER the run's context has
-        exited is still dropped: the decision is stamped at birth (origin), not read at end. This is
-        exactly the case the process-global gate got wrong (it exported spans that outlived the run)."""
-        from opentelemetry.sdk.trace import TracerProvider
+    def test_span_started_in_local_run_but_ended_after_is_dropped(
+        self, no_credentials, no_exfiltration, export_spy, monkeypatch
+    ):
+        """A span BORN inside the local run whose ``.end()`` fires AFTER the run has returned never
+        exports: the run samples its spans DROP at creation, so the span is non-recording for its
+        whole life and no processor ever sees it. This is the case the process-global gate got wrong
+        (it exported spans that outlived the run). Mirrors the TS test of the same name, which
+        captures a span inside the run and ends it afterwards."""
+        with _already_initialized_client(monkeypatch) as client:
+            held = []
 
-        from traceroot.transport.span_processor import (
-            TracerootSpanProcessor,
-            mark_local_eval_run,
-        )
+            def task(x):
+                # Started inside the run, deliberately NOT ended there.
+                held.append(client._provider.get_tracer("app").start_span("late.work"))
+                return x
 
-        provider = TracerProvider()
-        proc = TracerootSpanProcessor(api_key="k", host_url="https://host.invalid")
-        provider.add_span_processor(proc)
-        try:
-            with mark_local_eval_run():
-                span = provider.get_tracer("app").start_span("late.work")  # on_start stamps it
-            # The local run's context has now exited (marker reset); the span ends only now.
-            span.end()
+            evaluate(name="r", data=_dataset(), task=task, scorers=[exact], local=True)
 
-            assert "late.work" not in export_spy  # dropped despite ending after the run
-        finally:
-            proc.shutdown()
+            assert held and not held[0].is_recording()  # non-recording from birth
+            for span in held:
+                span.end()  # ends only now, after the run's context is gone
+
+            assert "late.work" not in export_spy
