@@ -350,7 +350,7 @@ class TestLocalSuppressesGlobalAutoInit:
                 client._provider.get_tracer("app").start_span("messages.create").end()
                 return x
 
-            evaluate(name="r", data=_dataset(), task=task, scorers=[exact], local=True)
+            evaluate(name="r", dataset=_dataset(), task=task, scorers=[exact], local=True)
 
             assert export_spy == []  # nothing the local run originated left the process
 
@@ -365,7 +365,9 @@ class TestLocalSuppressesGlobalAutoInit:
                 client._provider.get_tracer("app").start_span("messages.create").end()
                 return x
 
-            await evaluate_async(name="r", data=_dataset(), task=task, scorers=[exact], local=True)
+            await evaluate_async(
+                name="r", dataset=_dataset(), task=task, scorers=[exact], local=True
+            )
 
             assert export_spy == []
 
@@ -383,7 +385,7 @@ class TestLocalSuppressesGlobalAutoInit:
                 return x
 
             # This test is async, so a loop is already running on this thread -> the worker path.
-            evaluate(name="r", data=_dataset(), task=task, scorers=[exact], local=True)
+            evaluate(name="r", dataset=_dataset(), task=task, scorers=[exact], local=True)
 
             assert export_spy == []
 
@@ -444,7 +446,7 @@ class TestLocalSuppressesGlobalAutoInit:
                 held.append(client._provider.get_tracer("app").start_span("late.work"))
                 return x
 
-            evaluate(name="r", data=_dataset(), task=task, scorers=[exact], local=True)
+            evaluate(name="r", dataset=_dataset(), task=task, scorers=[exact], local=True)
 
             assert held and not held[0].is_recording()  # non-recording from birth
             for span in held:
