@@ -402,16 +402,30 @@ class Dataset:
         if transport is not None:
             sync = transport
         else:
+            import os
+
+            import traceroot
             from traceroot.eval.dataset_sync import PlatformDatasetSync
 
-            try:
-                sync = PlatformDatasetSync()
-            except ValueError as exc:
+            # Check for credentials WITHOUT auto-creating the global client. Constructing
+            # PlatformDatasetSync() resolves creds via get_client(), which auto-initializes a
+            # keyless client from the environment when none exists -- after which
+            # traceroot.initialize() becomes a no-op, so a credential-less push() could never be
+            # recovered. Reading the existing client / env avoids that side effect, and turns only
+            # the genuinely-missing-key case into the actionable error; any other init error (e.g.
+            # a malformed env setting) propagates from PlatformDatasetSync() unchanged.
+            client = traceroot._client
+            api_key = (client.api_key if client is not None else "") or os.environ.get(
+                "TRACEROOT_API_KEY", ""
+            )
+            if not api_key:
                 raise ValueError(
                     "Dataset.push() publishes to the TraceRoot platform, but no credentials are "
-                    "configured. Call traceroot.initialize(api_key=..., host_url=...) first, or "
-                    "pass an explicit transport (transport=LocalDatasetSync() keeps it local)."
-                ) from exc
+                    "configured. Call traceroot.initialize(api_key=..., host_url=...) first (or set "
+                    "TRACEROOT_API_KEY), or pass an explicit transport (transport=LocalDatasetSync() "
+                    "keeps it local)."
+                )
+            sync = PlatformDatasetSync()
         snapshot = self.snapshot()
         base = base_version_id if base_version_id is not None else self.base_version_id
         # Only forwarded when set, so a duck-typed transport without the keyword still works.

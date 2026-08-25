@@ -27,11 +27,23 @@ class TestPushDefaultsToPlatform:
     def test_default_push_without_credentials_raises(self, monkeypatch):
         # push() publishes to the platform by default; with no credentials it must fail
         # loudly (actionable error) rather than silently stay local.
-        import traceroot.eval.platform as _platform
+        import traceroot
 
-        monkeypatch.setattr(_platform, "_resolve_credentials", lambda a, h: ("", h or ""))
+        monkeypatch.setattr(traceroot, "_client", None, raising=False)
+        monkeypatch.delenv("TRACEROOT_API_KEY", raising=False)
         with pytest.raises(ValueError, match="publishes to the TraceRoot platform"):
             _ds().push()
+
+    def test_credential_less_push_does_not_auto_create_client(self, monkeypatch):
+        # A credential-less push() must NOT auto-create the global client -- otherwise
+        # traceroot.initialize() would no-op afterwards and the failure could never be recovered.
+        import traceroot
+
+        monkeypatch.setattr(traceroot, "_client", None, raising=False)
+        monkeypatch.delenv("TRACEROOT_API_KEY", raising=False)
+        with pytest.raises(ValueError):
+            _ds().push()
+        assert traceroot._client is None  # not polluted -> a later initialize() still works
 
     def test_explicit_local_transport_stays_local_only(self):
         result = _ds().push(transport=LocalDatasetSync())  # explicit offline push
