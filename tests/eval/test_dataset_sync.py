@@ -23,9 +23,18 @@ def _ds():
     return ds
 
 
-class TestPushLocalDefault:
-    def test_default_push_is_local_only_no_network(self, respx_mock):
-        result = _ds().push()  # no transport -> LocalDatasetSync, no HTTP
+class TestPushDefaultsToPlatform:
+    def test_default_push_without_credentials_raises(self, monkeypatch):
+        # push() publishes to the platform by default; with no credentials it must fail
+        # loudly (actionable error) rather than silently stay local.
+        import traceroot.eval.platform as _platform
+
+        monkeypatch.setattr(_platform, "_resolve_credentials", lambda a, h: ("", h or ""))
+        with pytest.raises(ValueError, match="publishes to the TraceRoot platform"):
+            _ds().push()
+
+    def test_explicit_local_transport_stays_local_only(self):
+        result = _ds().push(transport=LocalDatasetSync())  # explicit offline push
         assert result.status == "local_only"
         assert result.dataset_version_id is None
 

@@ -388,17 +388,30 @@ class Dataset:
         """Explicitly publish this dataset as ONE immutable server version.
 
         Local mutations never create versions; this is the deliberate publish
-        boundary. ``transport`` defaults to a no-op ``LocalDatasetSync`` (local-only,
-        no network). Provide the remote version this edit was based on via
-        ``base_version_id`` (defaults to this dataset's pinned version) for
-        optimistic concurrency; a stale base raises ``DatasetConflictError``.
-        ``on_existing`` overrides the double-check before adding a version to an
-        already-existing dataset (default: the transport's own, an interactive prompt).
-        Imported lazily to avoid a types <-> dataset_sync cycle.
+        boundary. ``transport`` defaults to the platform transport
+        (``PlatformDatasetSync``), so ``push()`` publishes to TraceRoot — the same
+        cloud-by-default behaviour as ``evaluate()``. When no credentials are
+        configured it raises a clear error rather than silently staying local; for a
+        deliberate offline push pass ``transport=LocalDatasetSync()``. Provide the
+        remote version this edit was based on via ``base_version_id`` (defaults to
+        this dataset's pinned version) for optimistic concurrency; a stale base raises
+        ``DatasetConflictError``. ``on_existing`` overrides the double-check before
+        adding a version to an already-existing dataset (default: the transport's own,
+        an interactive prompt). Imported lazily to avoid a types <-> dataset_sync cycle.
         """
-        from traceroot.eval.dataset_sync import LocalDatasetSync
+        if transport is not None:
+            sync = transport
+        else:
+            from traceroot.eval.dataset_sync import PlatformDatasetSync
 
-        sync = transport if transport is not None else LocalDatasetSync()
+            try:
+                sync = PlatformDatasetSync()
+            except ValueError as exc:
+                raise ValueError(
+                    "Dataset.push() publishes to the TraceRoot platform, but no credentials are "
+                    "configured. Call traceroot.initialize(api_key=..., host_url=...) first, or "
+                    "pass an explicit transport (transport=LocalDatasetSync() keeps it local)."
+                ) from exc
         snapshot = self.snapshot()
         base = base_version_id if base_version_id is not None else self.base_version_id
         # Only forwarded when set, so a duck-typed transport without the keyword still works.
