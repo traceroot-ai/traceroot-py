@@ -405,18 +405,21 @@ class Dataset:
             import os
 
             import traceroot
+            from traceroot.constants import DEFAULT_HOST_URL
+            from traceroot.env import TRACEROOT_API_KEY, TRACEROOT_HOST_URL
             from traceroot.eval.dataset_sync import PlatformDatasetSync
 
-            # Check for credentials WITHOUT auto-creating the global client. Constructing
-            # PlatformDatasetSync() resolves creds via get_client(), which auto-initializes a
-            # keyless client from the environment when none exists -- after which
-            # traceroot.initialize() becomes a no-op, so a credential-less push() could never be
-            # recovered. Reading the existing client / env avoids that side effect, and turns only
-            # the genuinely-missing-key case into the actionable error; any other init error (e.g.
-            # a malformed env setting) propagates from PlatformDatasetSync() unchanged.
+            # Resolve credentials WITHOUT auto-creating the global client, then pass them
+            # explicitly. Constructing PlatformDatasetSync() with no args resolves creds via
+            # get_client(), which (a) auto-initializes a keyless client from the environment when
+            # none exists -- after which traceroot.initialize() becomes a no-op, so a
+            # credential-less push() could never be recovered -- and (b) reuses an existing keyless
+            # client even when TRACEROOT_API_KEY is set, ignoring the configured key. Reading the
+            # existing client / env here avoids both: only a genuinely missing key becomes the
+            # actionable error, and the environment-credential path publishes with its key.
             client = traceroot._client
             api_key = (client.api_key if client is not None else "") or os.environ.get(
-                "TRACEROOT_API_KEY", ""
+                TRACEROOT_API_KEY, ""
             )
             if not api_key:
                 raise ValueError(
@@ -425,7 +428,12 @@ class Dataset:
                     "TRACEROOT_API_KEY), or pass an explicit transport (transport=LocalDatasetSync() "
                     "keeps it local)."
                 )
-            sync = PlatformDatasetSync()
+            host_url = (
+                (client.host_url if client is not None else "")
+                or os.environ.get(TRACEROOT_HOST_URL, "")
+                or DEFAULT_HOST_URL
+            )
+            sync = PlatformDatasetSync(api_key=api_key, host_url=host_url)
         snapshot = self.snapshot()
         base = base_version_id if base_version_id is not None else self.base_version_id
         # Only forwarded when set, so a duck-typed transport without the keyword still works.

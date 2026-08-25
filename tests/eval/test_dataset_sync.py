@@ -45,6 +45,36 @@ class TestPushDefaultsToPlatform:
             _ds().push()
         assert traceroot._client is None  # not polluted -> a later initialize() still works
 
+    def test_push_uses_env_key_even_when_a_keyless_client_exists(self, monkeypatch):
+        # A keyless global client must not shadow TRACEROOT_API_KEY: push() resolves the env key
+        # and passes it into PlatformDatasetSync explicitly, so the env-credential path publishes.
+        import traceroot
+        import traceroot.eval.dataset_sync as _sync_mod
+
+        class _KeylessClient:
+            api_key = ""
+            host_url = "https://app.traceroot.ai"
+
+        monkeypatch.setattr(traceroot, "_client", _KeylessClient(), raising=False)
+        monkeypatch.setenv("TRACEROOT_API_KEY", "tr-env-key")
+
+        captured = {}
+
+        class _SpySync:
+            def __init__(self, *, api_key=None, host_url=None):
+                captured["api_key"] = api_key
+                captured["host_url"] = host_url
+
+            def push_dataset(self, snapshot, base_version_id, **_):
+                from traceroot.eval.dataset_sync import PushResult
+
+                return PushResult("uploaded", snapshot.dataset_id, "dsv_1", 1)
+
+        monkeypatch.setattr(_sync_mod, "PlatformDatasetSync", _SpySync)
+
+        _ds().push()
+        assert captured["api_key"] == "tr-env-key"
+
     def test_explicit_local_transport_stays_local_only(self):
         result = _ds().push(transport=LocalDatasetSync())  # explicit offline push
         assert result.status == "local_only"
