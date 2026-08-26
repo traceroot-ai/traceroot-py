@@ -428,6 +428,11 @@ class Dataset:
                     "TRACEROOT_API_KEY), or pass an explicit transport (transport=LocalDatasetSync() "
                     "keeps it local)."
                 )
+            # Host precedence mirrors the client's own: an initialized client's host_url wins,
+            # because it ALREADY resolves TRACEROOT_HOST_URL itself (client.py) -- so the two only
+            # differ when initialize(host_url=...) was given an explicit host, and an explicit
+            # argument must beat an env var (a self-hosted process would otherwise publish
+            # elsewhere). The env/default legs below cover the no-client case.
             host_url = (
                 (client.host_url if client is not None else "")
                 or os.environ.get(TRACEROOT_HOST_URL, "")

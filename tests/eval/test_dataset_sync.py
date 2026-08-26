@@ -23,6 +23,24 @@ def _ds():
     return ds
 
 
+def _spy_platform_sync(monkeypatch, sync_mod) -> dict:
+    """Swap in a PlatformDatasetSync that records the credentials push() resolved for it."""
+    captured: dict = {}
+
+    class _SpySync:
+        def __init__(self, *, api_key=None, host_url=None):
+            captured["api_key"] = api_key
+            captured["host_url"] = host_url
+
+        def push_dataset(self, snapshot, base_version_id, **_):
+            from traceroot.eval.dataset_sync import PushResult
+
+            return PushResult("uploaded", snapshot.dataset_id, "dsv_1", 1)
+
+    monkeypatch.setattr(sync_mod, "PlatformDatasetSync", _SpySync)
+    return captured
+
+
 class TestPushDefaultsToPlatform:
     def test_default_push_without_credentials_raises(self, monkeypatch):
         # push() publishes to the platform by default; with no credentials it must fail
@@ -57,23 +75,43 @@ class TestPushDefaultsToPlatform:
 
         monkeypatch.setattr(traceroot, "_client", _KeylessClient(), raising=False)
         monkeypatch.setenv("TRACEROOT_API_KEY", "tr-env-key")
-
-        captured = {}
-
-        class _SpySync:
-            def __init__(self, *, api_key=None, host_url=None):
-                captured["api_key"] = api_key
-                captured["host_url"] = host_url
-
-            def push_dataset(self, snapshot, base_version_id, **_):
-                from traceroot.eval.dataset_sync import PushResult
-
-                return PushResult("uploaded", snapshot.dataset_id, "dsv_1", 1)
-
-        monkeypatch.setattr(_sync_mod, "PlatformDatasetSync", _SpySync)
+        captured = _spy_platform_sync(monkeypatch, _sync_mod)
 
         _ds().push()
         assert captured["api_key"] == "tr-env-key"
+
+    def test_push_prefers_an_initialized_client_host_over_the_env_host(self, monkeypatch):
+        # A client's host_url ALREADY falls back to TRACEROOT_HOST_URL (client.py), so the only
+        # way the two differ is an explicit initialize(host_url=...). Explicit beats env, even
+        # when the key itself came from the environment -- otherwise a self-hosted process that
+        # set its host in code would publish somewhere else.
+        import traceroot
+        import traceroot.eval.dataset_sync as _sync_mod
+
+        class _KeylessClientWithExplicitHost:
+            api_key = ""
+            host_url = "https://self-hosted.example"
+
+        monkeypatch.setattr(traceroot, "_client", _KeylessClientWithExplicitHost(), raising=False)
+        monkeypatch.setenv("TRACEROOT_API_KEY", "tr-env-key")
+        monkeypatch.setenv("TRACEROOT_HOST_URL", "https://env.example")
+        captured = _spy_platform_sync(monkeypatch, _sync_mod)
+
+        _ds().push()
+        assert captured["host_url"] == "https://self-hosted.example"
+
+    def test_push_uses_the_env_host_when_no_client_exists(self, monkeypatch):
+        # Fully env-resolved credentials: both the key and the host come from the environment.
+        import traceroot
+        import traceroot.eval.dataset_sync as _sync_mod
+
+        monkeypatch.setattr(traceroot, "_client", None, raising=False)
+        monkeypatch.setenv("TRACEROOT_API_KEY", "tr-env-key")
+        monkeypatch.setenv("TRACEROOT_HOST_URL", "https://env.example")
+        captured = _spy_platform_sync(monkeypatch, _sync_mod)
+
+        _ds().push()
+        assert captured == {"api_key": "tr-env-key", "host_url": "https://env.example"}
 
     def test_explicit_local_transport_stays_local_only(self):
         result = _ds().push(transport=LocalDatasetSync())  # explicit offline push
