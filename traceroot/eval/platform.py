@@ -288,7 +288,6 @@ class PlatformTransport:
         environment: str = "evaluation",
         dataset_version_id: str | None = None,
         client_run_id: str | None = None,
-        pass_threshold: float | None = None,
         scorer_specs: list[dict[str, Any]] | None = None,
         evaluation_key: str | None = None,
         api_key: str | None = None,
@@ -308,7 +307,6 @@ class PlatformTransport:
         self.environment = environment
         self.dataset_version_id = dataset_version_id
         self.client_run_id = client_run_id
-        self.pass_threshold = pass_threshold
         self.api_key, self.host_url = _resolve_credentials(api_key, host_url)
         if not self.api_key:
             raise ValueError(
