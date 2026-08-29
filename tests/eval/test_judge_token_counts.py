@@ -73,6 +73,60 @@ class TestAnthropicUsage:
             "cache_creation": 10,
         }
 
+    def test_1h_cache_write_split_is_reported(self, monkeypatch):
+        _install_anthropic(
+            monkeypatch,
+            types.SimpleNamespace(
+                content=[types.SimpleNamespace(text="0.8")],
+                usage=_Usage(
+                    input_tokens=20,
+                    output_tokens=7,
+                    cache_read_input_tokens=90,
+                    cache_creation_input_tokens=10,
+                    cache_creation=_Usage(ephemeral_5m_input_tokens=6, ephemeral_1h_input_tokens=4),
+                ),
+            ),
+        )
+
+        _, usage = judge_mod._default_complete("claude-sonnet-5", MESSAGES)
+
+        # The 1h subset (2.0x input pricing vs 1.25x for 5m writes) rides alongside the
+        # collapsed cache_creation total; the 5m portion is the remainder and needs no count.
+        assert usage == {
+            "prompt": 120,
+            "completion": 7,
+            "total": 127,
+            "cache_read": 90,
+            "cache_creation": 10,
+            "cache_write_1h": 4,
+        }
+
+    def test_1h_split_survives_a_dict_shaped_breakdown(self, monkeypatch):
+        # An anthropic SDK pin that predates the typed cache_creation field still
+        # surfaces the API's breakdown -- as a raw dict via pydantic extra="allow".
+        _install_anthropic(
+            monkeypatch,
+            types.SimpleNamespace(
+                content=[types.SimpleNamespace(text="0.8")],
+                usage=_Usage(
+                    input_tokens=20,
+                    output_tokens=7,
+                    cache_creation_input_tokens=10,
+                    cache_creation={"ephemeral_5m_input_tokens": 6, "ephemeral_1h_input_tokens": 4},
+                ),
+            ),
+        )
+
+        _, usage = judge_mod._default_complete("claude-sonnet-5", MESSAGES)
+
+        assert usage == {
+            "prompt": 30,
+            "completion": 7,
+            "total": 37,
+            "cache_creation": 10,
+            "cache_write_1h": 4,
+        }
+
     def test_uncached_call_reports_only_the_counts_it_has(self, monkeypatch):
         _install_anthropic(
             monkeypatch,
