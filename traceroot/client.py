@@ -184,13 +184,19 @@ class TracerootClient:
         logger.debug("Traceroot client initialized with TracerProvider")
 
         # Instrumentation (after TracerProvider is set up)
-        if self._integrations is not None:
+        if self._integrations:
             from traceroot.instrumentation.registry import initialize_integrations
 
             self._instrumented = initialize_integrations(
                 tracer_provider=self._provider,
                 integrations=self._integrations,
             )
+        else:
+            logger.warning(
+                "TraceRoot: no integrations provided — LLM calls will not be auto-instrumented. "
+                "Pass integrations=[...] to traceroot.initialize(). See "
+                "https://traceroot.ai/docs/tracing/get-started"
+        )
 
     @property
     def enabled(self) -> bool:
