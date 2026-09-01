@@ -194,7 +194,7 @@ class TestMetadataOnlyPush:
         d.add(input={"q": "a"})
         snap_before = d.snapshot()
         sync = _sync(self._existing)
-        sync._published_revision = lambda ds, v: snap_before.revision  # content unchanged
+        sync._published_revision = lambda ds, v: (snap_before.revision, 1)  # content unchanged
 
         d.description = "now documented"
         res = sync.push_dataset(d.snapshot(), None)
@@ -210,7 +210,7 @@ class TestMetadataOnlyPush:
         from traceroot.eval.dataset_sync import DatasetPublishAborted
 
         sync = _sync(self._existing)
-        sync._published_revision = lambda ds, v: "rev_something_else"  # content changed
+        sync._published_revision = lambda ds, v: ("rev_something_else", 1)  # content changed
         with pytest.raises(DatasetPublishAborted):
             sync.push_dataset(_snap(), None, on_existing=lambda info: False)
         assert not any(m == "POST" for m, _p, _b in sync.calls)
@@ -392,6 +392,61 @@ class TestDatasetKeyIsSentOnPush:
         d = Dataset("Billing", key="billing")
         d.add(input={"q": "a"})
         sync = _sync(lambda path: {"name": "Billing", "current_dataset_version_id": "dsv_9"})
-        sync._published_revision = lambda ds, v: d.snapshot().revision  # content unchanged
+        sync._published_revision = lambda ds, v: (d.snapshot().revision, 1)  # content unchanged
         sync.push_dataset(d.snapshot(), None)
         assert self._upserts(sync.calls)[0]["key"] == "billing"
+
+
+class TestVersionNumberStaysWithTheId:
+    """``version_number`` is documented as riding alongside ``dataset_version_id``, so every path
+    that moves the id must move the ordinal too -- otherwise a pushed dataset reports the id of
+    v3 with the ordinal of v2, or loses it entirely across save/load."""
+
+    class _Sync:
+        def __init__(self, version_number: int | None):
+            self._version_number = version_number
+
+        def push_dataset(self, snapshot, base, **_):
+            from traceroot.eval.dataset_sync import PushResult
+
+            return PushResult("uploaded", snapshot.dataset_id, "dsv_7", self._version_number)
+
+    def test_push_pins_the_ordinal_onto_the_dataset(self):
+        d = Dataset("d")
+        d.add(input={"q": "a"})
+        result = d.push(transport=self._Sync(3))
+        assert result.version_number == 3
+        assert d.dataset_version_id == "dsv_7"
+        assert d.version_number == 3  # not left None while the id advanced
+
+    def test_a_push_that_reports_no_ordinal_clears_a_stale_one(self):
+        """A transport that does not report ordinals must not leave the PREVIOUS version's
+        number pinned to the NEW id -- a stale ordinal is worse than an absent one."""
+        d = Dataset("d")
+        d.add(input={"q": "a"})
+        d.push(transport=self._Sync(3))
+        d.push(transport=self._Sync(None))
+        assert d.dataset_version_id == "dsv_7"
+        assert d.version_number is None
+
+    @pytest.mark.parametrize("suffix", [".json", ".jsonl"])
+    def test_save_load_round_trips_the_ordinal(self, tmp_path: Path, suffix: str):
+        d = Dataset("d")
+        d.add(input={"q": "a"})
+        d.push(transport=self._Sync(4))
+        path = str(tmp_path / f"ds{suffix}")
+        d.save(path)
+        reloaded = Dataset.load(path)
+        assert reloaded.dataset_version_id == "dsv_7"
+        assert reloaded.version_number == 4  # the binding is the PAIR, not just the id
+
+    def test_a_file_written_before_the_field_existed_still_loads(self, tmp_path: Path):
+        """Older artifacts have no ``version_number`` key; loading one must not raise."""
+        path = tmp_path / "old.json"
+        path.write_text(
+            json.dumps({"name": "d", "key": "d", "dataset_version_id": "dsv_7", "cases": []}),
+            encoding="utf-8",
+        )
+        reloaded = Dataset.load(str(path))
+        assert reloaded.dataset_version_id == "dsv_7"
+        assert reloaded.version_number is None
