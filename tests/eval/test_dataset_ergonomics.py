@@ -194,7 +194,7 @@ class TestMetadataOnlyPush:
         d.add(input={"q": "a"})
         snap_before = d.snapshot()
         sync = _sync(self._existing)
-        sync._published_revision = lambda ds, v: snap_before.revision  # content unchanged
+        sync._published_revision = lambda ds, v: (snap_before.revision, 1)  # content unchanged
 
         d.description = "now documented"
         res = sync.push_dataset(d.snapshot(), None)
@@ -210,7 +210,7 @@ class TestMetadataOnlyPush:
         from traceroot.eval.dataset_sync import DatasetPublishAborted
 
         sync = _sync(self._existing)
-        sync._published_revision = lambda ds, v: "rev_something_else"  # content changed
+        sync._published_revision = lambda ds, v: ("rev_something_else", 1)  # content changed
         with pytest.raises(DatasetPublishAborted):
             sync.push_dataset(_snap(), None, on_existing=lambda info: False)
         assert not any(m == "POST" for m, _p, _b in sync.calls)
@@ -392,6 +392,6 @@ class TestDatasetKeyIsSentOnPush:
         d = Dataset("Billing", key="billing")
         d.add(input={"q": "a"})
         sync = _sync(lambda path: {"name": "Billing", "current_dataset_version_id": "dsv_9"})
-        sync._published_revision = lambda ds, v: d.snapshot().revision  # content unchanged
+        sync._published_revision = lambda ds, v: (d.snapshot().revision, 1)  # content unchanged
         sync.push_dataset(d.snapshot(), None)
         assert self._upserts(sync.calls)[0]["key"] == "billing"

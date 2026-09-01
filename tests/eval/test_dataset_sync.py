@@ -352,8 +352,9 @@ class TestExistingDatasetConfirmation:
             return {}
 
         sync._request = _request  # type: ignore[assignment]
-        # Stub the published-revision fetch: `published_rev` drives changed-vs-unchanged detection.
-        sync._published_revision = lambda ds, v: published_rev  # type: ignore[assignment]
+        # Stub the published-revision fetch: `published_rev` drives changed-vs-unchanged detection,
+        # and the ordinal beside it is what an unchanged push reports back.
+        sync._published_revision = lambda ds, v: (published_rev, 7)  # type: ignore[assignment]
         return sync
 
     def _snap(self):
@@ -374,6 +375,9 @@ class TestExistingDatasetConfirmation:
         )  # content matches current version
         res = sync.push_dataset(snap, None, on_existing=confirm)
         assert res.dataset_version_id == "dsv_9"  # reuses the current version
+        # ...and REPORTS that version, rather than leaving the ordinal empty. Asserting only the
+        # id would pass while the caller still saw version_number=None on every unchanged re-push.
+        assert res.version_number == 7
         assert seen["called"] is False  # unchanged -> never prompts
         assert not any(p.endswith("/versions") for _m, p in sync.calls)  # no new version published
 

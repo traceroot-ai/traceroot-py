@@ -170,6 +170,8 @@ class Dataset:
     Pass an explicit ``key`` to keep identity stable across a display-name rename.
     ``dataset_version_id`` is set only when this Dataset mirrors a pushed/pulled
     remote version; changed content under the same key becomes a new VERSION.
+    ``version_number`` is that version's ordinal, carried alongside the id when the
+    platform reports it (a locally-authored dataset has neither).
     """
 
     def __init__(
@@ -180,6 +182,7 @@ class Dataset:
         self.key = key or name
         self.dataset_id = stable_dataset_id(self.key)
         self.dataset_version_id: str | None = None
+        self.version_number: int | None = None
         self.base_version_id: str | None = None
         self._cases: dict[str, EvalCase] = {}
 
