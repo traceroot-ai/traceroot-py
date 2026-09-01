@@ -317,6 +317,7 @@ class Dataset:
             "description": self.description,
             "base_version_id": self.base_version_id,
             "dataset_version_id": self.dataset_version_id,  # keep the remote binding through save/load
+            "version_number": self.version_number,
             "cases": [c.to_dict() for c in self._cases.values()],  # incl. archived
         }
 
@@ -326,6 +327,7 @@ class Dataset:
         ds.dataset_id = d.get("dataset_id", ds.dataset_id)
         ds.base_version_id = d.get("base_version_id")
         ds.dataset_version_id = d.get("dataset_version_id")
+        ds.version_number = d.get("version_number")
         for cd in d.get("cases", []):
             case = EvalCase(**cd)
             ds._cases[case.id] = case  # type: ignore[index]
@@ -349,6 +351,7 @@ class Dataset:
                 "description": self.description,
                 "base_version_id": self.base_version_id,
                 "dataset_version_id": self.dataset_version_id,
+                "version_number": self.version_number,
                 "schema": 1,
             }
             lines = [json.dumps(normalize(header), ensure_ascii=False)]
@@ -375,6 +378,7 @@ class Dataset:
                     "description",
                     "base_version_id",
                     "dataset_version_id",
+                    "version_number",
                 )
             }
             d["cases"] = [{k: v for k, v in rec.items() if k != "type"} for rec in records[1:]]
@@ -450,4 +454,7 @@ class Dataset:
         if result.status == "uploaded" and result.dataset_version_id is not None:
             self.dataset_version_id = result.dataset_version_id
             self.base_version_id = result.dataset_version_id
+            # Set unconditionally alongside the id: a transport that does not report the ordinal
+            # must clear it, not leave the PREVIOUS version's number pinned to the new id.
+            self.version_number = result.version_number
         return result
