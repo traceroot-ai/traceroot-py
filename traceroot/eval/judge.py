@@ -116,12 +116,24 @@ def _anthropic_usage(usage: Any) -> dict[str, int] | None:
     cache_creation = _as_int(getattr(usage, "cache_creation_input_tokens", None))
     prompt = _as_int(getattr(usage, "input_tokens", None)) + cache_read + cache_creation
     completion = _as_int(getattr(usage, "output_tokens", None))
+    # Per-TTL breakdown: the 1h subset is priced at 2.0x input vs 1.25x for the
+    # default 5m writes, so it gets its own count next to the collapsed total
+    # (the 5m portion is the remainder and needs none). On SDK pins that predate
+    # the typed cache_creation field the breakdown arrives as a raw dict (pydantic
+    # extra="allow"), so both shapes must be read.
+    breakdown = getattr(usage, "cache_creation", None)
+    cache_write_1h = _as_int(
+        breakdown.get("ephemeral_1h_input_tokens")
+        if isinstance(breakdown, dict)
+        else getattr(breakdown, "ephemeral_1h_input_tokens", None)
+    )
     counts = {
         "prompt": prompt,
         "completion": completion,
         "total": prompt + completion,
         "cache_read": cache_read,
         "cache_creation": cache_creation,
+        "cache_write_1h": cache_write_1h,
     }
     return {k: v for k, v in counts.items() if v > 0} or None
 
@@ -185,6 +197,7 @@ def _set_token_attributes(usage: dict[str, int]) -> None:
     from traceroot.instrumentation.claude_agent_sdk import (
         LLM_TOKEN_CACHE_CREATION,
         LLM_TOKEN_CACHE_READ,
+        LLM_TOKEN_CACHE_WRITE_1H,
         LLM_TOKEN_TOTAL,
         OI_LLM_TOKEN_COUNT_COMPLETION,
         OI_LLM_TOKEN_COUNT_PROMPT,
@@ -197,6 +210,7 @@ def _set_token_attributes(usage: dict[str, int]) -> None:
         LLM_TOKEN_TOTAL: usage.get("total"),
         LLM_TOKEN_CACHE_READ: usage.get("cache_read"),
         LLM_TOKEN_CACHE_CREATION: usage.get("cache_creation"),
+        LLM_TOKEN_CACHE_WRITE_1H: usage.get("cache_write_1h"),
     }
     for key, value in attributes.items():
         if value:  # absent/zero counts are left off rather than reported as a real zero

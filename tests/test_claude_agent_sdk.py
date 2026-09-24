@@ -182,6 +182,67 @@ async def test_tokens_on_llm_spans_not_on_query_or_task():
             assert s.attributes.get(LLM_PROMPT) is None, f"{s.name} should not carry prompt tokens"
 
 
+@pytest.mark.asyncio
+async def test_1h_cache_write_split_surfaces_as_its_own_attribute():
+    """Anthropic prices 1h-retention cache writes at 2.0x input vs 1.25x for 5m
+    writes and reports the split under usage.cache_creation. Usage lands from
+    the ResultMessage (streamed per-message counts are ignored), so the split
+    must ride from there as an additive attribute next to the collapsed total."""
+    provider, exporter = _provider()
+    messages = [
+        AssistantMessage(
+            [TextBlock("a")],
+            model="claude-sonnet-4",
+            message_id="m1",
+            usage={"input_tokens": 5, "output_tokens": 2},
+        ),
+        ResultMessage(
+            result="ok",
+            usage={
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "cache_creation_input_tokens": 30,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 18,
+                    "ephemeral_1h_input_tokens": 12,
+                },
+            },
+        ),
+    ]
+    await _run(provider, messages)
+
+    llm = _llm_spans(exporter)
+    assert len(llm) == 1
+    attrs = llm[0].attributes
+    assert attrs.get("llm.token_count.prompt_details.cache_creation") == 30
+    assert attrs.get("llm.token_count.prompt_details.cache_write_1h") == 12
+
+
+@pytest.mark.asyncio
+async def test_no_1h_attribute_when_usage_has_no_breakdown():
+    """A result usage without the per-TTL breakdown must not grow a 1h count."""
+    provider, exporter = _provider()
+    messages = [
+        AssistantMessage(
+            [TextBlock("a")],
+            model="claude-sonnet-4",
+            message_id="m1",
+            usage={"input_tokens": 5, "output_tokens": 2},
+        ),
+        ResultMessage(
+            result="ok",
+            usage={"input_tokens": 10, "output_tokens": 4, "cache_creation_input_tokens": 7},
+        ),
+    ]
+    await _run(provider, messages)
+
+    llm = _llm_spans(exporter)
+    assert len(llm) == 1
+    attrs = llm[0].attributes
+    assert attrs.get("llm.token_count.prompt_details.cache_creation") == 7
+    assert attrs.get("llm.token_count.prompt_details.cache_write_1h") is None
+
+
 # --- Step 2: timeline / subagent spans --------------------------------------
 
 

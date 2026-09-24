@@ -44,6 +44,10 @@ TOOL_NAME_ATTR = "tool.name"
 LLM_TOKEN_TOTAL = "llm.token_count.total"
 LLM_TOKEN_CACHE_READ = "llm.token_count.prompt_details.cache_read"
 LLM_TOKEN_CACHE_CREATION = "llm.token_count.prompt_details.cache_creation"
+# Anthropic 1h-retention subset of the cache_creation total (2.0x input pricing
+# versus 1.25x for the default 5m writes); additive alongside the total, and the
+# 5m portion is the remainder so it needs no attribute of its own.
+LLM_TOKEN_CACHE_WRITE_1H = "llm.token_count.prompt_details.cache_write_1h"
 GEN_AI_RESPONSE_MODEL = "gen_ai.response.model"
 GEN_AI_TOOL_CALL_ID = "gen_ai.tool.call.id"
 GEN_AI_TOOL_NAME = "gen_ai.tool.name"
@@ -63,6 +67,12 @@ def extract_usage(usage: dict[str, Any] | None) -> dict[str, int]:
     output_tokens = usage.get("output_tokens", 0) or 0
     cache_read = usage.get("cache_read_input_tokens", 0) or 0
     cache_creation = usage.get("cache_creation_input_tokens", 0) or 0
+    cache_creation_detail = usage.get("cache_creation")
+    cache_write_1h = (
+        cache_creation_detail.get("ephemeral_1h_input_tokens", 0) or 0
+        if isinstance(cache_creation_detail, dict)
+        else 0
+    )
 
     prompt_tokens = input_tokens + cache_read + cache_creation
 
@@ -77,6 +87,8 @@ def extract_usage(usage: dict[str, Any] | None) -> dict[str, int]:
         result["prompt_cached_tokens"] = cache_read
     if cache_creation > 0:
         result["prompt_cache_creation_tokens"] = cache_creation
+    if cache_write_1h > 0:
+        result["prompt_cache_write_1h_tokens"] = cache_write_1h
     return result
 
 
@@ -94,6 +106,8 @@ def _set_usage_attrs(span: trace.Span, usage: dict[str, Any] | None) -> None:
         span.set_attribute(LLM_TOKEN_CACHE_READ, metrics["prompt_cached_tokens"])
     if "prompt_cache_creation_tokens" in metrics:
         span.set_attribute(LLM_TOKEN_CACHE_CREATION, metrics["prompt_cache_creation_tokens"])
+    if "prompt_cache_write_1h_tokens" in metrics:
+        span.set_attribute(LLM_TOKEN_CACHE_WRITE_1H, metrics["prompt_cache_write_1h_tokens"])
 
 
 def _set_model(span: trace.Span, model: str | None) -> None:
