@@ -196,6 +196,18 @@ def initialize_integrations(
             )
             continue
 
+        # In-house instrumentation for OpenAI Agents SDK (replaces OpenInference)
+        if instrument is Integration.OPENAI_AGENTS:
+            try:
+                from traceroot.instrumentation.openai_agents import instrument_openai_agents
+
+                instrument_openai_agents(tracer_provider)
+                logger.info("Instrumented %s via in-house wrapper", instrument.value)
+                instrumented.append(instrument)
+            except Exception:
+                logger.warning("Failed to instrument %s", instrument.value, exc_info=True)
+            continue
+
         # In-house instrumentation for Claude Agent SDK (replaces OpenInference)
         if instrument is Integration.CLAUDE_AGENT_SDK:
             try:
