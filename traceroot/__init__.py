@@ -114,10 +114,21 @@ def get_client() -> TracerootClient | None:
     If no client exists and TRACEROOT_API_KEY is set, automatically
     initializes a client with default settings from environment variables.
     This enables the @observe decorator to work without explicit initialize().
+
+    Thread-safe via double-checked locking: fast path (return existing client)
+    avoids lock acquisition; only first concurrent caller holds lock and creates.
     """
     global _client
-    if _client is None:
-        # Auto-initialize from env vars (TracerootClient reads them)
+    # Fast path: client already exists, no lock needed
+    if _client is not None:
+        return _client
+
+    # Slow path: lock and double-check before creating
+    with _init_lock:
+        # Another thread may have initialized while we waited for the lock
+        if _client is not None:
+            return _client
+        # Create and assign atomically within the lock
         _client = TracerootClient()
     return _client
 
