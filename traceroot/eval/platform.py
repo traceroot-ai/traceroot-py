@@ -795,6 +795,14 @@ def pull_dataset_version(
     )
     # Pin ids even if the snapshot omitted them.
     ds.dataset_version_id = ds.dataset_version_id or version_id
+    # The version's ordinal rides along on the same payload; keep it so callers that
+    # reuse a pulled version (e.g. the idempotent no-op push) can report which version
+    # they landed on without a second request.
+    if ds.version_number is None:
+        ordinal = snapshot.get("version_number")
+        ds.version_number = (
+            int(ordinal) if isinstance(ordinal, (int, str)) and str(ordinal).isdigit() else None
+        )
     ds.dataset_id = ds.dataset_id or dataset_id  # type: ignore[assignment]
     # A freshly pulled dataset IS its pinned version; remember that, so a later mutation is
     # detectable and ``evaluate()`` republishes instead of reporting the version it left behind.

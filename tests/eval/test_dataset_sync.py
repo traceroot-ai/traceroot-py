@@ -23,9 +23,98 @@ def _ds():
     return ds
 
 
-class TestPushLocalDefault:
-    def test_default_push_is_local_only_no_network(self, respx_mock):
-        result = _ds().push()  # no transport -> LocalDatasetSync, no HTTP
+def _spy_platform_sync(monkeypatch, sync_mod) -> dict:
+    """Swap in a PlatformDatasetSync that records the credentials push() resolved for it."""
+    captured: dict = {}
+
+    class _SpySync:
+        def __init__(self, *, api_key=None, host_url=None):
+            captured["api_key"] = api_key
+            captured["host_url"] = host_url
+
+        def push_dataset(self, snapshot, base_version_id, **_):
+            from traceroot.eval.dataset_sync import PushResult
+
+            return PushResult("uploaded", snapshot.dataset_id, "dsv_1", 1)
+
+    monkeypatch.setattr(sync_mod, "PlatformDatasetSync", _SpySync)
+    return captured
+
+
+class TestPushDefaultsToPlatform:
+    def test_default_push_without_credentials_raises(self, monkeypatch):
+        # push() publishes to the platform by default; with no credentials it must fail
+        # loudly (actionable error) rather than silently stay local.
+        import traceroot
+
+        monkeypatch.setattr(traceroot, "_client", None, raising=False)
+        monkeypatch.delenv("TRACEROOT_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="publishes to the TraceRoot platform"):
+            _ds().push()
+
+    def test_credential_less_push_does_not_auto_create_client(self, monkeypatch):
+        # A credential-less push() must NOT auto-create the global client -- otherwise
+        # traceroot.initialize() would no-op afterwards and the failure could never be recovered.
+        import traceroot
+
+        monkeypatch.setattr(traceroot, "_client", None, raising=False)
+        monkeypatch.delenv("TRACEROOT_API_KEY", raising=False)
+        with pytest.raises(ValueError):
+            _ds().push()
+        assert traceroot._client is None  # not polluted -> a later initialize() still works
+
+    def test_push_uses_env_key_even_when_a_keyless_client_exists(self, monkeypatch):
+        # A keyless global client must not shadow TRACEROOT_API_KEY: push() resolves the env key
+        # and passes it into PlatformDatasetSync explicitly, so the env-credential path publishes.
+        import traceroot
+        import traceroot.eval.dataset_sync as _sync_mod
+
+        class _KeylessClient:
+            api_key = ""
+            host_url = "https://app.traceroot.ai"
+
+        monkeypatch.setattr(traceroot, "_client", _KeylessClient(), raising=False)
+        monkeypatch.setenv("TRACEROOT_API_KEY", "tr-env-key")
+        captured = _spy_platform_sync(monkeypatch, _sync_mod)
+
+        _ds().push()
+        assert captured["api_key"] == "tr-env-key"
+
+    def test_push_prefers_an_initialized_client_host_over_the_env_host(self, monkeypatch):
+        # A client's host_url ALREADY falls back to TRACEROOT_HOST_URL (client.py), so the only
+        # way the two differ is an explicit initialize(host_url=...). Explicit beats env, even
+        # when the key itself came from the environment -- otherwise a self-hosted process that
+        # set its host in code would publish somewhere else.
+        import traceroot
+        import traceroot.eval.dataset_sync as _sync_mod
+
+        class _KeylessClientWithExplicitHost:
+            api_key = ""
+            host_url = "https://self-hosted.example"
+
+        monkeypatch.setattr(traceroot, "_client", _KeylessClientWithExplicitHost(), raising=False)
+        monkeypatch.setenv("TRACEROOT_API_KEY", "tr-env-key")
+        monkeypatch.setenv("TRACEROOT_HOST_URL", "https://env.example")
+        captured = _spy_platform_sync(monkeypatch, _sync_mod)
+
+        _ds().push()
+        assert captured["host_url"] == "https://self-hosted.example"
+
+    def test_push_uses_the_env_host_when_no_client_exists(self, monkeypatch):
+        # Fully env-resolved credentials: both the key and the host come from the environment.
+        import traceroot
+        import traceroot.eval.dataset_sync as _sync_mod
+
+        monkeypatch.setattr(traceroot, "_client", None, raising=False)
+        monkeypatch.setenv("TRACEROOT_API_KEY", "tr-env-key")
+        monkeypatch.setenv("TRACEROOT_HOST_URL", "https://env.example")
+        captured = _spy_platform_sync(monkeypatch, _sync_mod)
+
+        _ds().push()
+        assert captured == {"api_key": "tr-env-key", "host_url": "https://env.example"}
+
+    def test_explicit_local_transport_stays_local_only(self):
+        result = _ds().push(transport=LocalDatasetSync())  # explicit offline push
         assert result.status == "local_only"
         assert result.dataset_version_id is None
 
@@ -263,8 +352,9 @@ class TestExistingDatasetConfirmation:
             return {}
 
         sync._request = _request  # type: ignore[assignment]
-        # Stub the published-revision fetch: `published_rev` drives changed-vs-unchanged detection.
-        sync._published_revision = lambda ds, v: published_rev  # type: ignore[assignment]
+        # Stub the published-revision fetch: `published_rev` drives changed-vs-unchanged detection,
+        # and the ordinal beside it is what an unchanged push reports back.
+        sync._published_revision = lambda ds, v: (published_rev, 7)  # type: ignore[assignment]
         return sync
 
     def _snap(self):
@@ -285,6 +375,9 @@ class TestExistingDatasetConfirmation:
         )  # content matches current version
         res = sync.push_dataset(snap, None, on_existing=confirm)
         assert res.dataset_version_id == "dsv_9"  # reuses the current version
+        # ...and REPORTS that version, rather than leaving the ordinal empty. Asserting only the
+        # id would pass while the caller still saw version_number=None on every unchanged re-push.
+        assert res.version_number == 7
         assert seen["called"] is False  # unchanged -> never prompts
         assert not any(p.endswith("/versions") for _m, p in sync.calls)  # no new version published
 

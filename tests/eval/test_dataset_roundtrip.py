@@ -85,7 +85,7 @@ def test_push_then_pull_recomputes_the_same_revision(backend):
     sync.push_dataset(snapshot, None)
     assert backend.published == 1
 
-    pulled_revision = sync._published_revision(snapshot.dataset_id, "dsv_1")
+    pulled_revision, _pulled_number = sync._published_revision(snapshot.dataset_id, "dsv_1")
     assert pulled_revision == snapshot.revision
 
 
