@@ -201,6 +201,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         # concurrent sibling's on_start could look it up.
         self._ids_path_by_span_id: _PathMap = OrderedDict()
         self._name_path_by_span_id: _PathMap = OrderedDict()
+        self._starts_path_by_span_id: _PathMap = OrderedDict()
 
     def on_start(self, span, parent_context=None):
         if span.is_recording():
@@ -233,9 +234,12 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                     parent_path: list | None = (
                         self._name_path_by_span_id.get(parent_id_hex) if parent_id_hex else None
                     )
+                    parent_starts: list | None = (
+                        self._starts_path_by_span_id.get(parent_id_hex) if parent_id_hex else None
+                    )
 
                     # Fall back to reading from the active parent span's attributes.
-                    if parent_ids_path is None or parent_path is None:
+                    if parent_ids_path is None or parent_path is None or parent_starts is None:
                         if parent_context is not None:
                             parent_span = otel_trace.get_current_span(parent_context)
                         else:
@@ -249,6 +253,9 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                             raw_ids = attrs.get("traceroot.span.ids_path")
                             if raw_ids is not None:
                                 parent_ids_path = list(raw_ids)
+                            raw_starts = attrs.get("traceroot.span.starts_path")
+                            if raw_starts is not None:
+                                parent_starts = list(raw_starts)
 
                     span_name = getattr(span, "name", "") or ""
 
@@ -267,17 +274,41 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                     else:
                         span_ids_path = []
 
+                    # starts_path: ancestor start times as epoch-nanosecond decimal
+                    # strings, index-aligned with ids_path (starts_path[i] is the
+                    # start of ids_path[i]). The starts map stores each span's
+                    # ancestor starts PLUS its own start, so a child's starts_path
+                    # is exactly the parent's stored list — no append needed.
+                    if parent_id_hex:
+                        span_starts_path = list(parent_starts) if parent_starts is not None else []
+                    else:
+                        span_starts_path = []
+
+                    # Never emit a starts_path that does not index-align with
+                    # ids_path (e.g. a remote parent whose start time is unknown):
+                    # stamp [] instead of a wrong-length array.
+                    if len(span_starts_path) != len(span_ids_path):
+                        span_starts_path = []
+
                     # Store in map so descendant spans can inherit via lookup.
                     # Evict the oldest entry if we're at capacity.
                     span_id_hex = format(span.context.span_id, "016x")
                     if len(self._ids_path_by_span_id) >= _PATH_MAP_MAX:
                         self._ids_path_by_span_id.popitem(last=False)
                         self._name_path_by_span_id.popitem(last=False)
+                        self._starts_path_by_span_id.popitem(last=False)
                     self._ids_path_by_span_id[span_id_hex] = span_ids_path
                     self._name_path_by_span_id[span_id_hex] = span_path
+                    own_start = getattr(span, "start_time", None)
+                    self._starts_path_by_span_id[span_id_hex] = (
+                        span_starts_path + [str(own_start)]
+                        if own_start is not None
+                        else span_starts_path
+                    )
 
                 span.set_attribute("traceroot.span.path", span_path)
                 span.set_attribute("traceroot.span.ids_path", span_ids_path)
+                span.set_attribute("traceroot.span.starts_path", span_starts_path)
 
             except Exception as exc:
                 logger.debug("TracerootSpanProcessor: failed to set path attributes: %s", exc)
@@ -289,6 +320,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
             span_id_hex = format(span.context.span_id, "016x")
             self._ids_path_by_span_id.pop(span_id_hex, None)
             self._name_path_by_span_id.pop(span_id_hex, None)
+            self._starts_path_by_span_id.pop(span_id_hex, None)
         super().on_end(span)
 
     @property
