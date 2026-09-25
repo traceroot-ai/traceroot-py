@@ -79,6 +79,28 @@ def test_local_eval_gate_wraps_joined_provider_once(memory_exporter, traceroot_e
     assert memory_exporter.get_finished_spans() == ()
 
 
+def test_local_eval_gate_covers_host_tracer_created_before_initialize(
+    memory_exporter, traceroot_exported, monkeypatch
+):
+    # A host tracer made before initialize() captured the provider's original sampler, so the
+    # LocalEvalSampler wrap never sees its spans; TraceRoot's processor must drop them itself.
+    host_provider = trace.get_tracer_provider()
+    original = host_provider.sampler
+    if isinstance(original, LocalEvalSampler):
+        original = original._inner
+    monkeypatch.setattr(host_provider, "sampler", original)
+    early_tracer = host_provider.get_tracer("host-app")
+    _init()
+
+    with mark_local_eval_run(), early_tracer.start_as_current_span("local-run"):
+        pass
+    with early_tracer.start_as_current_span("reported-run"):
+        pass
+    traceroot.flush()
+
+    assert [s.name for s in traceroot_exported] == ["reported-run"]
+
+
 def test_shutdown_leaves_host_provider_running(memory_exporter, traceroot_exported):
     _init()
     traceroot.shutdown()
