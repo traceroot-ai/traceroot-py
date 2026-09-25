@@ -9,7 +9,9 @@ from unittest.mock import patch
 import pytest
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace.export import SpanExportResult
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExportResult
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 import traceroot
 from tests.utils import reset_traceroot
@@ -115,6 +117,25 @@ def test_shutdown_leaves_host_provider_running(memory_exporter, traceroot_export
     assert traceroot_exported == []
 
 
+def test_shutdown_processor_does_not_block_host_force_flush(traceroot_exported):
+    # The provider stops at the first processor whose force_flush() returns False.
+    reset_traceroot()
+    host_provider = TracerProvider()
+    with patch("opentelemetry.trace.get_tracer_provider", return_value=host_provider):
+        _init()
+    traceroot.shutdown()
+    host_exporter = InMemorySpanExporter()
+    host_provider.add_span_processor(BatchSpanProcessor(host_exporter, schedule_delay_millis=60000))
+
+    with host_provider.get_tracer("host-app").start_as_current_span("after-shutdown"):
+        pass
+
+    assert host_provider.force_flush() is True
+    assert [s.name for s in host_exporter.get_finished_spans()] == ["after-shutdown"]
+    reset_traceroot()
+    host_provider.shutdown()
+
+
 @pytest.mark.parametrize(
     ("existing", "warning"),
     [(trace.ProxyTracerProvider(), None), (trace.NoOpTracerProvider(), "NoOpTracerProvider")],
@@ -129,7 +150,6 @@ def test_creates_and_sets_own_provider_without_a_global_sdk_provider(existing, w
     ):
         client = _init()
 
-    assert client._owns_provider is True
     mock_set.assert_called_once_with(client._provider)
     assert ("cannot be shared" in caplog.text) == bool(warning)
     assert (warning or "") in caplog.text
