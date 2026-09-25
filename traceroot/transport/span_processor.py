@@ -201,8 +201,13 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         # concurrent sibling's on_start could look it up.
         self._ids_path_by_span_id: _PathMap = OrderedDict()
         self._name_path_by_span_id: _PathMap = OrderedDict()
+        # OTel can't remove a processor from a provider, so on a joined host provider this one
+        # stays registered after shutdown() and must go inert instead of touching host spans.
+        self._shut_down = False
 
     def on_start(self, span, parent_context=None):
+        if self._shut_down:
+            return
         if span.is_recording():
             span.set_attribute("traceroot.sdk.name", SDK_NAME)
             span.set_attribute("traceroot.sdk.version", SDK_VERSION)
@@ -285,11 +290,17 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         super().on_start(span, parent_context)
 
     def on_end(self, span):
+        if self._shut_down:
+            return
         with self._paths_lock:
             span_id_hex = format(span.context.span_id, "016x")
             self._ids_path_by_span_id.pop(span_id_hex, None)
             self._name_path_by_span_id.pop(span_id_hex, None)
         super().on_end(span)
+
+    def shutdown(self):
+        self._shut_down = True
+        super().shutdown()
 
     @property
     def flush_at(self) -> int:

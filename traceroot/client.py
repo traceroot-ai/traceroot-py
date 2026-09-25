@@ -145,6 +145,7 @@ class TracerootClient:
             )
         self._span_processor: TracerootSpanProcessor | None = None
         self._provider: TracerProvider | None = None
+        self._owns_provider = True
         self._initialized = False
         self._instrumented: list[Integration] = []
 
@@ -167,15 +168,39 @@ class TracerootClient:
             git_ref=self.git_ref,
         )
 
-        # Create and configure TracerProvider. Wrap whatever sampler the SDK resolved (default, or
-        # OTEL_TRACES_SAMPLER) so a local=True eval run samples its own spans DROP -- they are never
-        # recorded, so they cannot be exported by this or any other processor on the provider.
-        self._provider = TracerProvider()
-        self._provider.sampler = LocalEvalSampler(self._provider.sampler)
+        # OTel's global provider is set-once. If the host (e.g. `adk web`) already installed an SDK
+        # provider, our set_tracer_provider() would be refused and @observe spans, which use the
+        # global provider, would never reach our processor. Join it instead.
+        existing = trace.get_tracer_provider()
+        if isinstance(existing, TracerProvider):
+            self._provider = existing
+            self._owns_provider = False
+            logger.info(
+                "TraceRoot: a TracerProvider is already installed globally; attaching the "
+                "TraceRoot span processor to it instead of creating a new one."
+            )
+        else:
+            self._provider = TracerProvider()
+            self._owns_provider = True
+            if not isinstance(existing, trace.ProxyTracerProvider):
+                logger.warning(
+                    "TraceRoot: the global TracerProvider (%s) is not an OpenTelemetry SDK "
+                    "TracerProvider, so it cannot be shared; @observe spans will not be sent "
+                    "to TraceRoot.",
+                    type(existing).__name__,
+                )
+
+        # Wrap whatever sampler the provider resolved (default, OTEL_TRACES_SAMPLER, or the host's)
+        # so a local=True eval run samples its own spans DROP -- they are never recorded, so they
+        # cannot be exported by this or any other processor on the provider. Safe on a shared
+        # provider: only suppressed spans are dropped. Earlier host tracers keep the old sampler.
+        if not isinstance(self._provider.sampler, LocalEvalSampler):
+            self._provider.sampler = LocalEvalSampler(self._provider.sampler)
         self._provider.add_span_processor(self._span_processor)
 
         # Set as global provider so @observe decorator uses it
-        trace.set_tracer_provider(self._provider)
+        if self._owns_provider:
+            trace.set_tracer_provider(self._provider)
 
         # Register shutdown handler
         atexit.register(self.shutdown)
