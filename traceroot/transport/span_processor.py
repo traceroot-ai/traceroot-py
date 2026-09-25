@@ -214,8 +214,6 @@ class TracerootSpanProcessor(BatchSpanProcessor):
             return
         if not is_instrumentation_enabled():
             with self._paths_lock:
-                if len(self._local_eval_span_ids) >= _PATH_MAP_MAX:
-                    self._local_eval_span_ids.popitem(last=False)
                 self._local_eval_span_ids[span.context.span_id] = None
             return
         if span.is_recording():
