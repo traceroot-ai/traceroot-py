@@ -145,7 +145,6 @@ class TracerootClient:
             )
         self._span_processor: TracerootSpanProcessor | None = None
         self._provider: TracerProvider | None = None
-        self._owns_provider = True
         self._initialized = False
         self._instrumented: list[Integration] = []
 
@@ -172,16 +171,15 @@ class TracerootClient:
         # provider, our set_tracer_provider() would be refused and @observe spans, which use the
         # global provider, would never reach our processor. Join it instead.
         existing = trace.get_tracer_provider()
-        if isinstance(existing, TracerProvider):
+        owns_provider = not isinstance(existing, TracerProvider)
+        if not owns_provider:
             self._provider = existing
-            self._owns_provider = False
             logger.info(
                 "TraceRoot: a TracerProvider is already installed globally; attaching the "
                 "TraceRoot span processor to it instead of creating a new one."
             )
         else:
             self._provider = TracerProvider()
-            self._owns_provider = True
             if not isinstance(existing, trace.ProxyTracerProvider):
                 logger.warning(
                     "TraceRoot: the global TracerProvider (%s) is not an OpenTelemetry SDK "
@@ -200,7 +198,7 @@ class TracerootClient:
         self._provider.add_span_processor(self._span_processor)
 
         # Set as global provider so @observe decorator uses it
-        if self._owns_provider:
+        if owns_provider:
             trace.set_tracer_provider(self._provider)
 
         # Register shutdown handler
