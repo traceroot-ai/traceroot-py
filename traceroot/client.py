@@ -193,7 +193,8 @@ class TracerootClient:
         # Wrap whatever sampler the provider resolved (default, OTEL_TRACES_SAMPLER, or the host's)
         # so a local=True eval run samples its own spans DROP -- they are never recorded, so they
         # cannot be exported by this or any other processor on the provider. Safe on a shared
-        # provider: only suppressed spans are dropped. Earlier host tracers keep the old sampler.
+        # provider: only suppressed spans are dropped. Host tracers made before this keep the old
+        # sampler; TracerootSpanProcessor drops their suppressed spans itself.
         if not isinstance(self._provider.sampler, LocalEvalSampler):
             self._provider.sampler = LocalEvalSampler(self._provider.sampler)
         self._provider.add_span_processor(self._span_processor)
