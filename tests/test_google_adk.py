@@ -17,7 +17,9 @@ from traceroot.constants import SDK_NAME
 from traceroot.instrumentation.google_adk import GoogleADKInstrumentor, _NodeSpanTracer
 
 requires_adk = pytest.mark.skipif(
-    importlib.util.find_spec("google.adk") is None, reason="google-adk is not installed"
+    importlib.util.find_spec("google.adk") is None
+    or importlib.util.find_spec("google.adk.telemetry.node_tracing") is None,
+    reason="google-adk 2.x is not installed",
 )
 
 _PRELUDE = """
