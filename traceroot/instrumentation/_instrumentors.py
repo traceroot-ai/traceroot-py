@@ -85,23 +85,3 @@ class AgentFrameworkInstrumentor:
 
     def uninstrument(self, **_kwargs: object) -> None:
         AgentFrameworkInstrumentor._instrumented = False
-
-
-class GoogleADKInstrumentor:
-    """Wraps openinference GoogleADKInstrumentor and restores the ADK 2.x node spans it drops."""
-
-    def instrument(self, tracer_provider: TracerProvider | None = None, **_kwargs: object) -> None:
-        from openinference.instrumentation.google_adk import GoogleADKInstrumentor as _Inner
-
-        from traceroot.instrumentation.google_adk import instrument_adk_node_spans
-
-        _Inner().instrument(tracer_provider=tracer_provider)
-        instrument_adk_node_spans(tracer_provider)
-
-    def uninstrument(self, **_kwargs: object) -> None:
-        from openinference.instrumentation.google_adk import GoogleADKInstrumentor as _Inner
-
-        from traceroot.instrumentation.google_adk import uninstrument_adk_node_spans
-
-        uninstrument_adk_node_spans()
-        _Inner().uninstrument()

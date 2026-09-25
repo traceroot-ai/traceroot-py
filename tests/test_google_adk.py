@@ -11,15 +11,10 @@ import subprocess
 import sys
 
 import pytest
-from opentelemetry import trace as trace_api
 from opentelemetry.sdk.trace import TracerProvider
 
 from traceroot.constants import SDK_NAME
-from traceroot.instrumentation.google_adk import (
-    _NodeSpanTracer,
-    _should_replace,
-    instrument_adk_node_spans,
-)
+from traceroot.instrumentation.google_adk import GoogleADKInstrumentor, _NodeSpanTracer
 
 requires_adk = pytest.mark.skipif(
     importlib.util.find_spec("google.adk") is None, reason="google-adk is not installed"
@@ -146,7 +141,7 @@ assert host_names == sorted(s.name for s in EXPORTED), host_names
 
 _NODE_TRACING_FIRST = "import google.adk.telemetry.node_tracing\n"
 
-# Each order reaches a different binding in _should_replace: OpenInference's proxy (initialize
+# Each order leaves a different binding in node_tracing.tracer: OpenInference's proxy (initialize
 # first), ADK's raw tracer (node_tracing first), and the proxy on a joined host provider.
 _SCRIPTS = {
     "initialize_first": _PRELUDE + _INIT + _WORKFLOW,
@@ -222,13 +217,29 @@ def test_workflow_and_node_spans_are_chain_spans_nested_once(order):
     assert {s["traceroot_sdk"] for s in spans} == {SDK_NAME}
 
 
+_UNINSTRUMENT = """
+from google.adk.telemetry import node_tracing, tracing
+from traceroot.instrumentation.google_adk import GoogleADKInstrumentor
+
+GoogleADKInstrumentor().uninstrument()
+assert node_tracing.tracer is tracing.tracer
+"""
+
+
+@requires_adk
+def test_uninstrument_hands_node_spans_back_to_adk():
+    # Initialize first, so the binding we replaced was OpenInference's (now retired) proxy.
+    spans = _run_script(_PRELUDE + _INIT + _UNINSTRUMENT + _WORKFLOW)
+    node_spans = [s for s in spans if s["name"].startswith(("invoke_workflow", "invoke_node"))]
+
+    assert {s["name"] for s in node_spans} >= {"invoke_workflow probe_wf", "invoke_node a"}
+    assert {s["kind"] for s in node_spans} == {None}
+
+
 @requires_adk
 def test_repeat_instrument_and_uninstrument_do_not_stack_wrappers():
-    from google.adk.telemetry import node_tracing
+    from google.adk.telemetry import node_tracing, tracing
 
-    from traceroot.instrumentation._instrumentors import GoogleADKInstrumentor
-
-    original = node_tracing.tracer
     provider = TracerProvider()
     try:
         GoogleADKInstrumentor().instrument(tracer_provider=provider)
@@ -236,75 +247,15 @@ def test_repeat_instrument_and_uninstrument_do_not_stack_wrappers():
         assert isinstance(ours, _NodeSpanTracer)
         GoogleADKInstrumentor().instrument(tracer_provider=provider)
         assert node_tracing.tracer is ours
-        assert ours.wrapped is original
     finally:
         GoogleADKInstrumentor().uninstrument()
-    assert node_tracing.tracer is original
-
-
-# =============================================================================
-# Deciding whether to take over node_tracing.tracer
-# =============================================================================
-
-
-def test_should_replace_only_tracers_that_lose_node_spans():
-    from openinference.instrumentation.google_adk import _SelectiveExecuteToolTracer
-
-    assert _should_replace(TracerProvider().get_tracer("gcp.vertex.agent")) is True
-    assert _should_replace(trace_api.ProxyTracer("gcp.vertex.agent")) is True
-    proxy = _SelectiveExecuteToolTracer(
-        TracerProvider().get_tracer("adk"), TracerProvider().get_tracer("oi")
-    )
-    assert _should_replace(proxy) is True
-    assert _should_replace(trace_api.NoOpTracer()) is False
-    assert _should_replace(object()) is False
-
-
-def test_defers_to_openinference_once_it_emits_node_spans(monkeypatch):
-    """If OpenInference starts forwarding invoke_node itself, don't emit a second copy."""
-    from openinference.instrumentation.google_adk import _SelectiveExecuteToolTracer
-
-    def forward_everything(self, name, *args, **kwargs):
-        return self._self_oi_tracer.start_as_current_span(name, *args, **kwargs)
-
-    monkeypatch.setattr(_SelectiveExecuteToolTracer, "start_as_current_span", forward_everything)
-    proxy = _SelectiveExecuteToolTracer(
-        TracerProvider().get_tracer("adk"), TracerProvider().get_tracer("oi")
-    )
-    assert _should_replace(proxy) is False
-
-
-def test_node_span_tracer_delegates_other_span_names():
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-
-    adk_exporter, oi_exporter = InMemorySpanExporter(), InMemorySpanExporter()
-    adk_provider, oi_provider = TracerProvider(), TracerProvider()
-    adk_provider.add_span_processor(SimpleSpanProcessor(adk_exporter))
-    oi_provider.add_span_processor(SimpleSpanProcessor(oi_exporter))
-    tracer = _NodeSpanTracer(adk_provider.get_tracer("adk"), oi_provider.get_tracer("oi"))
-
-    with (
-        tracer.start_as_current_span(name="invoke_workflow wf", attributes={"k": "v"}),
-        tracer.start_as_current_span("invoke_node n"),
-    ):
-        pass
-    with tracer.start_as_current_span("invoke_workflow"):
-        pass
-    with tracer.start_as_current_span("send_data"):
-        pass
-
-    oi_spans = {s.name: s for s in oi_exporter.get_finished_spans()}
-    assert set(oi_spans) == {"invoke_workflow wf", "invoke_node n", "invoke_workflow"}
-    assert all(s.attributes["openinference.span.kind"] == "CHAIN" for s in oi_spans.values())
-    assert oi_spans["invoke_workflow wf"].attributes["k"] == "v"
-    assert (
-        oi_spans["invoke_node n"].parent.span_id == oi_spans["invoke_workflow wf"].context.span_id
-    )
-    assert [s.name for s in adk_exporter.get_finished_spans()] == ["send_data"]
+    assert node_tracing.tracer is tracing.tracer
 
 
 def test_no_op_without_adk_node_tracing(monkeypatch):
     """google-adk 1.x has no workflow runtime (no telemetry.node_tracing): nothing to patch."""
+    import openinference.instrumentation.google_adk as oi_adk
+
+    monkeypatch.setattr(oi_adk.GoogleADKInstrumentor, "instrument", lambda *a, **k: None)
     monkeypatch.setitem(sys.modules, "google.adk.telemetry", None)
-    assert instrument_adk_node_spans(TracerProvider()) is False
+    GoogleADKInstrumentor().instrument(tracer_provider=TracerProvider())
