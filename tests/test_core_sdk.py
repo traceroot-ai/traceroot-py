@@ -41,6 +41,7 @@ def test_shutdown():
 
     assert traceroot.get_client()._initialized is False
 
+
 def test_flush_without_client_is_safe():
     """Test flush() does nothing and does not raise when no client exists."""
     reset_traceroot()
@@ -50,24 +51,38 @@ def test_flush_without_client_is_safe():
     traceroot.flush()
 
 
-def test_flush_with_client_does_not_raise():
-    """Test flush() calls through to the client without raising."""
+def test_flush_calls_through_to_processor():
+    """Test flush() delegates to the span processor's force_flush()."""
     reset_traceroot()
-    traceroot.initialize(api_key="test-key", enabled=False)
+    client = traceroot.initialize(api_key="test-key", enabled=False)
 
-    # Disabled clients have no span_processor, so flush is a no-op.
-    # This locks in that flush() never raises regardless of client state.
+    called = {"n": 0}
+
+    class FakeProcessor:
+        def force_flush(self, timeout_millis=30000):
+            called["n"] += 1
+            return True
+
+        def shutdown(self):
+            pass
+
+    client._span_processor = FakeProcessor()
+
     traceroot.flush()
 
+    assert called["n"] == 1
 
-def test_get_client_auto_initializes():
-    """Test get_client() creates a client when none exists."""
+
+def test_get_client_auto_initializes(monkeypatch):
+    """Test get_client() creates a disabled client when no API key is set."""
+    monkeypatch.delenv("TRACEROOT_API_KEY", raising=False)
     reset_traceroot()
     traceroot._client = None
 
     client = traceroot.get_client()
 
     assert client is not None
+    assert client.enabled is False
     assert traceroot.get_client() is client
 
 
