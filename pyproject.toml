@@ -53,6 +53,12 @@ agent-framework = [
     "openinference-instrumentation-agent-framework>=0.1.0,<1.0",
     "agent-framework-core>=1.0.0,<2.0",
 ]
+# TypeSafe AI. Kept optional because its OpenInference instrumentation requires
+# openinference-instrumentation>=0.1.61, above traceroot's >=0.1.40 floor.
+typesafe = [
+    "openinference-instrumentation-typesafe>=0.1.1,<0.2",
+    "typesafe-sdk>=0.6.0,<1.0",
+]
 
 [dependency-groups]
 dev = [
@@ -62,6 +68,9 @@ dev = [
     "coverage>=7.0",
     "respx>=0.20",
     "ruff>=0.15.0",
+    # Real TypeSafe SDK and instrumentor for tests/test_typesafe.py.
+    "openinference-instrumentation-typesafe>=0.1.1,<0.2",
+    "typesafe-sdk>=0.6.0,<1.0",
 ]
 
 [project.urls]
