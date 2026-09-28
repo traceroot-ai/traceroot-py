@@ -57,7 +57,8 @@ _PathMap = OrderedDict[str, list[str]]
 # TraceRoot merely joins, the sampler is left alone: wrapping it would change what the host's own
 # exporters see, and only for tracers created after initialize(). There TracerootSpanProcessor
 # drops local-run spans itself, so the boundary is the same either way -- a span born inside a local
-# run never reaches TraceRoot, and a joined host's own tracing behaves as if TraceRoot were absent.
+# run never reaches TraceRoot. A joined host still exports every span; local-run spans are left
+# untouched, others also carry TraceRoot's traceroot.* attributes.
 #
 # The flag is read through opentelemetry-instrumentation's public is_instrumentation_enabled(), so no
 # private OTel constant sits in the guarantee path, and both the current and legacy key spellings are
