@@ -61,46 +61,36 @@ def test_joins_existing_global_provider(memory_exporter, traceroot_exported, cap
     assert [s.name for s in memory_exporter.get_finished_spans()] == ["joined-op"]
 
 
-def test_local_eval_gate_wraps_joined_provider_once(memory_exporter, traceroot_exported):
+def test_local_run_spans_skip_traceroot_but_reach_host_for_early_and_late_tracers(
+    memory_exporter, traceroot_exported
+):
+    host_provider = trace.get_tracer_provider()
+    early_tracer = host_provider.get_tracer("host-early")
     _init()
-    reset_traceroot()
-    client = _init()
-    sampler = client._provider.sampler
-    assert isinstance(sampler, LocalEvalSampler)
-    assert not isinstance(sampler._inner, LocalEvalSampler)
-
-    @observe(name="local-only")
-    def op():
-        return "ok"
+    late_tracer = host_provider.get_tracer("host-late")
 
     with mark_local_eval_run():
-        op()
+        with early_tracer.start_as_current_span("early-local"):
+            pass
+        with late_tracer.start_as_current_span("late-local"):
+            pass
+    with late_tracer.start_as_current_span("control"):
+        pass
     traceroot.flush()
 
-    assert traceroot_exported == []
-    assert memory_exporter.get_finished_spans() == ()
+    host_spans = [s.name for s in memory_exporter.get_finished_spans()]
+    assert host_spans == ["early-local", "late-local", "control"]
+    assert [s.name for s in traceroot_exported] == ["control"]
 
 
-def test_local_eval_gate_covers_host_tracer_created_before_initialize(
-    memory_exporter, traceroot_exported, monkeypatch
-):
-    # A host tracer made before initialize() captured the provider's original sampler, so the
-    # LocalEvalSampler wrap never sees its spans; TraceRoot's processor must drop them itself.
+def test_joined_provider_sampler_is_left_alone(memory_exporter, traceroot_exported):
     host_provider = trace.get_tracer_provider()
     original = host_provider.sampler
-    if isinstance(original, LocalEvalSampler):
-        original = original._inner
-    monkeypatch.setattr(host_provider, "sampler", original)
-    early_tracer = host_provider.get_tracer("host-app")
     _init()
-
-    with mark_local_eval_run(), early_tracer.start_as_current_span("local-run"):
-        pass
-    with early_tracer.start_as_current_span("reported-run"):
-        pass
-    traceroot.flush()
-
-    assert [s.name for s in traceroot_exported] == ["reported-run"]
+    reset_traceroot()
+    _init()
+    assert host_provider.sampler is original
+    assert not isinstance(original, LocalEvalSampler)
 
 
 def test_shutdown_leaves_host_provider_running(memory_exporter, traceroot_exported):
@@ -151,6 +141,7 @@ def test_creates_and_sets_own_provider_without_a_global_sdk_provider(existing, w
         client = _init()
 
     mock_set.assert_called_once_with(client._provider)
+    assert isinstance(client._provider.sampler, LocalEvalSampler)
     assert ("cannot be shared" in caplog.text) == bool(warning)
     assert (warning or "") in caplog.text
     reset_traceroot()
