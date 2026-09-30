@@ -170,6 +170,8 @@ class Dataset:
     Pass an explicit ``key`` to keep identity stable across a display-name rename.
     ``dataset_version_id`` is set only when this Dataset mirrors a pushed/pulled
     remote version; changed content under the same key becomes a new VERSION.
+    ``version_number`` is that version's ordinal, carried alongside the id when the
+    platform reports it (a locally-authored dataset has neither).
     """
 
     def __init__(
@@ -180,6 +182,7 @@ class Dataset:
         self.key = key or name
         self.dataset_id = stable_dataset_id(self.key)
         self.dataset_version_id: str | None = None
+        self.version_number: int | None = None
         self.base_version_id: str | None = None
         self._cases: dict[str, EvalCase] = {}
 
@@ -314,6 +317,7 @@ class Dataset:
             "description": self.description,
             "base_version_id": self.base_version_id,
             "dataset_version_id": self.dataset_version_id,  # keep the remote binding through save/load
+            "version_number": self.version_number,
             "cases": [c.to_dict() for c in self._cases.values()],  # incl. archived
         }
 
@@ -323,6 +327,7 @@ class Dataset:
         ds.dataset_id = d.get("dataset_id", ds.dataset_id)
         ds.base_version_id = d.get("base_version_id")
         ds.dataset_version_id = d.get("dataset_version_id")
+        ds.version_number = d.get("version_number")
         for cd in d.get("cases", []):
             case = EvalCase(**cd)
             ds._cases[case.id] = case  # type: ignore[index]
@@ -346,6 +351,7 @@ class Dataset:
                 "description": self.description,
                 "base_version_id": self.base_version_id,
                 "dataset_version_id": self.dataset_version_id,
+                "version_number": self.version_number,
                 "schema": 1,
             }
             lines = [json.dumps(normalize(header), ensure_ascii=False)]
@@ -372,6 +378,7 @@ class Dataset:
                     "description",
                     "base_version_id",
                     "dataset_version_id",
+                    "version_number",
                 )
             }
             d["cases"] = [{k: v for k, v in rec.items() if k != "type"} for rec in records[1:]]
@@ -388,17 +395,57 @@ class Dataset:
         """Explicitly publish this dataset as ONE immutable server version.
 
         Local mutations never create versions; this is the deliberate publish
-        boundary. ``transport`` defaults to a no-op ``LocalDatasetSync`` (local-only,
-        no network). Provide the remote version this edit was based on via
-        ``base_version_id`` (defaults to this dataset's pinned version) for
-        optimistic concurrency; a stale base raises ``DatasetConflictError``.
-        ``on_existing`` overrides the double-check before adding a version to an
-        already-existing dataset (default: the transport's own, an interactive prompt).
-        Imported lazily to avoid a types <-> dataset_sync cycle.
+        boundary. ``transport`` defaults to the platform transport
+        (``PlatformDatasetSync``), so ``push()`` publishes to TraceRoot — the same
+        cloud-by-default behaviour as ``evaluate()``. When no credentials are
+        configured it raises a clear error rather than silently staying local; for a
+        deliberate offline push pass ``transport=LocalDatasetSync()``. Provide the
+        remote version this edit was based on via ``base_version_id`` (defaults to
+        this dataset's pinned version) for optimistic concurrency; a stale base raises
+        ``DatasetConflictError``. ``on_existing`` overrides the double-check before
+        adding a version to an already-existing dataset (default: the transport's own,
+        an interactive prompt). Imported lazily to avoid a types <-> dataset_sync cycle.
         """
-        from traceroot.eval.dataset_sync import LocalDatasetSync
+        if transport is not None:
+            sync = transport
+        else:
+            import os
 
-        sync = transport if transport is not None else LocalDatasetSync()
+            import traceroot
+            from traceroot.constants import DEFAULT_HOST_URL
+            from traceroot.env import TRACEROOT_API_KEY, TRACEROOT_HOST_URL
+            from traceroot.eval.dataset_sync import PlatformDatasetSync
+
+            # Resolve credentials WITHOUT auto-creating the global client, then pass them
+            # explicitly. Constructing PlatformDatasetSync() with no args resolves creds via
+            # get_client(), which (a) auto-initializes a keyless client from the environment when
+            # none exists -- after which traceroot.initialize() becomes a no-op, so a
+            # credential-less push() could never be recovered -- and (b) reuses an existing keyless
+            # client even when TRACEROOT_API_KEY is set, ignoring the configured key. Reading the
+            # existing client / env here avoids both: only a genuinely missing key becomes the
+            # actionable error, and the environment-credential path publishes with its key.
+            client = traceroot._client
+            api_key = (client.api_key if client is not None else "") or os.environ.get(
+                TRACEROOT_API_KEY, ""
+            )
+            if not api_key:
+                raise ValueError(
+                    "Dataset.push() publishes to the TraceRoot platform, but no credentials are "
+                    "configured. Call traceroot.initialize(api_key=..., host_url=...) first (or set "
+                    "TRACEROOT_API_KEY), or pass an explicit transport (transport=LocalDatasetSync() "
+                    "keeps it local)."
+                )
+            # Host precedence mirrors the client's own: an initialized client's host_url wins,
+            # because it ALREADY resolves TRACEROOT_HOST_URL itself (client.py) -- so the two only
+            # differ when initialize(host_url=...) was given an explicit host, and an explicit
+            # argument must beat an env var (a self-hosted process would otherwise publish
+            # elsewhere). The env/default legs below cover the no-client case.
+            host_url = (
+                (client.host_url if client is not None else "")
+                or os.environ.get(TRACEROOT_HOST_URL, "")
+                or DEFAULT_HOST_URL
+            )
+            sync = PlatformDatasetSync(api_key=api_key, host_url=host_url)
         snapshot = self.snapshot()
         base = base_version_id if base_version_id is not None else self.base_version_id
         # Only forwarded when set, so a duck-typed transport without the keyword still works.
@@ -407,4 +454,7 @@ class Dataset:
         if result.status == "uploaded" and result.dataset_version_id is not None:
             self.dataset_version_id = result.dataset_version_id
             self.base_version_id = result.dataset_version_id
+            # Set unconditionally alongside the id: a transport that does not report the ordinal
+            # must clear it, not leave the PREVIOUS version's number pinned to the new id.
+            self.version_number = result.version_number
         return result
