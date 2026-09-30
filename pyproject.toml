@@ -62,6 +62,8 @@ dev = [
     "coverage>=7.0",
     "respx>=0.20",
     "ruff>=0.15.0",
+    # ADK 2.x Workflow runtime for tests/test_google_adk.py.
+    "google-adk>=2.0",
 ]
 
 [project.urls]

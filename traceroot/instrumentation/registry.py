@@ -126,7 +126,7 @@ _BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
     ),
     Integration.GOOGLE_ADK: InstrumentorEntry(
         package="google-adk",
-        module_path="openinference.instrumentation.google_adk",
+        module_path="traceroot.instrumentation.google_adk",
         class_name="GoogleADKInstrumentor",
     ),
     Integration.MISTRAL: InstrumentorEntry(
