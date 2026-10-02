@@ -129,9 +129,16 @@ def flush() -> None:
 
 
 def shutdown() -> None:
-    """Shutdown the SDK gracefully."""
-    if _client:
-        _client.shutdown()
+    """Shutdown the SDK gracefully.
+
+    Resets the global client to None so a later initialize()/get_client()
+    creates a fresh client instead of returning the dead, shutdown one.
+    """
+    global _client
+    with _init_lock:
+        if _client:
+            _client.shutdown()
+        _client = None
 
 
 __all__ = [
