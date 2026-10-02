@@ -457,6 +457,7 @@ class TestLlmJudgeTokenCounts:
     TOTAL = "llm.token_count.total"
     CACHE_READ = "llm.token_count.prompt_details.cache_read"
     CACHE_CREATION = "llm.token_count.prompt_details.cache_creation"
+    CACHE_WRITE_1H = "llm.token_count.prompt_details.cache_write_1h"
 
     @staticmethod
     def _judge(**kw):
@@ -496,13 +497,21 @@ class TestLlmJudgeTokenCounts:
     def test_cache_counts_are_recorded_when_reported(self, memory_exporter, monkeypatch):
         self._stub_default(
             monkeypatch,
-            {"prompt": 120, "completion": 7, "total": 127, "cache_read": 90, "cache_creation": 10},
+            {
+                "prompt": 120,
+                "completion": 7,
+                "total": 127,
+                "cache_read": 90,
+                "cache_creation": 10,
+                "cache_write_1h": 4,
+            },
         )
         _, by = self._run(self._judge(), memory_exporter)
 
         attrs = by["llm_judge:conciseness"].attributes
         assert attrs[self.CACHE_READ] == 90
         assert attrs[self.CACHE_CREATION] == 10
+        assert attrs[self.CACHE_WRITE_1H] == 4
 
     def test_a_provider_reporting_no_usage_records_no_token_attrs(
         self, memory_exporter, monkeypatch
