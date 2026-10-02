@@ -467,3 +467,125 @@ def test_auto_initialization_without_explicit_initialize(memory_exporter):
     spans = memory_exporter.get_finished_spans()
     assert len(spans) == 1
     assert spans[0].name == "auto-init-test"
+
+
+def test_sync_generator_span_nesting(memory_exporter):
+    """Test nested spans inside a sync generator are children of the generator span.
+
+    This verifies that @observe-decorated sync generators correctly activate
+    their span context during execution, so nested @observe calls inside the
+    generator body correctly nest under the generator's span instead of
+    becoming orphaned or attaching to the wrong parent.
+    """
+
+    @observe(name="generator-child")
+    def generator_child():
+        return "child-result"
+
+    @observe(name="sync-generator")
+    def sync_gen():
+        yield "item-1"
+        # Call nested function inside generator body
+        result = generator_child()
+        yield f"item-2-{result}"
+
+    # Drain the generator fully
+    items = list(sync_gen())
+
+    assert len(items) == 2
+    assert items[0] == "item-1"
+    assert items[1] == "item-2-child-result"
+
+    spans = memory_exporter.get_finished_spans()
+    assert len(spans) == 2
+
+    spans_by_name = get_spans_by_name(memory_exporter)
+    generator_span = spans_by_name["sync-generator"]
+    child_span = spans_by_name["generator-child"]
+
+    # Verify parent-child relationship: child should have generator as parent
+    assert child_span.parent is not None
+    assert child_span.parent.span_id == generator_span.context.span_id
+
+
+@pytest.mark.asyncio
+async def test_async_generator_span_nesting(memory_exporter):
+    """Test nested spans inside an async generator are children of the generator span.
+
+    This verifies that @observe-decorated async generators correctly activate
+    their span context during execution, so nested @observe calls inside the
+    generator body correctly nest under the generator's span instead of
+    becoming orphaned or attaching to the wrong parent.
+    """
+
+    @observe(name="async-generator-child")
+    async def async_generator_child():
+        return "async-child-result"
+
+    @observe(name="async-generator")
+    async def async_gen():
+        yield "item-1"
+        # Call nested function inside generator body
+        result = await async_generator_child()
+        yield f"item-2-{result}"
+
+    # Drain the async generator fully
+    items = []
+    async for item in async_gen():
+        items.append(item)
+
+    assert len(items) == 2
+    assert items[0] == "item-1"
+    assert items[1] == "item-2-async-child-result"
+
+    spans = memory_exporter.get_finished_spans()
+    assert len(spans) == 2
+
+    spans_by_name = get_spans_by_name(memory_exporter)
+    generator_span = spans_by_name["async-generator"]
+    child_span = spans_by_name["async-generator-child"]
+
+    # Verify parent-child relationship: child should have generator as parent
+    assert child_span.parent is not None
+    assert child_span.parent.span_id == generator_span.context.span_id
+
+
+def test_sync_generator_no_context_leak_to_caller(memory_exporter):
+    """Test that generator context does not leak to caller after exhaustion.
+
+    This is a regression test for a naive fix that might leave the generator's
+    span context attached globally after the generator is exhausted. After the
+    generator completes, any new spans created from the caller's code should
+    not have the generator span as their parent.
+    """
+
+    @observe(name="sibling-after-gen")
+    def sibling_after_generator():
+        return "sibling-result"
+
+    @observe(name="context-leak-test-gen")
+    def context_leak_test_gen():
+        yield "item-1"
+        yield "item-2"
+
+    # Drain the generator
+    items = list(context_leak_test_gen())
+    assert len(items) == 2
+
+    # Now call a sibling function from the caller's code
+    # This should NOT have the generator as its parent
+    result = sibling_after_generator()
+    assert result == "sibling-result"
+
+    spans = memory_exporter.get_finished_spans()
+    assert len(spans) == 2
+
+    spans_by_name = get_spans_by_name(memory_exporter)
+    generator_span = spans_by_name["context-leak-test-gen"]
+    sibling_span = spans_by_name["sibling-after-gen"]
+
+    # Verify sibling does NOT have generator as parent
+    # (sibling should have no parent, since it's called at root level)
+    assert (
+        sibling_span.parent is None or sibling_span.parent.span_id != generator_span.context.span_id
+    )
