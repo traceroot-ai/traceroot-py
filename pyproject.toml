@@ -3,7 +3,11 @@ name = "traceroot"
 version = "0.3.0"
 description = "Python SDK for TraceRoot"
 readme = "README.md"
-requires-python = ">=3.11"
+# Upper bound: openinference-instrumentation-crewai declares >=3.10,<3.14 in every
+# release of the >=1.1.1,<2.0 range, so no resolution exists on 3.14. Declaring the
+# real ceiling makes pip refuse at the traceroot requirement, naming the Python
+# version, instead of failing one dependency later. Lift it when crewai allows 3.14.
+requires-python = ">=3.11,<3.14"
 license = {text = "Apache-2.0"}
 authors = [
     {name = "TraceRoot Team"},
