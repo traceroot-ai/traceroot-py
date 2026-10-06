@@ -48,16 +48,17 @@ _PathMap = OrderedDict[str, list[str]]
 # honours. Setting it buys two things:
 #   1. every OpenInference instrumentor short-circuits in its own tracer and returns INVALID_SPAN,
 #      so an instrumented LLM/tool span is never even built (no attribute work at all); and
-#   2. LocalEvalSampler below returns DROP for anything else, so a raw tracer.start_span() -- which
-#      no instrumentor mediates -- is non-recording too.
+#   2. on a provider TraceRoot owns, LocalEvalSampler below returns DROP for anything else, so a raw
+#      tracer.start_span() -- which no instrumentor mediates -- is non-recording too.
 #
 # Step 2 exists only because OTel-Python's SDK does not consult the flag in Tracer.start_span the
 # way OTel-JS does (its _is_enabled() checks the per-scope tracer configurator and nothing else), so
-# the sampler is the shim that teaches the Python SDK to honour the same flag. Both SDKs therefore
-# set the same kind of marker and get the same result: a span born inside a local run is
-# non-recording, never reaches a span processor, and cannot be exported -- whenever it ends. This is
-# the principle every local-mode implementation we surveyed converges on: suppress where the span is
-# BORN, not where it is sent.
+# the sampler is the shim that teaches the Python SDK to honour the same flag. On a host provider
+# TraceRoot merely joins, the sampler is left alone: wrapping it would change what the host's own
+# exporters see, and only for tracers created after initialize(). There TracerootSpanProcessor
+# drops local-run spans itself, so the boundary is the same either way -- a span born inside a local
+# run never reaches TraceRoot. A joined host still exports every span; local-run spans are left
+# untouched, others also carry TraceRoot's traceroot.* attributes.
 #
 # The flag is read through opentelemetry-instrumentation's public is_instrumentation_enabled(), so no
 # private OTel constant sits in the guarantee path, and both the current and legacy key spellings are
@@ -201,8 +202,21 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         # concurrent sibling's on_start could look it up.
         self._ids_path_by_span_id: _PathMap = OrderedDict()
         self._name_path_by_span_id: _PathMap = OrderedDict()
+        # OTel can't remove a processor from a provider, so on a joined host provider this one
+        # stays registered after shutdown() and goes inert (best-effort: a callback already in
+        # flight may still stamp attributes).
+        self._shut_down = False
+        # Recording spans started inside a local=True eval run (joined host provider, whose sampler
+        # is left alone): drop them at on_end so they never reach TraceRoot.
+        self._local_eval_span_ids: OrderedDict[int, None] = OrderedDict()
 
     def on_start(self, span, parent_context=None):
+        if self._shut_down:
+            return
+        if not is_instrumentation_enabled():
+            with self._paths_lock:
+                self._local_eval_span_ids[span.context.span_id] = None
+            return
         if span.is_recording():
             span.set_attribute("traceroot.sdk.name", SDK_NAME)
             span.set_attribute("traceroot.sdk.version", SDK_VERSION)
@@ -285,11 +299,27 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         super().on_start(span, parent_context)
 
     def on_end(self, span):
+        if self._shut_down:
+            return
         with self._paths_lock:
+            if self._local_eval_span_ids and span.context.span_id in self._local_eval_span_ids:
+                del self._local_eval_span_ids[span.context.span_id]
+                return
             span_id_hex = format(span.context.span_id, "016x")
             self._ids_path_by_span_id.pop(span_id_hex, None)
             self._name_path_by_span_id.pop(span_id_hex, None)
         super().on_end(span)
+
+    def shutdown(self):
+        self._shut_down = True
+        super().shutdown()
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        # Still registered on a joined host provider after shutdown(): a False here would stop the
+        # provider from flushing the processors registered after this one.
+        if self._shut_down:
+            return True
+        return super().force_flush(timeout_millis)
 
     @property
     def flush_at(self) -> int:

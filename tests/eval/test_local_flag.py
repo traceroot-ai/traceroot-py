@@ -58,14 +58,17 @@ def _already_initialized_client(monkeypatch):
     provider with a real OpenAI instrumentation integration -- the starting point the origin gate
     must cover. Fake host; the export spy sits before export, so nothing touches the network.
 
-    Don't let ``initialize()`` claim OTel's process-global tracer-provider slot (set-once): the run
-    is driven through the client's own provider, and claiming the slot would poison sibling tests.
+    Don't let ``initialize()`` claim OTel's process-global tracer-provider slot (set-once) or join
+    a provider a sibling test installed there: the run is driven through the client's own provider.
     Yields the client; undoes the real (global) OpenAI instrumentation on exit so it can't leak onto
     sibling tests (the rest of the suite mocks the instrumentor for this reason)."""
+    from opentelemetry import trace
+
     import traceroot
     from traceroot import Integration
 
     monkeypatch.setattr("opentelemetry.trace.set_tracer_provider", lambda *a, **k: None)
+    monkeypatch.setattr("opentelemetry.trace.get_tracer_provider", trace.ProxyTracerProvider)
     traceroot.shutdown()
     traceroot._client = None
     client = traceroot.initialize(
@@ -395,8 +398,8 @@ class TestLocalSuppressesGlobalAutoInit:
         SEPARATE context (its own run) is never stamped, so it still exports -- the process-global
         gate this replaced dropped it too.
 
-        The reported provider's sampler is wrapped with ``LocalEvalSampler`` -- exactly what
-        ``TracerootClient`` does in ``client.py`` -- so this test actually exercises the real gate.
+        The reported provider's sampler is wrapped with ``LocalEvalSampler`` -- what
+        ``TracerootClient`` does on a provider it owns -- so this test actually exercises the real gate.
         A bare ``TracerProvider()``'s default sampler never consults the suppression flag at all, so
         without this wrapping the assertion below would pass unconditionally, whether the gate is
         correctly context-scoped or regressed to process-global: it would never observe the
