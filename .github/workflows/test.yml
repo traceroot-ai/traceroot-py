@@ -15,6 +15,48 @@ permissions:
   contents: read
 
 jobs:
+  typesafe-fresh-install:
+    name: TypeSafe fresh install (${{ matrix.instrumentor }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        instrumentor: ["0.1.1", "latest"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+
+      # Install the built wheel without uv.lock, as a new user would.
+      - name: Build and install the TypeSafe extra
+        shell: bash
+        run: |
+          uv build --wheel
+          uv venv "$RUNNER_TEMP/typesafe-venv" --python 3.11
+          wheels=(dist/*.whl)
+          install_args=("${wheels[0]}[typesafe]" pytest pytest-asyncio)
+          if [[ "${{ matrix.instrumentor }}" != "latest" ]]; then
+            install_args+=("openinference-instrumentation-typesafe==${{ matrix.instrumentor }}")
+          fi
+          uv pip install --python "$RUNNER_TEMP/typesafe-venv/bin/python" "${install_args[@]}"
+          uv pip check --python "$RUNNER_TEMP/typesafe-venv/bin/python"
+
+      # Copy only the tests so imports cannot silently use the source checkout.
+      - name: Prepare installed-package tests
+        run: |
+          mkdir -p "$RUNNER_TEMP/typesafe-tests/tests"
+          cp tests/{__init__,conftest,utils,test_typesafe,test_auto_instrumentation}.py "$RUNNER_TEMP/typesafe-tests/tests/"
+
+      - name: Verify installed versions and span contract
+        working-directory: ${{ runner.temp }}/typesafe-tests
+        run: |
+          "$RUNNER_TEMP/typesafe-venv/bin/python" -c 'import importlib.metadata as m; import traceroot; print("Installed SDK:", traceroot.__file__); print({p: m.version(p) for p in ("traceroot", "typesafe-sdk", "openinference-instrumentation-typesafe")})'
+          "$RUNNER_TEMP/typesafe-venv/bin/python" -m pytest tests/ -v --tb=short
+
   # ---------------------------------------------------------------------------
   # Unit tests
   # ---------------------------------------------------------------------------
