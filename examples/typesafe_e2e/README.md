@@ -2,6 +2,8 @@
 
 This opt-in suite makes **17 real Jev API calls** and checks their complete path through a local TraceRoot development stack. It requires the DECISION ingestion/UI support merged in [traceroot#2538](https://github.com/traceroot-ai/traceroot/pull/2538). It is separate from the offline CI tests.
 
+See the [recorded local verification, report and UI screenshots](evidence/README.md).
+
 ## Scenarios
 
 | Example | Real calls | Source |
