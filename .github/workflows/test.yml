@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        instrumentor: ["0.1.1", "latest"]
+        instrumentor: ["0.1.4", "latest"]
 
     steps:
       - uses: actions/checkout@v4

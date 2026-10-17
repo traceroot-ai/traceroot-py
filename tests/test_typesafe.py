@@ -39,7 +39,7 @@ def create_client(status_code=200, json_body=None):
     return TypeSafeClient(api_key="mock", http_client=httpx2.Client(transport=transport))
 
 
-def test_records_one_llm_span_per_system_one_call(memory_exporter):
+def test_records_one_decision_span_per_system_one_call(memory_exporter):
     client = create_client(
         json_body={
             "model": "jev-1.13.0",
@@ -58,10 +58,10 @@ def test_records_one_llm_span_per_system_one_call(memory_exporter):
     span = spans[0]
 
     assert span.kind == SpanKind.INTERNAL
-    assert span.attributes["llm.model_name"] == "jev-1.13.0"
-    assert span.attributes["llm.token_count.prompt"] == 100
-    assert span.attributes["llm.token_count.completion"] == 20
-    assert span.attributes["llm.token_count.total"] == 120
+    assert span.attributes["decision.model_name"] == "jev-1.13.0"
+    assert span.attributes["decision.token_count.input"] == 100
+    assert span.attributes["decision.token_count.output"] == 20
+    assert "decision.token_count.total" not in span.attributes
     assert span.attributes["session.id"] == "sess-1"
     assert span.attributes["user.id"] == "u-1"
     assert "test state" in span.attributes["input.value"]
@@ -82,8 +82,8 @@ def test_alias_request_records_resolved_model(memory_exporter):
         questions={"test": {"type": "noul", "instructions": "test instructions"}},
     )
     span = memory_exporter.get_finished_spans()[0]
-    assert span.attributes["llm.request.model_name"] == "jev-latest"
-    assert span.attributes["llm.model_name"] == "jev-1.13.0"
+    assert span.attributes["decision.request.model_name"] == "jev-latest"
+    assert span.attributes["decision.model_name"] == "jev-1.13.0"
 
 
 def test_contract_kind_model_tokens(memory_exporter):
@@ -101,10 +101,10 @@ def test_contract_kind_model_tokens(memory_exporter):
         questions={"test": {"type": "noul", "instructions": "test instructions"}},
     )
     span = memory_exporter.get_finished_spans()[0]
-    assert span.attributes.get("openinference.span.kind") == "LLM"
-    assert span.attributes["llm.model_name"] == "jev-1.13.0"
-    assert span.attributes["llm.token_count.prompt"] == 100
-    assert span.attributes["llm.token_count.completion"] == 20
+    assert span.attributes.get("openinference.span.kind") == "DECISION"
+    assert span.attributes["decision.model_name"] == "jev-1.13.0"
+    assert span.attributes["decision.token_count.input"] == 100
+    assert span.attributes["decision.token_count.output"] == 20
 
 
 def test_error_status_on_400(memory_exporter):
@@ -136,5 +136,5 @@ def test_hide_inputs(memory_exporter):
     )
     span = memory_exporter.get_finished_spans()[0]
     assert span.attributes.get("input.value") == "__REDACTED__"
-    assert span.attributes["llm.model_name"] == "jev-1.13.0"
-    assert span.attributes["llm.token_count.prompt"] == 100
+    assert span.attributes["decision.model_name"] == "jev-1.13.0"
+    assert span.attributes["decision.token_count.input"] == 100

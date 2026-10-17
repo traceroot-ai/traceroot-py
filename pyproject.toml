@@ -54,10 +54,10 @@ agent-framework = [
     "agent-framework-core>=1.0.0,<2.0",
 ]
 # TypeSafe AI. Kept optional because its OpenInference instrumentation requires
-# openinference-instrumentation>=0.1.61, above traceroot's >=0.1.40 floor.
-# Versions >=0.1.3 emit DECISION spans; TraceRoot ingest currently prices LLM spans.
+# openinference-instrumentation>=0.1.69, above traceroot's >=0.1.40 floor.
+# Current instrumentors emit DECISION spans; requires TraceRoot ingestion with #2538.
 typesafe = [
-    "openinference-instrumentation-typesafe>=0.1.1,<0.1.3",
+    "openinference-instrumentation-typesafe>=0.1.4,<0.2",
     "typesafe-sdk>=0.6.0,<1.0",
 ]
 
@@ -70,7 +70,7 @@ dev = [
     "respx>=0.20",
     "ruff>=0.15.0",
     # Real TypeSafe SDK and instrumentor for tests/test_typesafe.py.
-    "openinference-instrumentation-typesafe>=0.1.1,<0.1.3",
+    "openinference-instrumentation-typesafe>=0.1.4,<0.2",
     "typesafe-sdk>=0.6.0,<1.0",
     # ADK 2.x Workflow runtime for tests/test_google_adk.py.
     "google-adk>=2.0",
