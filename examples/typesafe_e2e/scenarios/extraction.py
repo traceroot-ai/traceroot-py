@@ -101,7 +101,7 @@ def run(make_client, make_async_client, load_fixture):
 
     # code copies the picked value and normalizes it with the model-supplied country
     parsed = phonenumbers.parse(mobile["choice"], region["choice"])
-    e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.e164)
+    e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
 
     print("candidates :", phones)
     print(f"mobile  -> : {mobile['choice']}  (conf {mobile['confidence']:.2f})")
