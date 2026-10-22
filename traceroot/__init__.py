@@ -55,6 +55,7 @@ def initialize(
     integrations: list[Integration] | None = None,
     git_repo: str | None = None,
     git_ref: str | None = None,
+    environment: str | None = None,
 ) -> TracerootClient:
     """Initialize the global Traceroot client.
 
@@ -73,6 +74,9 @@ def initialize(
             TRACEROOT_ENABLED env var, then True.
         integrations: Libraries to auto-instrument. Use Integration enum
             values (e.g. [Integration.OPENAI, Integration.LANGCHAIN]).
+        environment: Deployment environment name (e.g. "production").
+            Defaults to TRACEROOT_ENVIRONMENT env var. When neither is set,
+            no environment attribute is written.
 
     Returns:
         The TracerootClient instance.
@@ -104,6 +108,7 @@ def initialize(
             integrations=integrations,
             git_repo=git_repo,
             git_ref=git_ref,
+            environment=environment,
         )
     return _client
 

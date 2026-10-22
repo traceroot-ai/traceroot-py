@@ -447,3 +447,49 @@ def test_git_attrs_on_child_spans():
     child = next(s for s in exporter.get_finished_spans() if s.name == "child")
     assert child.attributes.get("traceroot.git.repo") == "org/repo"
     assert child.attributes.get("traceroot.git.ref") == "deadbeef" * 5
+
+
+# ── Environment attribute ──────────────────────────────────────────────────────
+
+
+def test_environment_attrs_on_all_spans():
+    """environment passed to the processor is stamped under both keys, matching traceroot-ts."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    proc = TracerootSpanProcessor(
+        api_key="test", host_url="http://localhost:9999", environment="staging"
+    )
+    provider = TracerProvider()
+    provider.add_span_processor(proc)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+    with tracer.start_as_current_span("root"), tracer.start_as_current_span("child"):
+        pass
+    provider.force_flush()
+    spans = {s.name: s for s in exporter.get_finished_spans()}
+    for name in ("root", "child"):
+        assert spans[name].attributes.get("traceroot.environment") == "staging"
+        assert spans[name].attributes.get("deployment.environment") == "staging"
+
+
+def test_environment_attrs_absent_when_not_configured():
+    """No environment attribute is stamped when environment is not provided."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    exporter = InMemorySpanExporter()
+    proc = TracerootSpanProcessor(api_key="test", host_url="http://localhost:9999")
+    provider = TracerProvider()
+    provider.add_span_processor(proc)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = provider.get_tracer("test")
+    with tracer.start_as_current_span("plain-span"):
+        pass
+    provider.force_flush()
+    span = next(s for s in exporter.get_finished_spans() if s.name == "plain-span")
+    assert span.attributes.get("traceroot.environment") is None
+    assert span.attributes.get("deployment.environment") is None

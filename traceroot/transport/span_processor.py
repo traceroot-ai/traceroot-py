@@ -31,6 +31,7 @@ from traceroot.env import (
     TRACEROOT_FLUSH_INTERVAL,
     TRACEROOT_TIMEOUT,
 )
+from traceroot.span_attributes import SpanAttributes
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         timeout: float | None = None,
         git_repo: str | None = None,
         git_ref: str | None = None,
+        environment: str | None = None,
     ):
         """Initialize the span processor.
 
@@ -152,6 +154,9 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 as ``traceroot.git.repo`` on every recording span.
             git_ref: Git reference (commit SHA, tag, branch). When provided,
                 stamped as ``traceroot.git.ref`` on every recording span.
+            environment: Deployment environment name. When provided, stamped as
+                ``traceroot.environment`` and ``deployment.environment`` on every
+                recording span.
         """
         # Resolve flush_at with env var fallback
         if flush_at is None:
@@ -196,6 +201,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         self._flush_interval = flush_interval
         self._git_repo = git_repo
         self._git_ref = git_ref
+        self._environment = environment
         self._paths_lock = threading.RLock()
         # Bounded OrderedDict: evicts oldest entry when capacity is exceeded,
         # eliminating the on_end race where a parent was removed before a
@@ -224,6 +230,9 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 span.set_attribute("traceroot.git.repo", self._git_repo)
             if self._git_ref:
                 span.set_attribute("traceroot.git.ref", self._git_ref)
+            if self._environment:
+                span.set_attribute(SpanAttributes.ENVIRONMENT, self._environment)
+                span.set_attribute("deployment.environment", self._environment)
 
             try:
                 # span.parent is the SpanContext of the parent (set by the SDK at

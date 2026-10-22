@@ -16,6 +16,7 @@ from traceroot.constants import (
 from traceroot.env import (
     TRACEROOT_API_KEY,
     TRACEROOT_ENABLED,
+    TRACEROOT_ENVIRONMENT,
     TRACEROOT_FLUSH_AT,
     TRACEROOT_FLUSH_INTERVAL,
     TRACEROOT_GIT_REF,
@@ -53,6 +54,7 @@ class TracerootClient:
         integrations: list[Integration] | None = None,
         git_repo: str | None = None,
         git_ref: str | None = None,
+        environment: str | None = None,
     ):
         """Initialize the Traceroot client.
 
@@ -79,6 +81,9 @@ class TracerootClient:
             git_ref: Git reference (commit SHA, tag, branch).
                 Falls back to TRACEROOT_GIT_REF env var,
                 then auto-detected from git HEAD.
+            environment: Deployment environment name (e.g. "production").
+                Falls back to TRACEROOT_ENVIRONMENT env var. When neither
+                is set, no environment attribute is written.
         """
         # Resolve config with env var fallbacks
         self.api_key = api_key or os.environ.get(TRACEROOT_API_KEY, "")
@@ -104,6 +109,12 @@ class TracerootClient:
             enabled = env_enabled not in ("false", "0", "no", "off") if env_enabled else True
 
         self._integrations = integrations
+
+        # Read the env var only when no argument is given, so environment="" can
+        # turn off an inherited TRACEROOT_ENVIRONMENT. `or None` treats "" as unset.
+        if environment is None:
+            environment = os.environ.get(TRACEROOT_ENVIRONMENT)
+        self.environment = environment or None
 
         # Resolve git context: explicit > env > CI vars > auto-detect.
         # `or None` so an empty env var ("") is treated as unset — otherwise it
@@ -165,6 +176,7 @@ class TracerootClient:
             timeout=self.timeout,
             git_repo=self.git_repo,
             git_ref=self.git_ref,
+            environment=self.environment,
         )
 
         # OTel's global provider is set-once. If the host (e.g. `adk web`) already installed an SDK
