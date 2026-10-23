@@ -25,6 +25,7 @@ def update_current_span(
     model: str | None = None,
     model_parameters: dict[str, Any] | None = None,
     usage: dict[str, int] | None = None,
+    cost: float | None = None,
     prompt: Any | None = None,
 ) -> None:
     """Update the current active span with additional information.
@@ -41,6 +42,8 @@ def update_current_span(
         model_parameters: Model parameters (e.g., temperature, max_tokens).
         usage: Token usage dict
             (e.g., {"input_tokens": 100, "output_tokens": 50}).
+        cost: Total cost of this LLM call in USD (e.g. 0.0123).
+            Replaces TraceRoot's computed price for this span.
         prompt: The prompt/messages sent to the LLM.
 
     Example:
@@ -82,6 +85,7 @@ def update_current_span(
     set_span_attribute(span, SpanAttributes.LLM_MODEL, model)
     set_span_attribute(span, SpanAttributes.LLM_MODEL_PARAMETERS, model_parameters)
     set_span_attribute(span, SpanAttributes.LLM_USAGE, usage)
+    set_span_attribute(span, SpanAttributes.LLM_COST_TOTAL, cost)
     set_span_attribute(span, SpanAttributes.LLM_PROMPT, prompt)
 
 

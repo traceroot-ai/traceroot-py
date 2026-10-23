@@ -316,6 +316,23 @@ def test_update_current_span_metadata(memory_exporter):
     assert metadata["score"] == 0.95
 
 
+def test_update_current_span_cost(memory_exporter):
+    """Test update_current_span sets the caller-reported total cost on the active span."""
+
+    @observe(name="span-with-cost", type="llm")
+    def func_with_cost():
+        traceroot.update_current_span(cost=0.0123)
+        return "done"
+
+    func_with_cost()
+
+    spans = memory_exporter.get_finished_spans()
+    assert len(spans) == 1
+
+    span = spans[0]
+    assert get_span_attribute(span, "llm.cost.total") == 0.0123
+
+
 def test_update_current_trace_metadata(memory_exporter):
     """update_current_trace sets trace-level metadata."""
     import json

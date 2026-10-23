@@ -23,6 +23,8 @@ class SpanAttributes:
     LLM_MODEL = "traceroot.llm.model"
     LLM_MODEL_PARAMETERS = "traceroot.llm.model_parameters"
     LLM_USAGE = "traceroot.llm.usage"
+    # OpenInference standard total-cost attribute (USD)
+    LLM_COST_TOTAL = "llm.cost.total"
     LLM_PROMPT = "traceroot.llm.prompt"
 
     # =========================================================================
