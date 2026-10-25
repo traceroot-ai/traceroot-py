@@ -47,7 +47,7 @@ def _existing_sync(published_revision: str):
         return {}
 
     sync._request = _request
-    sync._published_revision = lambda ds, v: published_revision
+    sync._published_revision = lambda ds, v: (published_revision, 1)
     return sync
 
 
