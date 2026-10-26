@@ -492,6 +492,7 @@ def test_redact_cannot_drop_ingest_keys(proc_setup):
         "session.id": "s1",
         "llm.model_name": "gpt",
         "llm.token_count.prompt": 12,
+        "llm.cost.total": 0.01,
     }
     copy = processor._redacted(_finished(tracer, exporter, **held))
     assert {k: copy.attributes[k] for k in held} == held
@@ -596,6 +597,7 @@ _BOOKKEEPING_KEYS = {
     SpanAttributes.SPAN_TAGS,
     SpanAttributes.LLM_MODEL,
     SpanAttributes.LLM_USAGE,
+    SpanAttributes.LLM_COST_TOTAL,
     SpanAttributes.TRACE_USER_ID,
     SpanAttributes.TRACE_SESSION_ID,
     SpanAttributes.TRACE_TAGS,
