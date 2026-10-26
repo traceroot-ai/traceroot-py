@@ -57,7 +57,7 @@ _REDACTABLE_KEYS = frozenset(
         SpanAttributes.EVAL_SCORE_VALUE,
     }
 )
-# Held back from redact: mirrors the user, session, model, token, span-kind and error-type keys
+# Held back from redact: mirrors the user, session, model, token, cost, span-kind and error-type keys
 # TraceRoot ingest reads.
 _HELD_BACK_KEYS = frozenset(
     {
@@ -70,6 +70,7 @@ _HELD_BACK_KEYS = frozenset(
         "decision.model_name",
         "embedding.model_name",
         "ai.model.id",
+        SpanAttributes.LLM_COST_TOTAL,
         "openinference.span.kind",
         "gen_ai.operation.name",
         "ai.operationId",
