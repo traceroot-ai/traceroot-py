@@ -57,6 +57,7 @@ def initialize(
     git_repo: str | None = None,
     git_ref: str | None = None,
     redact: Redact | None = None,
+    environment: str | None = None,
 ) -> TracerootClient:
     """Initialize the global Traceroot client.
 
@@ -83,6 +84,9 @@ def initialize(
             redacted too; datasets and scorer definitions are not. A raising
             function fails closed: every value except numbers and booleans is
             withheld, and recorded metadata is dropped.
+        environment: Deployment environment name (e.g. "production").
+            Defaults to TRACEROOT_ENVIRONMENT env var. When neither is set,
+            no environment attribute is written.
 
     Returns:
         The TracerootClient instance.
@@ -124,6 +128,7 @@ def initialize(
             git_repo=git_repo,
             git_ref=git_ref,
             redact=redact,
+            environment=environment,
         )
     return _client
 

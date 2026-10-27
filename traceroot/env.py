@@ -106,18 +106,8 @@ TRACEROOT_ENVIRONMENT = "TRACEROOT_ENVIRONMENT"
 
 Deployment environment name (e.g., "production", "staging", "development").
 Used for filtering and grouping traces in the Traceroot UI.
-
-**Default:** ``default``
-"""
-
-TRACEROOT_RELEASE = "TRACEROOT_RELEASE"
-"""
-.. envvar:: TRACEROOT_RELEASE
-
-Release version or commit hash of the application.
-Useful for tracking traces across deployments.
-
-**Example:** ``v1.2.3`` or ``abc123def``
+Stamped on every span as ``traceroot.environment`` and ``deployment.environment``.
+When unset, no environment attribute is written.
 """
 
 TRACEROOT_SERVICE_NAME = "TRACEROOT_SERVICE_NAME"
