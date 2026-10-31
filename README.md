@@ -12,6 +12,12 @@
 
 Please see the [Python SDK Docs](https://traceroot.ai/docs/tracing/get-started) for details.
 
+The Anthropic integration requires `anthropic>=1.8.0`. TraceRoot uses
+OpenInference Anthropic instrumentation `>=3.1.1` so Anthropic's native tracing
+(enabled by default since 1.14.0) does not record a second span for the same
+instrumented model call. This also covers clients constructed before
+`traceroot.initialize()` and streaming calls.
+
 <!-- Links -->
 
 [discord-image]: https://img.shields.io/discord/1395844148568920114?logo=discord&labelColor=%235462eb&logoColor=%23f5f5f5&color=%235462eb

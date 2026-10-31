@@ -32,7 +32,9 @@ dependencies = [
     "openinference-instrumentation-groq>=0.1.13,<1.0",
     "openinference-instrumentation-crewai>=1.1.1,<2.0",
     "openinference-instrumentation-openai>=0.1.40,<1.0",
-    "openinference-instrumentation-anthropic>=2.0.0,<3.0",
+    # 3.1.1 suppresses duplicate native Anthropic >=1.14 call spans, including
+    # pre-existing clients and streams (without disabling native-only tracing).
+    "openinference-instrumentation-anthropic>=3.1.1,<4.0",
     "openinference-instrumentation-langchain>=0.1.50,<1.0",
     "openinference-instrumentation-mistralai>=2.0.1,<3.0",
     "openinference-instrumentation-google-genai>=1.1.1,<2.0",
@@ -62,6 +64,8 @@ dev = [
     "coverage>=7.0",
     "respx>=0.20",
     "ruff>=0.15.0",
+    # Real mocked transport coverage of OpenInference / native span ownership.
+    "anthropic>=1.14.0,<3.0",
     # ADK 2.x Workflow runtime for tests/test_google_adk.py.
     "google-adk>=2.0",
 ]
