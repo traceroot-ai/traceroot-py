@@ -1,0 +1,21 @@
+{
+  "retrieved_on": "2026-10-18",
+  "documents": {
+    "python": {
+      "sha256": "d553ed54513002c58c62027c2de76734fefb4270c5b591dad35bc5670403d407",
+      "source_url": "https://docs.typesafe.ai/sdk/python"
+    },
+    "search": {
+      "sha256": "92b23c001081fd4244a99e7162e87f8152306865c2906af8922fcc29587171d6",
+      "source_url": "https://docs.typesafe.ai/cookbooks/semantic_find"
+    },
+    "structure": {
+      "sha256": "cb5db3e079d337d0b5923e1d122a9c65612e342061d42939ed1aea130f3a58ba",
+      "source_url": "https://docs.typesafe.ai/cookbooks/autoformat"
+    },
+    "extraction": {
+      "sha256": "a5242dbf4df6dcae3bbf374047026714c1801cdc126b39bc4bca99212dd1a1c9",
+      "source_url": "https://docs.typesafe.ai/cookbooks/pre_parsed_value_extraction_cookbook"
+    }
+  }
+}

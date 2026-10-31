@@ -822,3 +822,50 @@ def test_agent_framework_idempotent(mock_installed):
 
     assert provider.add_span_processor.call_count == 1
     assert mock_enable.call_count == 1
+
+
+# =============================================================================
+# TypeSafe integration
+# =============================================================================
+
+
+def test_typesafe_integration_enum_value():
+    assert Integration.TYPESAFE == "typesafe"
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_typesafe_integration_uses_typesafe_instrumentor(mock_installed):
+    mock_installed.return_value = True
+    mock_instrumentor = MagicMock()
+    mock_cls = MagicMock(return_value=mock_instrumentor)
+    mock_module = MagicMock()
+    mock_module.TypeSafeAIInstrumentor = mock_cls
+
+    provider = TracerProvider()
+
+    with patch("importlib.import_module", return_value=mock_module):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.TYPESAFE],
+        )
+
+    assert result == [Integration.TYPESAFE]
+    mock_instrumentor.instrument.assert_called_once_with(tracer_provider=provider)
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_typesafe_missing_warns_and_skips(mock_installed, caplog):
+    import logging
+
+    mock_installed.return_value = False
+
+    provider = TracerProvider()
+    with caplog.at_level(logging.WARNING, logger="traceroot.instrumentation.registry"):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.TYPESAFE],
+        )
+
+    assert result == []
+    assert "skipping" in caplog.text
+    assert "typesafe-sdk" in caplog.text
