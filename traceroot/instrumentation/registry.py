@@ -10,6 +10,11 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from opentelemetry.instrumentation.dependencies import (
+    DependencyConflict,
+    get_dependency_conflicts,
+)
+
 if TYPE_CHECKING:
     from opentelemetry.sdk.trace import TracerProvider
 
@@ -162,6 +167,14 @@ def _is_package_installed(package_name: str) -> bool:
         return False
 
 
+def _dependency_conflict(instrumentor: object) -> DependencyConflict | None:
+    """Return the instrumentor's dependency conflict, or None if its library version fits."""
+    deps = getattr(instrumentor, "instrumentation_dependencies", None)
+    if not callable(deps):
+        return None
+    return get_dependency_conflicts(deps())
+
+
 def initialize_integrations(
     tracer_provider: TracerProvider,
     integrations: Sequence[Integration],
@@ -212,6 +225,18 @@ def initialize_integrations(
             module = importlib.import_module(entry.module_path)
             instrumentor_cls = getattr(module, entry.class_name)
             instrumentor = instrumentor_cls()
+            conflict = _dependency_conflict(instrumentor)
+            if conflict is not None:
+                logger.warning(
+                    "traceroot: skipping %s integration — it supports %s, but %s is "
+                    "installed, so no spans will be recorded for it. "
+                    "Upgrade it with: pip install -U '%s'",
+                    instrument.value,
+                    conflict.required,
+                    conflict.found,
+                    conflict.required,
+                )
+                continue
             instrumentor.instrument(tracer_provider=tracer_provider)
             logger.info("Instrumented %s via %s", instrument.value, entry.module_path)
             instrumented.append(instrument)

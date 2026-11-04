@@ -323,6 +323,54 @@ def test_failed_instrumentation_continues(mock_installed):
     assert result == []
 
 
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_version_conflict_warns_and_skips(mock_installed, caplog):
+    """An installed library outside the instrumentor's range is skipped, not reported."""
+    import logging
+
+    mock_installed.return_value = True
+    mock_instrumentor = MagicMock()
+    # pytest is installed, but never at this version, so this is always a conflict.
+    mock_instrumentor.instrumentation_dependencies.return_value = ("pytest >= 999.0",)
+    mock_module = MagicMock()
+    mock_module.AnthropicInstrumentor = MagicMock(return_value=mock_instrumentor)
+
+    provider = TracerProvider()
+    with (
+        patch("importlib.import_module", return_value=mock_module),
+        caplog.at_level(logging.WARNING, logger="traceroot.instrumentation.registry"),
+    ):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.ANTHROPIC],
+        )
+
+    assert result == []
+    mock_instrumentor.instrument.assert_not_called()
+    assert "skipping anthropic" in caplog.text
+    assert "supports pytest >= 999.0" in caplog.text
+    assert "pip install -U 'pytest >= 999.0'" in caplog.text
+
+
+@patch("traceroot.instrumentation.registry._is_package_installed")
+def test_matching_version_still_instruments(mock_installed):
+    mock_installed.return_value = True
+    mock_instrumentor = MagicMock()
+    mock_instrumentor.instrumentation_dependencies.return_value = ("pytest >= 1.0",)
+    mock_module = MagicMock()
+    mock_module.AnthropicInstrumentor = MagicMock(return_value=mock_instrumentor)
+
+    provider = TracerProvider()
+    with patch("importlib.import_module", return_value=mock_module):
+        result = initialize_integrations(
+            tracer_provider=provider,
+            integrations=[Integration.ANTHROPIC],
+        )
+
+    assert result == [Integration.ANTHROPIC]
+    mock_instrumentor.instrument.assert_called_once_with(tracer_provider=provider)
+
+
 # =============================================================================
 # TracerootClient integration
 # =============================================================================

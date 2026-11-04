@@ -64,6 +64,8 @@ dev = [
     "ruff>=0.15.0",
     # ADK 2.x Workflow runtime for tests/test_google_adk.py.
     "google-adk>=2.0",
+    # Anthropic client for tests/test_anthropic.py.
+    "anthropic>=1.0",
 ]
 
 [project.urls]
