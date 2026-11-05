@@ -8,10 +8,11 @@ from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
 from openinference.instrumentation import get_attributes_from_context
-from opentelemetry import trace
+from opentelemetry import context, trace
 from opentelemetry.trace import Status, StatusCode
 
 from traceroot.constants import SDK_VERSION, TRACEROOT_TRACER_NAME, SpanKind
+from traceroot.context import get_active_span
 from traceroot.git_context import capture_source_location
 from traceroot.span_attributes import SpanAttributes
 from traceroot.utils import serialize_value, set_span_attribute
@@ -67,6 +68,19 @@ def _ensure_initialized() -> None:
     from traceroot import get_client
 
     get_client()  # auto-initializes if needed
+
+
+def _parent_context() -> context.Context | None:
+    """Parent for a new @observe span: the innermost active span (see ``get_active_span``).
+
+    ``None`` keeps OpenTelemetry's default (the current context). Inside a traced LangChain or
+    LangGraph run, whose span OpenInference never puts in the context, the run's span is returned
+    instead, so the new span nests under the node rather than starting a separate trace.
+    """
+    active = get_active_span()
+    if active is trace.get_current_span():
+        return None
+    return trace.set_span_in_context(active)
 
 
 def observe(
@@ -130,7 +144,7 @@ def observe(
             async def async_gen_wrapper(*args: Any, **kwargs: Any) -> Any:
                 _ensure_initialized()
                 tracer = trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
-                span = tracer.start_span(span_name)
+                span = tracer.start_span(span_name, context=_parent_context())
                 _set_span_attributes(
                     span,
                     validated_kind,
@@ -156,7 +170,7 @@ def observe(
             def sync_gen_wrapper(*args: Any, **kwargs: Any) -> Any:
                 _ensure_initialized()
                 tracer = trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
-                span = tracer.start_span(span_name)
+                span = tracer.start_span(span_name, context=_parent_context())
                 _set_span_attributes(
                     span,
                     validated_kind,
@@ -181,7 +195,7 @@ def observe(
             async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
                 _ensure_initialized()
                 tracer = trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
-                with tracer.start_as_current_span(span_name) as span:
+                with tracer.start_as_current_span(span_name, context=_parent_context()) as span:
                     _set_span_attributes(
                         span,
                         validated_kind,
@@ -214,7 +228,7 @@ def observe(
             def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
                 _ensure_initialized()
                 tracer = trace.get_tracer(TRACEROOT_TRACER_NAME, SDK_VERSION)
-                with tracer.start_as_current_span(span_name) as span:
+                with tracer.start_as_current_span(span_name, context=_parent_context()) as span:
                     _set_span_attributes(
                         span,
                         validated_kind,
