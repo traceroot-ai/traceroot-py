@@ -139,6 +139,26 @@ def test_missing_lib_continues_other_integrations(mock_installed):
     assert Integration.ANTHROPIC in result
 
 
+@pytest.mark.parametrize("integrations", [None, []])
+def test_warns_when_no_integrations_provided(integrations, caplog):
+    reset_traceroot()
+    from traceroot import client as client_mod
+
+    patcher = patch.object(client_mod.trace, "set_tracer_provider", autospec=True)
+    mock_set_tracer_provider = patcher.start()
+    mock_set_tracer_provider.return_value = None
+    try:
+        with caplog.at_level(logging.WARNING):
+            client = traceroot.initialize(api_key="test-key", integrations=integrations)
+    finally:
+        patcher.stop()
+
+    assert client.enabled is True
+    assert "no integrations provided" in caplog.text
+    assert "traceroot.initialize()" in caplog.text
+    assert "getting-started/quickstart" in caplog.text
+
+
 # =============================================================================
 # Issue 4: session_id / user_id on @observe
 # =============================================================================
