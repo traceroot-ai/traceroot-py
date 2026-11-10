@@ -7,8 +7,7 @@ doesn't capture all the data you need (e.g., custom LLM providers).
 import logging
 from typing import Any
 
-from opentelemetry import trace
-
+from traceroot.context import get_active_span, get_trace_update_span
 from traceroot.span_attributes import SpanAttributes
 from traceroot.utils import set_span_attribute
 
@@ -66,7 +65,7 @@ def update_current_span(
             )
             return response.text
     """
-    span = trace.get_current_span()
+    span = get_active_span()
 
     if span is None or not span.is_recording():
         logger.debug("update_current_span: No active recording span found.")
@@ -119,7 +118,7 @@ def update_current_trace(
 
             return process(request)
     """
-    span = trace.get_current_span()
+    span = get_trace_update_span()
 
     if span is None or not span.is_recording():
         logger.debug("update_current_trace: No active recording span found.")

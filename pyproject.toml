@@ -65,6 +65,9 @@ dev = [
     "anthropic>=1.14.0,<3.0",
     # ADK 2.x Workflow runtime for tests/test_google_adk.py.
     "google-adk>=2.0",
+    # Real LangChain/LangGraph runs for tests/test_langchain_run_context.py.
+    "langchain-core>=0.3",
+    "langgraph>=0.2",
 ]
 
 [project.urls]
