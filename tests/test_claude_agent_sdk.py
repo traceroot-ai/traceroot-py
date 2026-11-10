@@ -13,8 +13,10 @@ emits (the instrumentor dispatches on ``type(message).__name__``).
 from __future__ import annotations
 
 import asyncio
+import gc
 
 import pytest
+from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
@@ -657,3 +659,122 @@ async def test_client_query_send_error_marks_span_error_and_propagates():
     roots = [s for s in exporter.get_finished_spans() if s.name == "ClaudeAgent.query"]
     assert len(roots) == 1
     assert roots[0].status.status_code.name == "ERROR"
+
+
+# --- early exit from the message stream --------------------------------------
+#
+# Callers often stop reading before the stream ends, e.g. by returning
+# ``message.result`` from inside the loop. The event loop then closes the
+# abandoned generator later, in a task of its own.
+
+
+async def _close_abandoned_streams():
+    gc.collect()
+    for _ in range(3):
+        await asyncio.sleep(0)
+
+
+def _query_spans(exporter):
+    return [s for s in exporter.get_finished_spans() if s.name == "ClaudeAgent.query"]
+
+
+@pytest.mark.asyncio
+async def test_query_early_exit_does_not_leak_span_into_caller(caplog):
+    """Returning from inside the query() loop leaves the caller's context as it was,
+    so the next query is its own trace instead of a child of the finished one."""
+    provider, exporter = _provider()
+    current_in_sdk = []
+
+    async def fake_query(*, prompt, options=None, transport=None):
+        for m in [
+            AssistantMessage([TextBlock("a")], model="m", message_id="m1"),
+            ResultMessage(result="r", usage={"input_tokens": 1, "output_tokens": 2}),
+        ]:
+            current_in_sdk.append(trace.get_current_span().get_span_context().span_id)
+            yield m
+
+    wrapped = wrap_query(fake_query, provider)
+
+    async def ask():
+        async for message in wrapped(prompt="hello"):
+            if isinstance(message, ResultMessage):
+                return message.result
+
+    for _ in range(2):
+        assert await ask() == "r"
+        assert not trace.get_current_span().get_span_context().is_valid
+    await _close_abandoned_streams()
+
+    roots = _query_spans(exporter)
+    assert len(roots) == 2
+    assert all(s.parent is None for s in roots), "each query must be its own trace root"
+    assert roots[0].context.trace_id != roots[1].context.trace_id
+    # The SDK itself still runs under the query span.
+    assert set(current_in_sdk) == {s.context.span_id for s in roots}
+    assert "Failed to detach context" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_client_early_exit_does_not_nest_next_turn(caplog):
+    """Returning from inside receive_response() must not make the next turn a child
+    of the previous one."""
+    provider, exporter = _provider()
+    cls = _wrap_fake_client(provider)
+    msgs = [
+        AssistantMessage([TextBlock("a")], model="m", message_id="m1"),
+        ResultMessage(result="r", usage={"input_tokens": 1, "output_tokens": 2}),
+    ]
+    client = cls(options=None, msgs=msgs)
+
+    async def turn(prompt):
+        await client.query(prompt)
+        async for message in client.receive_response():
+            if isinstance(message, ResultMessage):
+                return message.result
+
+    for prompt in ("first", "second"):
+        assert await turn(prompt) == "r"
+        assert not trace.get_current_span().get_span_context().is_valid
+    await _close_abandoned_streams()
+
+    roots = _query_spans(exporter)
+    assert len(roots) == 2
+    assert all(s.parent is None for s in roots), "each turn must be its own trace root"
+    assert "Failed to detach context" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_client_abandoned_stream_does_not_end_next_turn():
+    """Closing turn 1's abandoned stream must not end turn 2, which already owns the
+    client by then. Both fakes await, as the real transport does."""
+    provider, exporter = _provider()
+
+    async def sending_query(self, prompt, session_id="default"):
+        await asyncio.sleep(0)
+
+    async def streaming_receive(self):
+        for m in self._msgs:
+            await asyncio.sleep(0)
+            yield m
+
+    cls = _wrap_fake_client(provider, receive=streaming_receive, query=sending_query)
+    msgs = [
+        AssistantMessage([TextBlock("a")], model="m", message_id="m1"),
+        ResultMessage(result="r", usage={"input_tokens": 1, "output_tokens": 2}),
+    ]
+    client = cls(options=None, msgs=msgs)
+
+    for prompt in ("first", "second"):
+        await client.query(prompt)
+        async for message in client.receive_response():
+            if isinstance(message, ResultMessage):
+                break
+    await _close_abandoned_streams()
+
+    roots = _query_spans(exporter)
+    assert [s.attributes.get("input.value") for s in roots] == ["first", "second"]
+    assert all(s.attributes.get("output.value") == "r" for s in roots)
+    llm = _llm_spans(exporter)
+    assert len(llm) == 2, f"expected one LLM span per turn, got {len(llm)}"
+    for root in roots:
+        assert any(s.parent.span_id == root.context.span_id for s in llm)
