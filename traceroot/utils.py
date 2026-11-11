@@ -45,7 +45,7 @@ def _serialize(value: Any, _seen: set[int]) -> Any:
 
     # Collections
     if isinstance(value, dict):
-        return {_serialize(k, _seen): _serialize(v, _seen) for k, v in value.items()}
+        return _serialize_dict(value, _seen)
     if isinstance(value, (list, tuple)):
         return [_serialize(v, _seen) for v in value]
     if isinstance(value, (set, frozenset)):
@@ -74,6 +74,40 @@ def _serialize(value: Any, _seen: set[int]) -> Any:
 
     # Structured objects (dataclass, pydantic, etc.)
     return _serialize_object(value, _seen)
+
+
+def _serialize_dict(value: dict, _seen: set[int]) -> Any:
+    """Serialize a dict, including one whose key or value is not itself a dict key.
+
+    A tuple key becomes a list, and a list cannot be a dict key, so the old
+    comprehension raised ``TypeError`` into the caller. A dict that contains
+    itself recursed until Python stopped it. String, int, float, bool and None
+    keys stay as they are, so a payload that already serialized is unchanged.
+    """
+    obj_id = id(value)
+    if obj_id in _seen:
+        return "<circular ref: dict>"
+    _seen.add(obj_id)
+    try:
+        serialized: dict[Any, Any] = {}
+        for key, item in value.items():
+            serialized_key = _serialize(key, _seen)
+            if not _kept_dict_key(serialized_key):
+                serialized_key = json.dumps(
+                    serialized_key,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                    default=str,
+                )
+            serialized[serialized_key] = _serialize(item, _seen)
+        return serialized
+    finally:
+        _seen.discard(obj_id)
+
+
+def _kept_dict_key(key: Any) -> bool:
+    """True when ``json.dumps`` already accepts this key and the old output used it."""
+    return key is None or isinstance(key, (str, int, float, bool))
 
 
 def _serialize_float(value: float) -> Any:

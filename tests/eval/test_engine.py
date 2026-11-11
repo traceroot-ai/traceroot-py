@@ -63,6 +63,26 @@ class TestBasicRuns:
         assert isinstance(result, EvalRunResult)
         assert len(result.item_results) == 2
 
+    def test_tuple_key_output_is_scored(self):
+        def task(inp):
+            return {("cat", "dog"): 0.9}
+
+        def always_one(ctx):
+            assert ctx.output == {("cat", "dog"): 0.9}
+            return 1.0
+
+        result = evaluate(
+            name="t",
+            dataset=[{"input": "x"}],
+            task=task,
+            scorers=[always_one],
+            local=True,
+            progress=False,
+        )
+        assert result.errored == 0
+        assert result.item_results[0].error is None
+        assert result.item_results[0].scores[0].value == 1.0
+
 
 class TestOrderingAndConcurrency:
     async def test_deterministic_input_ordering(self):
