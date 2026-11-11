@@ -156,8 +156,9 @@ class TestUnserializablePayload:
         assert done["counts"]["cases"] == 2  # the whole run survived
         cases = out / f"{done['local_run_id']}.cases.jsonl"
         record = json.loads(cases.read_text().splitlines()[0])
-        assert record["output"]["unserializable"] is True
-        assert record["input"] == 1  # untouched payloads keep their real value
+        # The cycle is a marker. The rest of the payload stays, and the run does.
+        assert record["output"] == {"case": 1, "self": "<circular ref: dict>"}
+        assert record["input"] == 1
 
     def test_cycle_survives_payload_truncation(self, tmp_path):
         d = _write_eval(tmp_path, "cyclic_eval.py", CYCLIC_OUTPUT_EVAL)
