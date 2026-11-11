@@ -96,6 +96,20 @@ class TestCollections:
         val = {"outer": {"inner": [1, 2]}}
         assert serialize_value(val) == {"outer": {"inner": [1, 2]}}
 
+    def test_int_keys_stay_int_keys(self):
+        assert serialize_value({1: "a"}) == {1: "a"}
+
+    def test_tuple_key_does_not_raise(self):
+        result = serialize_value({("cat", "dog"): 0.9})
+        assert result == {'["cat", "dog"]': 0.9}
+
+    def test_self_referential_dict_does_not_raise(self):
+        value = {"role": "user"}
+        value["parent"] = value
+        result = serialize_value(value)
+        assert result["role"] == "user"
+        assert result["parent"] == "<circular ref: dict>"
+
 
 # ---- Standard library types ----
 
