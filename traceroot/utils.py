@@ -2,6 +2,7 @@
 
 import enum
 import json
+import logging
 import math
 import re
 from collections.abc import Sequence
@@ -11,6 +12,8 @@ from typing import Any
 from uuid import UUID
 
 from opentelemetry import trace
+
+logger = logging.getLogger(__name__)
 
 try:
     from pydantic import BaseModel as PydanticBaseModel
@@ -167,17 +170,23 @@ def set_span_attribute(span: trace.Span, key: str, value: Any) -> None:
     """Set a span attribute, serializing complex types to JSON.
 
     Does nothing if value is None or span is not recording.
+    If serialization fails, logs a warning and skips the attribute.
     """
     if value is None:
         return
     if not span.is_recording():
         return
 
-    if isinstance(value, (str, int, float, bool)):
-        span.set_attribute(key, value)
-    elif isinstance(value, list) and all(isinstance(v, str) for v in value):
-        # OTel supports list of strings natively
-        span.set_attribute(key, value)
-    else:
-        # Serialize complex types to JSON string
-        span.set_attribute(key, json.dumps(serialize_value(value)))
+    try:
+        if isinstance(value, list) and type(value) is not list:
+            # Run custom iteration here, before passing the value to OpenTelemetry.
+            value = list(value)
+        if not (
+            isinstance(value, (str, int, float, bool))
+            or (isinstance(value, list) and all(isinstance(item, str) for item in value))
+        ):
+            value = json.dumps(serialize_value(value))
+    except Exception as exc:
+        logger.warning("Failed to serialize span attribute %s (%s)", key, type(exc).__name__)
+        return
+    span.set_attribute(key, value)
