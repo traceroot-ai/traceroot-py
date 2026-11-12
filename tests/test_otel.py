@@ -7,7 +7,10 @@ Note: These tests verify span attributes are set correctly. The actual
 HTTP transport to Traceroot is handled by TracerootJSONExporter.
 """
 
+from enum import Enum
+
 import pytest
+from opentelemetry import trace
 
 import traceroot
 from tests.utils import reset_traceroot
@@ -352,6 +355,71 @@ def test_update_current_trace_metadata(memory_exporter):
     assert metadata_raw is not None
     metadata = json.loads(metadata_raw)
     assert metadata["trace_level"] == "info"
+
+
+class _NonJsonValue(Enum):
+    VALUE = object()
+
+
+def test_span_attribute_serialization_guard_skips_unreadable_list(memory_exporter, caplog):
+    class UnreadableList(list):
+        def __iter__(self):
+            raise RuntimeError(f"Could not read {self[0]}")
+
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("work"), caplog.at_level("WARNING", logger="traceroot.utils"):
+        traceroot.update_current_span(
+            input="request",
+            output=UnreadableList(["private telemetry"]),
+            model="test-model",
+        )
+
+    (span,) = memory_exporter.get_finished_spans()
+    assert get_span_attribute(span, SpanAttributes.SPAN_INPUT) == "request"
+    assert get_span_attribute(span, SpanAttributes.SPAN_OUTPUT) is None
+    assert get_span_attribute(span, SpanAttributes.LLM_MODEL) == "test-model"
+    warnings = [record.message for record in caplog.records if record.name == "traceroot.utils"]
+    assert warnings == [
+        f"Failed to serialize span attribute {SpanAttributes.SPAN_OUTPUT} (RuntimeError)"
+    ]
+    assert "private telemetry" not in caplog.text
+
+
+def test_span_attribute_serialization_guard_skips_unencodable_trace_metadata(memory_exporter):
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("work"):
+        traceroot.update_current_trace(
+            metadata={"nested": {"value": _NonJsonValue.VALUE}},
+            tags=["production"],
+        )
+
+    (span,) = memory_exporter.get_finished_spans()
+    assert get_span_attribute(span, SpanAttributes.TRACE_METADATA) is None
+    assert get_span_attribute(span, SpanAttributes.TRACE_TAGS) == ("production",)
+
+
+def test_span_attribute_serialization_guard_allows_observed_function_to_run(memory_exporter):
+    @observe(metadata={"value": _NonJsonValue.VALUE})
+    def handle():
+        return "ran"
+
+    assert handle() == "ran"
+    (span,) = memory_exporter.get_finished_spans()
+    assert get_span_attribute(span, SpanAttributes.SPAN_METADATA) is None
+    assert get_span_attribute(span, SpanAttributes.SPAN_OUTPUT) == "ran"
+
+
+def test_span_attribute_serialization_guard_preserves_application_error(memory_exporter):
+    error = TypeError("application error")
+
+    @observe(metadata={"value": _NonJsonValue.VALUE})
+    def handle():
+        raise error
+
+    with pytest.raises(TypeError) as exc_info:
+        handle()
+
+    assert exc_info.value is error
 
 
 def test_function_name_as_default(memory_exporter):
