@@ -146,8 +146,14 @@ def observe(
                 )
                 _set_source_context(span)
                 gen = func(*args, **kwargs)
-                async for item in _wrap_async_generator(gen, span, capture_output):
-                    yield item
+                wrapped = _wrap_async_generator(gen, span, capture_output)
+                try:
+                    async for item in wrapped:
+                        yield item
+                finally:
+                    # async for does not close the inner generator when this one is
+                    # closed early, so close it here to run its cleanup under the span.
+                    await wrapped.aclose()
 
             return async_gen_wrapper  # type: ignore[return-value]
 
@@ -256,13 +262,13 @@ def _wrap_sync_generator(
     spans and update_current_span() calls inside it attach to this span instead
     of starting their own traces. The context is attached around each step
     rather than across the whole iteration, because the caller may resume the
-    generator from a different context between yields.
+    generator from a different context between yields. Each step builds on the
+    resuming caller's context, so only the active span is overridden.
     """
     collected: list[Any] = []
-    span_context = trace.set_span_in_context(span)
     try:
         while True:
-            token = otel_context.attach(span_context)
+            token = otel_context.attach(trace.set_span_in_context(span))
             try:
                 item = next(gen)
             except StopIteration:
@@ -274,6 +280,13 @@ def _wrap_sync_generator(
         if capture_output and collected:
             _set_output(span, collected)
     except GeneratorExit:
+        # Closed before it was exhausted: run the generator's cleanup now, while
+        # its span is still current, instead of later on garbage collection.
+        token = otel_context.attach(trace.set_span_in_context(span))
+        try:
+            gen.close()
+        finally:
+            otel_context.detach(token)
         raise
     except Exception as e:
         span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -291,13 +304,12 @@ async def _wrap_async_generator(
     """Yield items from an async generator, keeping the span open until exhausted.
 
     The span is made current around each step of the generator body, for the
-    same reason as _wrap_sync_generator.
+    same reasons as _wrap_sync_generator.
     """
     collected: list[Any] = []
-    span_context = trace.set_span_in_context(span)
     try:
         while True:
-            token = otel_context.attach(span_context)
+            token = otel_context.attach(trace.set_span_in_context(span))
             try:
                 item = await gen.__anext__()
             except StopAsyncIteration:
@@ -308,6 +320,13 @@ async def _wrap_async_generator(
             yield item
         if capture_output and collected:
             _set_output(span, collected)
+    except GeneratorExit:
+        token = otel_context.attach(trace.set_span_in_context(span))
+        try:
+            await gen.aclose()
+        finally:
+            otel_context.detach(token)
+        raise
     except Exception as e:
         span.set_status(Status(StatusCode.ERROR, str(e)))
         span.record_exception(e)

@@ -352,6 +352,78 @@ def test_generator_span_is_not_current_between_yields(spans):
     assert list(gen) == [2]
 
 
+def test_generator_steps_keep_the_resuming_callers_context(spans):
+    """Each step must run in the context of the caller that resumed it."""
+    from opentelemetry import context as otel_context
+
+    key = otel_context.create_key("caller-value")
+    seen = []
+
+    @observe(name="caller-context-stream")
+    def stream():
+        seen.append(otel_context.get_value(key))
+        yield 1
+        seen.append(otel_context.get_value(key))
+        yield 2
+
+    gen = stream()
+    for value in ("first", "second"):
+        token = otel_context.attach(otel_context.set_value(key, value))
+        try:
+            next(gen)
+        finally:
+            otel_context.detach(token)
+
+    assert seen == ["first", "second"]
+
+
+def test_closed_generator_cleanup_runs_under_generator_span(spans):
+    """Closing a generator early must run its cleanup under its span."""
+
+    @observe(name="cleanup-step")
+    def cleanup():
+        return None
+
+    @observe(name="closed-stream")
+    def stream():
+        try:
+            yield 1
+            yield 2
+        finally:
+            cleanup()
+
+    gen = stream()
+    next(gen)
+    gen.close()
+
+    _assert_children_nest_under(spans.get_finished_spans(), "closed-stream", "cleanup-step", 1)
+
+
+@pytest.mark.asyncio
+async def test_closed_async_generator_cleanup_runs_under_generator_span(spans):
+    """Closing an async generator early must run its cleanup under its span."""
+
+    @observe(name="async-cleanup-step")
+    async def cleanup():
+        return None
+
+    @observe(name="closed-async-stream")
+    async def stream():
+        try:
+            yield 1
+            yield 2
+        finally:
+            await cleanup()
+
+    gen = stream()
+    await gen.__anext__()
+    await gen.aclose()
+
+    _assert_children_nest_under(
+        spans.get_finished_spans(), "closed-async-stream", "async-cleanup-step", 1
+    )
+
+
 # =============================================================================
 # Thread-safe init: concurrent initialize() must produce exactly one client
 # =============================================================================
