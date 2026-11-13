@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterator
 from typing import Any, TypeVar
 
 from openinference.instrumentation import get_attributes_from_context
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
@@ -249,10 +250,25 @@ def _wrap_sync_generator(
     span: trace.Span,
     capture_output: bool,
 ) -> Any:
-    """Yield items from a sync generator, keeping the span open until exhausted."""
+    """Yield items from a sync generator, keeping the span open until exhausted.
+
+    The span is made current while the generator body runs, so nested @observe
+    spans and update_current_span() calls inside it attach to this span instead
+    of starting their own traces. The context is attached around each step
+    rather than across the whole iteration, because the caller may resume the
+    generator from a different context between yields.
+    """
     collected: list[Any] = []
+    span_context = trace.set_span_in_context(span)
     try:
-        for item in gen:
+        while True:
+            token = otel_context.attach(span_context)
+            try:
+                item = next(gen)
+            except StopIteration:
+                break
+            finally:
+                otel_context.detach(token)
             collected.append(item)
             yield item
         if capture_output and collected:
@@ -272,10 +288,22 @@ async def _wrap_async_generator(
     span: trace.Span,
     capture_output: bool,
 ) -> Any:
-    """Yield items from an async generator, keeping the span open until exhausted."""
+    """Yield items from an async generator, keeping the span open until exhausted.
+
+    The span is made current around each step of the generator body, for the
+    same reason as _wrap_sync_generator.
+    """
     collected: list[Any] = []
+    span_context = trace.set_span_in_context(span)
     try:
-        async for item in gen:
+        while True:
+            token = otel_context.attach(span_context)
+            try:
+                item = await gen.__anext__()
+            except StopAsyncIteration:
+                break
+            finally:
+                otel_context.detach(token)
             collected.append(item)
             yield item
         if capture_output and collected:
