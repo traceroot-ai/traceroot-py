@@ -110,6 +110,52 @@ class TestCollections:
         assert result["role"] == "user"
         assert result["parent"] == "<circular ref: dict>"
 
+    def test_list_cycle_does_not_raise(self):
+        value: list = []
+        value.append(value)
+        assert serialize_value(value) == ["<circular ref: list>"]
+
+    def test_tuple_holding_its_list_does_not_raise(self):
+        # A tuple cannot contain itself. The cycle is the list inside it.
+        value: list = []
+        value.append((value,))
+        assert serialize_value(value) == [["<circular ref: list>"]]
+
+    def test_list_cycle_through_a_dict_names_the_list(self):
+        value: list = []
+        value.append({"items": value})
+        assert serialize_value(value) == [{"items": "<circular ref: list>"}]
+
+    def test_shared_list_is_not_a_cycle(self):
+        shared = [1]
+        assert serialize_value([shared, shared]) == [[1], [1]]
+
+    def test_tuple_key_with_mixed_mapping_does_not_raise(self):
+        class Box:
+            def __init__(self) -> None:
+                self.payload = {1: "a", "b": 2}
+
+        result = serialize_value({(Box(),): "x"})
+        assert result == {'[{"payload": {"b": 2, "int:1": "a"}}]': "x"}
+
+    def test_int_key_and_str_key_stay_distinct(self):
+        class Box:
+            def __init__(self) -> None:
+                self.payload = {1: "n", "1": "s"}
+
+        loaded = json.loads(next(iter(serialize_value({(Box(),): "x"}))))
+        assert loaded[0]["payload"]["int:1"] == "n"
+        assert loaded[0]["payload"]["1"] == "s"
+
+    def test_set_of_mixed_mappings_does_not_raise(self):
+        class Mixed(dict):
+            def __hash__(self) -> int:
+                return 1
+
+            def __eq__(self, other: object) -> bool:
+                return self is other
+
+        assert serialize_value({Mixed({1: "a", "b": 2})}) == [{1: "a", "b": 2}]
 
 # ---- Standard library types ----
 
