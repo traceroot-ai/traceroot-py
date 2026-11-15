@@ -8,7 +8,9 @@ import logging
 import os
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from openinference.instrumentation import suppress_tracing
@@ -21,7 +23,7 @@ from opentelemetry.instrumentation.utils import is_instrumentation_enabled
 from opentelemetry.sdk.trace import Event, ReadableSpan
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.sdk.trace.sampling import Decision, Sampler, SamplingResult
-from opentelemetry.trace import Status
+from opentelemetry.trace import Span, Status
 
 from traceroot.constants import (
     DEFAULT_FLUSH_AT,
@@ -163,6 +165,41 @@ def mark_local_eval_run():
     return suppress_tracing()
 
 
+# Anthropic's SDK (>=1.14.0) starts a span of its own for each API call, on the global tracer
+# provider. An integration above the client (e.g. LangChain's ChatAnthropic) records the same call,
+# and TraceRoot would price both. Nothing in either span links them, and equal token counts do not
+# prove they are one call, so the integration says so while the call runs, with mark_recorded_by.
+# Platform clients add a suffix to the scope, e.g. "com.anthropic.sdk.python.bedrock".
+_ANTHROPIC_SCOPE = "com.anthropic.sdk.python"
+_recording_span: ContextVar[Span | None] = ContextVar("traceroot_recording_span", default=None)
+
+
+@contextmanager
+def mark_recorded_by(span: Span | None) -> Iterator[None]:
+    """Keep native spans started in the block out of TraceRoot's export: ``span`` records the call.
+
+    Keep the block to the code that makes the call: it must not span a ``yield`` to the application,
+    whose own API calls are not the recorded one. ``None`` marks nothing. Other processors on the
+    provider still get the native span.
+    """
+    token = _recording_span.set(span)
+    try:
+        yield
+    finally:
+        _recording_span.reset(token)
+
+
+def _is_duplicate_native_span(span: ReadableSpan) -> bool:
+    recording = _recording_span.get()
+    # A call whose integration span is not recorded keeps its native span: it is the only record.
+    if recording is None or not recording.is_recording():
+        return False
+    scope = span.instrumentation_scope
+    return scope is not None and (
+        scope.name == _ANTHROPIC_SCOPE or scope.name.startswith(f"{_ANTHROPIC_SCOPE}.")
+    )
+
+
 class LocalEvalSampler(Sampler):
     """Makes OTel-Python honour the tracing-suppression flag that OTel-JS honours natively.
 
@@ -302,13 +339,14 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         # flight may still stamp attributes).
         self._shut_down = False
         # Recording spans started inside a local=True eval run (joined host provider, whose sampler
-        # is left alone): drop them at on_end so they never reach TraceRoot.
+        # is left alone): drop them at on_end so they never reach TraceRoot. Also holds the native
+        # spans of a model call an integration records (see mark_recorded_by).
         self._local_eval_span_ids: OrderedDict[int, None] = OrderedDict()
 
     def on_start(self, span, parent_context=None):
         if self._shut_down:
             return
-        if not is_instrumentation_enabled():
+        if not is_instrumentation_enabled() or _is_duplicate_native_span(span):
             with self._paths_lock:
                 self._local_eval_span_ids[span.context.span_id] = None
             return

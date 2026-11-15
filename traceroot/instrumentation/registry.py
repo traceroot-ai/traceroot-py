@@ -72,7 +72,7 @@ _BUILTIN_REGISTRY: dict[Integration, InstrumentorEntry] = {
         # app typically installs only langchain-core + langgraph + provider packages,
         # and gating on `langchain` skipped instrumentation for those apps entirely.
         package="langchain-core",
-        module_path="openinference.instrumentation.langchain",
+        module_path="traceroot.instrumentation.langchain",
         class_name="LangChainInstrumentor",
         alt_packages=("langchain",),
     ),
