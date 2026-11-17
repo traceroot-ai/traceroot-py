@@ -204,18 +204,24 @@ class PlatformDatasetSync:
             raise
         return meta if meta.get("current_dataset_version_id") else None
 
-    def _published_revision(self, dataset_id: str, version_id: str) -> str | None:
-        """The content revision of the dataset's current published version, for change detection.
-        None when it can't be fetched (then we fall through to confirm rather than assume unchanged)."""
+    def _published_revision(
+        self, dataset_id: str, version_id: str
+    ) -> tuple[str | None, int | None]:
+        """The current published version's content revision AND its ordinal.
+
+        The revision drives change detection; the ordinal rides along on the same payload so an
+        idempotent no-op can report the version it kept without a second request. ``(None, None)``
+        when it can't be fetched -- then we fall through to confirm rather than assume unchanged.
+        """
         try:
             from traceroot.eval.platform import pull_dataset_version
 
             current = pull_dataset_version(
                 version_id, dataset_id=dataset_id, api_key=self.api_key, host_url=self.host_url
             )
-            return current.snapshot().revision
+            return current.snapshot().revision, current.version_number
         except Exception:
-            return None
+            return None, None
 
     def _upsert_dataset(self, snapshot: DatasetSnapshot) -> None:
         """Upsert the dataset's un-versioned metadata (key/name/description). Not a version.
@@ -249,14 +255,21 @@ class PlatformDatasetSync:
         existing = self._existing_dataset(snapshot.dataset_id)
         if existing is not None:
             current_version = existing["current_dataset_version_id"]
-            if self._published_revision(snapshot.dataset_id, current_version) == snapshot.revision:
+            published_revision, published_number = self._published_revision(
+                snapshot.dataset_id, current_version
+            )
+            if published_revision == snapshot.revision:
                 # Identical content -> idempotent no-op; keep the current version, never prompt.
                 # ``name``/``description`` are dataset metadata, NOT part of the content revision,
                 # so an edit to either lands here with an unchanged revision. Returning without the
                 # upsert would make ``ds.description = ...; ds.push()`` a silent no-op, so send the
                 # metadata first and only skip the VERSION.
                 self._upsert_dataset(snapshot)
-                return PushResult("uploaded", snapshot.dataset_id, current_version)
+                # Report the version we kept, not just its id: a caller re-pushing unchanged
+                # content should see the same version_number the original push returned.
+                return PushResult(
+                    "uploaded", snapshot.dataset_id, current_version, published_number
+                )
             confirm = on_existing if on_existing is not None else _confirm_new_version
             if not confirm(existing):
                 # A declined publish leaves the remote entirely untouched -- metadata included.
