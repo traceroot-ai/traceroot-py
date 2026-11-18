@@ -36,9 +36,6 @@ DEFAULT_FLUSH_INTERVAL = 5.0
 DEFAULT_TIMEOUT = 30.0
 """Default HTTP request timeout in seconds."""
 
-DEFAULT_ENVIRONMENT = "default"
-"""Default tracing environment name."""
-
 DEFAULT_SERVICE_NAME = "unknown_service"
 """Default service name when not specified."""
 

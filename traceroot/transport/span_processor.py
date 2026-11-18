@@ -221,6 +221,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         git_repo: str | None = None,
         git_ref: str | None = None,
         redact: Redact | None = None,
+        environment: str | None = None,
     ):
         """Initialize the span processor.
 
@@ -246,6 +247,9 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 are redacted too; datasets and scorer definitions are not. A
                 raising function fails closed: every value except numbers and
                 booleans is withheld, and recorded metadata is dropped.
+            environment: Deployment environment name. When provided, stamped as
+                ``traceroot.environment`` and ``deployment.environment`` on every
+                recording span.
         """
         # Resolve flush_at with env var fallback
         if flush_at is None:
@@ -291,6 +295,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         self._git_repo = git_repo
         self._git_ref = git_ref
         self._redact = redact
+        self._environment = environment
         self._paths_lock = threading.RLock()
         # Bounded OrderedDict: evicts oldest entry when capacity is exceeded,
         # eliminating the on_end race where a parent was removed before a
@@ -319,6 +324,9 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 span.set_attribute("traceroot.git.repo", self._git_repo)
             if self._git_ref:
                 span.set_attribute("traceroot.git.ref", self._git_ref)
+            if self._environment:
+                span.set_attribute(SpanAttributes.ENVIRONMENT, self._environment)
+                span.set_attribute("deployment.environment", self._environment)
 
             try:
                 # span.parent is the SpanContext of the parent (set by the SDK at
