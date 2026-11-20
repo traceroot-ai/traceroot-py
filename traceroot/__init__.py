@@ -1,4 +1,4 @@
-"""Traceroot Python SDK - Observability for LLM applications.
+"""traceroot Python SDK - Observability for LLM applications.
 
 Basic Usage:
     import traceroot
@@ -58,7 +58,7 @@ def initialize(
     git_ref: str | None = None,
     redact: Redact | None = None,
 ) -> TracerootClient:
-    """Initialize the global Traceroot client.
+    """Initialize the global traceroot client.
 
     Call this once at application startup before using any tracing.
 
@@ -76,9 +76,9 @@ def initialize(
         integrations: Libraries to auto-instrument. Use Integration enum
             values (e.g. [Integration.OPENAI, Integration.LANGCHAIN]).
         redact: Rewrites each finished span's attributes before export, so
-            personal data never reaches TraceRoot (other exporters still see
+            personal data never reaches traceroot (other exporters still see
             the original span). Also runs on event attributes and the status
-            message. TraceRoot's own bookkeeping keys are not passed in;
+            message. traceroot's own bookkeeping keys are not passed in;
             recorded input, output, metadata and prompt are. Eval results are
             redacted too; datasets and scorer definitions are not. A raising
             function fails closed: every value except numbers and booleans is
@@ -129,7 +129,7 @@ def initialize(
 
 
 def get_client() -> TracerootClient | None:
-    """Get the global Traceroot client, auto-initializing if needed.
+    """Get the global traceroot client, auto-initializing if needed.
 
     If no client exists and TRACEROOT_API_KEY is set, automatically
     initializes a client with default settings from environment variables.

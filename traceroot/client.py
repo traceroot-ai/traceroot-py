@@ -1,4 +1,4 @@
-"""Traceroot client."""
+"""traceroot client."""
 
 import atexit
 import logging
@@ -35,11 +35,11 @@ logger = logging.getLogger(__name__)
 
 
 class TracerootClient:
-    """Main client for sending traces to Traceroot.
+    """Main client for sending traces to traceroot.
 
     The client initializes an OpenTelemetry TracerProvider
     with a span processor that exports OTLP-formatted trace
-    data to the Traceroot backend.
+    data to the traceroot backend.
     """
 
     def __init__(
@@ -55,7 +55,7 @@ class TracerootClient:
         git_ref: str | None = None,
         redact: Redact | None = None,
     ):
-        """Initialize the Traceroot client.
+        """Initialize the traceroot client.
 
         Args:
             api_key: API key for authentication. Falls back
@@ -82,10 +82,10 @@ class TracerootClient:
                 then auto-detected from git HEAD.
             redact: Rewrites each finished span's attributes
                 before export, so personal data never
-                reaches TraceRoot (other exporters still see
+                reaches traceroot (other exporters still see
                 the original span). Also runs on event
                 attributes and the status message.
-                TraceRoot's own bookkeeping keys are not
+                traceroot's own bookkeeping keys are not
                 passed in; recorded input, output, metadata
                 and prompt are. Eval results are redacted
                 too; datasets and scorer definitions are
@@ -142,7 +142,7 @@ class TracerootClient:
 
         if self.git_repo is None or self.git_ref is None:
             logger.warning(
-                "TraceRoot: git context incomplete (repo=%s, ref=%s). The AI "
+                "traceroot: git context incomplete (repo=%s, ref=%s). The AI "
                 "agent needs both to correlate traces to source. Set "
                 "TRACEROOT_GIT_REPO / TRACEROOT_GIT_REF — see "
                 "https://docs.traceroot.ai/tracing/git-context",
@@ -153,7 +153,7 @@ class TracerootClient:
         self._enabled = enabled and bool(self.api_key)
         if enabled and not self.api_key:
             logger.warning(
-                "TraceRoot: no API key provided — tracing is disabled. "
+                "traceroot: no API key provided — tracing is disabled. "
                 "Set the TRACEROOT_API_KEY environment variable or pass "
                 "api_key= to traceroot.initialize()."
             )
@@ -190,16 +190,16 @@ class TracerootClient:
         if not owns_provider:
             self._provider = existing
             logger.info(
-                "TraceRoot: a TracerProvider is already installed globally; attaching the "
-                "TraceRoot span processor to it instead of creating a new one."
+                "traceroot: a TracerProvider is already installed globally; attaching the "
+                "traceroot span processor to it instead of creating a new one."
             )
         else:
             self._provider = TracerProvider()
             if not isinstance(existing, trace.ProxyTracerProvider):
                 logger.warning(
-                    "TraceRoot: the global TracerProvider (%s) is not an OpenTelemetry SDK "
+                    "traceroot: the global TracerProvider (%s) is not an OpenTelemetry SDK "
                     "TracerProvider, so it cannot be shared; @observe spans will not be sent "
-                    "to TraceRoot.",
+                    "to traceroot.",
                     type(existing).__name__,
                 )
 
@@ -217,7 +217,7 @@ class TracerootClient:
         atexit.register(self.shutdown)
 
         self._initialized = True
-        logger.debug("Traceroot client initialized with TracerProvider")
+        logger.debug("traceroot client initialized with TracerProvider")
 
         # Instrumentation (after TracerProvider is set up)
         if self._integrations is not None:
@@ -251,4 +251,4 @@ class TracerootClient:
 
         self._provider = None
         self._initialized = False
-        logger.debug("Traceroot client shutdown")
+        logger.debug("traceroot client shutdown")

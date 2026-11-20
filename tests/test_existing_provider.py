@@ -21,7 +21,7 @@ from traceroot.transport.span_processor import LocalEvalSampler, mark_local_eval
 
 @pytest.fixture
 def traceroot_exported(monkeypatch):
-    """Spans handed to TraceRoot's OTLP exporter (stubbed: nothing leaves the process)."""
+    """Spans handed to traceroot's OTLP exporter (stubbed: nothing leaves the process)."""
     exported = []
 
     def capture(self, spans):

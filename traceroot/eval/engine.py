@@ -841,13 +841,13 @@ async def _run_async_inner(
 
             if _creds(None, None)[0]:
                 raise RuntimeError(
-                    "evaluate() reports to the TraceRoot platform, but this run has no synced "
+                    "evaluate() reports to the traceroot platform, but this run has no synced "
                     "dataset to report against. Pass a Dataset that was pulled or pushed "
                     "(pull_dataset(...) / Dataset.push(...)), or pass dataset_id=..., or pass "
                     "local=True to run without reporting."
                 )
             raise RuntimeError(
-                "evaluate() reports to the TraceRoot platform, but no credentials were found. "
+                "evaluate() reports to the traceroot platform, but no credentials were found. "
                 "Set TRACEROOT_API_KEY (initialize traceroot or set the env var), or pass "
                 "local=True to run without reporting."
             )

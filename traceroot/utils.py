@@ -1,4 +1,4 @@
-"""Shared utilities for the Traceroot SDK."""
+"""Shared utilities for the traceroot SDK."""
 
 import enum
 import json

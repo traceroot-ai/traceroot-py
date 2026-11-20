@@ -1,4 +1,4 @@
-# TraceRoot Python SDK
+# traceroot Python SDK
 
 [![Y Combinator][y-combinator-image]][y-combinator-url]
 [![License][license-image]][license-url]

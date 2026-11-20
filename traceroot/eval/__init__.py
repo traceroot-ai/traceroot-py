@@ -1,4 +1,4 @@
-"""Offline evaluation SDK for TraceRoot.
+"""Offline evaluation SDK for traceroot.
 
 Local-first, trace-native evaluation: dataset / test cases -> execute a task ->
 score each result -> structured results (and evaluation traces). Authoring a

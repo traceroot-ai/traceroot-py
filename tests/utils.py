@@ -1,4 +1,4 @@
-"""Test utilities for Traceroot SDK tests."""
+"""Test utilities for traceroot SDK tests."""
 
 from uuid import uuid4
 
@@ -9,7 +9,7 @@ def create_uuid() -> str:
 
 
 def reset_traceroot() -> None:
-    """Reset Traceroot global state between tests."""
+    """Reset traceroot global state between tests."""
     import traceroot
     from traceroot.instrumentation._instrumentors import AutogenInstrumentor, PydanticAIInstrumentor
 

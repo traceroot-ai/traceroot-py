@@ -1,6 +1,6 @@
 """Platform reporting transport for offline evaluation.
 
-Implements the ``EvalTransport`` seam against the TraceRoot backend's offline-eval
+Implements the ``EvalTransport`` seam against the traceroot backend's offline-eval
 reporting endpoints (see the backend ``offline-eval-sdk-contract.md``):
 
     POST /api/v1/public/evaluation-runs                    (register/start a run)
@@ -340,7 +340,7 @@ def _warn_on_metric_name_collisions(contributors: dict[str, list[str]]) -> None:
 
 
 class PlatformTransport:
-    """Reports an evaluation run to the TraceRoot backend. One instance per run."""
+    """Reports an evaluation run to the traceroot backend. One instance per run."""
 
     def __init__(
         self,

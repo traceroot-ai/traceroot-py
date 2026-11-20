@@ -1,4 +1,4 @@
-"""In-house Claude Agent SDK instrumentation for TraceRoot.
+"""In-house Claude Agent SDK instrumentation for traceroot.
 
 Wraps claude_agent_sdk.query() to create OTel spans for LLM calls, tools,
 and task/subagent spans with accurate token/cost tracking.

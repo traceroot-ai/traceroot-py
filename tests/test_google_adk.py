@@ -120,7 +120,7 @@ def observed_lookup(q):
 """
 
 # `adk web` / `adk api_server` shape: the host installs a global SDK provider and loads the ADK
-# runtime before initialize(); node_tracing is still imported after. TraceRoot must join the host
+# runtime before initialize(); node_tracing is still imported after. traceroot must join the host
 # provider, and the host must see the same spans.
 _HOST_PROVIDER = """
 from opentelemetry import trace
