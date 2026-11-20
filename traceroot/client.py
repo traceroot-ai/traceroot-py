@@ -16,11 +16,13 @@ from traceroot.constants import (
 from traceroot.env import (
     TRACEROOT_API_KEY,
     TRACEROOT_ENABLED,
+    TRACEROOT_ENVIRONMENT,
     TRACEROOT_FLUSH_AT,
     TRACEROOT_FLUSH_INTERVAL,
     TRACEROOT_GIT_REF,
     TRACEROOT_GIT_REPO,
     TRACEROOT_HOST_URL,
+    TRACEROOT_RELEASE,
     TRACEROOT_TIMEOUT,
 )
 from traceroot.git_context import (
@@ -53,6 +55,8 @@ class TracerootClient:
         integrations: list[Integration] | None = None,
         git_repo: str | None = None,
         git_ref: str | None = None,
+        environment: str | None = None,
+        release: str | None = None,
         redact: Redact | None = None,
     ):
         """Initialize the Traceroot client.
@@ -80,6 +84,13 @@ class TracerootClient:
             git_ref: Git reference (commit SHA, tag, branch).
                 Falls back to TRACEROOT_GIT_REF env var,
                 then auto-detected from git HEAD.
+            environment: Deployment environment name (e.g.
+                "production", "staging"). Stamped as
+                ``traceroot.environment`` on every recording span.
+                Falls back to TRACEROOT_ENVIRONMENT env var.
+            release: Release version or commit hash of the
+                application. Stamped as ``traceroot.release`` on every
+                recording span. Falls back to TRACEROOT_RELEASE env var.
             redact: Rewrites each finished span's attributes
                 before export, so personal data never
                 reaches TraceRoot (other exporters still see
@@ -93,6 +104,11 @@ class TracerootClient:
                 value except numbers and booleans is
                 withheld, and recorded metadata is dropped.
         """
+        # Resolve environment/release: explicit > env var. `or None` so an empty
+        # env var ("") is treated as unset, matching the git-context resolution.
+        self.environment = environment or os.environ.get(TRACEROOT_ENVIRONMENT) or None
+        self.release = release or os.environ.get(TRACEROOT_RELEASE) or None
+
         # Resolve config with env var fallbacks
         self.api_key = api_key or os.environ.get(TRACEROOT_API_KEY, "")
         self.host_url = host_url or os.environ.get(TRACEROOT_HOST_URL, DEFAULT_HOST_URL)
@@ -179,6 +195,8 @@ class TracerootClient:
             timeout=self.timeout,
             git_repo=self.git_repo,
             git_ref=self.git_ref,
+            environment=self.environment,
+            release=self.release,
             redact=self._redact,
         )
 
