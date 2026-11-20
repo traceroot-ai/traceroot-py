@@ -1,4 +1,4 @@
-"""Constants used by the Traceroot SDK.
+"""Constants used by the traceroot SDK.
 
 This module defines constants used throughout the SDK including default values,
 tracer identification, and type definitions.
@@ -12,7 +12,7 @@ import importlib.metadata
 # =============================================================================
 
 TRACEROOT_TRACER_NAME = "traceroot-sdk"
-"""OpenTelemetry tracer/instrumentation scope name for Traceroot spans."""
+"""OpenTelemetry tracer/instrumentation scope name for traceroot spans."""
 
 SDK_NAME = "traceroot-py"
 """SDK name for identification in API requests."""
@@ -25,7 +25,7 @@ SDK_VERSION = importlib.metadata.version("traceroot")
 # =============================================================================
 
 DEFAULT_HOST_URL = "https://app.traceroot.ai"
-"""Default Traceroot API endpoint."""
+"""Default traceroot API endpoint."""
 
 DEFAULT_FLUSH_AT = 100
 """Default maximum batch size before triggering a flush."""

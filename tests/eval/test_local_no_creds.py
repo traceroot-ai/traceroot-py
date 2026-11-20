@@ -1,6 +1,6 @@
 """Cloud-only: evaluation with no credentials (and no explicit transport) raises.
 
-Runs in a fresh subprocess so no ambient TraceRoot credentials/provider are present - the
+Runs in a fresh subprocess so no ambient traceroot credentials/provider are present - the
 true credential-free scenario. Evaluation reports to the platform, so without a way to
 report it must fail loudly rather than silently run locally.
 """
@@ -28,7 +28,7 @@ def exact(ctx):
 try:
     evaluate(name="r", dataset=ds, task=task, scorers=[exact])
 except RuntimeError as e:
-    assert "reports to the TraceRoot platform" in str(e), str(e)
+    assert "reports to the traceroot platform" in str(e), str(e)
     print("CLOUD_ONLY_RAISED")
 else:
     raise AssertionError("expected evaluate() to raise without credentials")

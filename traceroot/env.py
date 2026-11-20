@@ -1,7 +1,7 @@
-"""Environment variable definitions for Traceroot SDK.
+"""Environment variable definitions for traceroot SDK.
 
 This module defines all environment variables used to
-configure the Traceroot SDK. Each variable includes
+configure the traceroot SDK. Each variable includes
 documentation on its purpose, expected values, and defaults.
 
 Usage:
@@ -19,8 +19,8 @@ TRACEROOT_API_KEY = "TRACEROOT_API_KEY"
 """
 .. envvar:: TRACEROOT_API_KEY
 
-API key for authenticating with the Traceroot backend.
-Required for sending traces to Traceroot.
+API key for authenticating with the traceroot backend.
+Required for sending traces to traceroot.
 
 **Example:** ``tr_abc123...``
 """
@@ -33,7 +33,7 @@ TRACEROOT_HOST_URL = "TRACEROOT_HOST_URL"
 """
 .. envvar:: TRACEROOT_HOST_URL
 
-Base URL of the Traceroot API endpoint.
+Base URL of the traceroot API endpoint.
 
 **Default:** ``https://app.traceroot.ai``
 """
@@ -79,7 +79,7 @@ TRACEROOT_ENABLED = "TRACEROOT_ENABLED"
 """
 .. envvar:: TRACEROOT_ENABLED
 
-Enable or disable the Traceroot SDK. When disabled,
+Enable or disable the traceroot SDK. When disabled,
 all tracing calls become no-ops.
 Accepts: "true", "false", "1", "0", "yes", "no", "on", "off" (case-insensitive)
 
@@ -105,7 +105,7 @@ TRACEROOT_ENVIRONMENT = "TRACEROOT_ENVIRONMENT"
 .. envvar:: TRACEROOT_ENVIRONMENT
 
 Deployment environment name (e.g., "production", "staging", "development").
-Used for filtering and grouping traces in the Traceroot UI.
+Used for filtering and grouping traces in the traceroot UI.
 
 **Default:** ``default``
 """

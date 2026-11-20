@@ -4,7 +4,7 @@ Tests the full trace structure using InMemorySpanExporter.
 Verifies span names, types, nesting, input/output capture, and error handling.
 
 Note: These tests verify span attributes are set correctly. The actual
-HTTP transport to Traceroot is handled by TracerootJSONExporter.
+HTTP transport to traceroot is handled by TracerootJSONExporter.
 """
 
 import pytest

@@ -851,7 +851,7 @@ class TestReportingDefaults:
     def test_no_credentials_raises(self, monkeypatch):
         # A remote dataset but no credentials -> nothing to report to -> raise (cloud-only).
         calls = self._spy(monkeypatch)
-        with pytest.raises(RuntimeError, match="reports to the TraceRoot platform"):
+        with pytest.raises(RuntimeError, match="reports to the traceroot platform"):
             evaluate(name="r", dataset=self._remote_ds(), task=echo, scorers=[acc])
         assert calls == []
 
@@ -861,7 +861,7 @@ class TestReportingDefaults:
         # report against -> raise even with credentials. (A local Dataset OBJECT is auto-synced
         # instead -- see test_dataset_sync.test_evaluate_auto_syncs_a_local_dataset.)
         calls = self._spy(monkeypatch)
-        with pytest.raises(RuntimeError, match="reports to the TraceRoot platform"):
+        with pytest.raises(RuntimeError, match="reports to the traceroot platform"):
             self._with_creds(
                 lambda: evaluate(name="r", dataset=[{"input": {"m": 0}}], task=echo, scorers=[acc])
             )
