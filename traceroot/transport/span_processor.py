@@ -31,8 +31,10 @@ from traceroot.constants import (
     SDK_VERSION,
 )
 from traceroot.env import (
+    TRACEROOT_ENVIRONMENT,
     TRACEROOT_FLUSH_AT,
     TRACEROOT_FLUSH_INTERVAL,
+    TRACEROOT_RELEASE,
     TRACEROOT_TIMEOUT,
 )
 from traceroot.span_attributes import SpanAttributes
@@ -220,6 +222,8 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         timeout: float | None = None,
         git_repo: str | None = None,
         git_ref: str | None = None,
+        environment: str | None = None,
+        release: str | None = None,
         redact: Redact | None = None,
     ):
         """Initialize the span processor.
@@ -238,6 +242,13 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 as ``traceroot.git.repo`` on every recording span.
             git_ref: Git reference (commit SHA, tag, branch). When provided,
                 stamped as ``traceroot.git.ref`` on every recording span.
+            environment: Deployment environment name (e.g. "production",
+                "staging"). When provided, stamped as ``traceroot.environment``
+                on every recording span. Reads the TRACEROOT_ENVIRONMENT env
+                var when not provided.
+            release: Release version or commit hash of the application. When
+                provided, stamped as ``traceroot.release`` on every recording
+                span. Reads the TRACEROOT_RELEASE env var when not provided.
             redact: Rewrites each finished span's attributes before export, so
                 personal data never reaches TraceRoot (other exporters still see
                 the original span). Also runs on event attributes and the status
@@ -247,6 +258,12 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 raising function fails closed: every value except numbers and
                 booleans is withheld, and recorded metadata is dropped.
         """
+        # Resolve environment/release with env var fallbacks (when the caller did not pass one)
+        if environment is None:
+            environment = os.environ.get(TRACEROOT_ENVIRONMENT) or None
+        if release is None:
+            release = os.environ.get(TRACEROOT_RELEASE) or None
+
         # Resolve flush_at with env var fallback
         if flush_at is None:
             env_flush_at = os.environ.get(TRACEROOT_FLUSH_AT)
@@ -290,6 +307,8 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         self._flush_interval = flush_interval
         self._git_repo = git_repo
         self._git_ref = git_ref
+        self._environment = environment
+        self._release = release
         self._redact = redact
         self._paths_lock = threading.RLock()
         # Bounded OrderedDict: evicts oldest entry when capacity is exceeded,
@@ -319,6 +338,10 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 span.set_attribute("traceroot.git.repo", self._git_repo)
             if self._git_ref:
                 span.set_attribute("traceroot.git.ref", self._git_ref)
+            if self._environment:
+                span.set_attribute(SpanAttributes.ENVIRONMENT, self._environment)
+            if self._release:
+                span.set_attribute(SpanAttributes.RELEASE, self._release)
 
             try:
                 # span.parent is the SpanContext of the parent (set by the SDK at
