@@ -48,6 +48,26 @@ def _call(**attrs):
     return usage.read_call(attrs)
 
 
+def _covered(calls, **sums):
+    """Each given sum plus its coverage count of ``calls``."""
+    return {**sums, **{f"llm_calls_with_{field}": calls for field in sums}}
+
+
+def _assert_coverage_invariant(bucket):
+    for field in (
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "cost",
+    ):
+        covered = bucket[f"llm_calls_with_{field}"]
+        assert (covered == 0) == (bucket[field] is None), field
+        assert 0 <= covered <= bucket["llm_calls"], field
+
+
 @pytest.fixture
 def provider():
     """A private provider feeding the usage collector (never the global one)."""
@@ -121,13 +141,18 @@ class TestBuckets:
     def test_empty_bucket_has_the_shared_shape(self):
         assert list(usage.empty_bucket()) == [
             "llm_calls",
-            "llm_calls_with_usage",
             "input_tokens",
+            "llm_calls_with_input_tokens",
             "output_tokens",
+            "llm_calls_with_output_tokens",
             "total_tokens",
+            "llm_calls_with_total_tokens",
             "cache_read_tokens",
+            "llm_calls_with_cache_read_tokens",
             "cache_write_tokens",
+            "llm_calls_with_cache_write_tokens",
             "reasoning_tokens",
+            "llm_calls_with_reasoning_tokens",
             "cost",
             "llm_calls_with_cost",
             "currency",
@@ -145,12 +170,94 @@ class TestBuckets:
         )
         assert bucket == _bucket(
             llm_calls=3,
-            llm_calls_with_usage=2,
             input_tokens=10,
+            llm_calls_with_input_tokens=1,
             output_tokens=5,
-            total_tokens=12,
-            cache_read_tokens=0,
+            llm_calls_with_output_tokens=2,
+            total_tokens=12,  # only the first call reported both input and output
+            llm_calls_with_total_tokens=1,
+            cache_read_tokens=0,  # a reported 0 is a value, not an absence
+            llm_calls_with_cache_read_tokens=1,
         )
+        _assert_coverage_invariant(bucket)
+
+    def test_each_sum_counts_the_calls_that_reported_it(self):
+        # Call A reports only its input; call B reports input, output and total. The input sum
+        # covers both calls, the output and total sums only B: lower bounds, not complete figures.
+        bucket = usage.bucket_of(
+            [
+                _call(**{PROMPT: 100}),
+                _call(**{PROMPT: 20, COMPLETION: 8, "llm.token_count.total": 28}),
+            ]
+        )
+        assert bucket == {
+            "llm_calls": 2,
+            "input_tokens": 120,
+            "llm_calls_with_input_tokens": 2,
+            "output_tokens": 8,
+            "llm_calls_with_output_tokens": 1,
+            "total_tokens": 28,
+            "llm_calls_with_total_tokens": 1,
+            "cache_read_tokens": None,
+            "llm_calls_with_cache_read_tokens": 0,
+            "cache_write_tokens": None,
+            "llm_calls_with_cache_write_tokens": 0,
+            "reasoning_tokens": None,
+            "llm_calls_with_reasoning_tokens": 0,
+            "cost": None,
+            "llm_calls_with_cost": 0,
+            "currency": None,
+        }
+
+    def test_detail_fields_are_counted_per_field(self):
+        bucket = usage.bucket_of(
+            [
+                _call(
+                    **{
+                        "llm.token_count.prompt_details.cache_read": 30,
+                        "llm.token_count.completion_details.reasoning": 12,
+                    }
+                ),
+                _call(**{"llm.token_count.prompt_details.cache_write": 5}),
+                _call(**{"llm.token_count.prompt_details.cache_read": 6}),
+            ]
+        )
+        assert bucket == _bucket(
+            llm_calls=3,
+            cache_read_tokens=36,
+            llm_calls_with_cache_read_tokens=2,
+            cache_write_tokens=5,
+            llm_calls_with_cache_write_tokens=1,
+            reasoning_tokens=12,
+            llm_calls_with_reasoning_tokens=1,
+        )
+        _assert_coverage_invariant(bucket)
+
+    def test_merging_adds_the_coverage_counts(self):
+        a = usage.bucket_of([_call(**{PROMPT: 100}), _call(**{"llm.cost.total": 0.2})])
+        b = usage.bucket_of([_call(**{PROMPT: 20, COMPLETION: 8})])
+        merged = usage.merge_buckets(a, b)
+        assert merged == _bucket(
+            llm_calls=3,
+            input_tokens=120,
+            llm_calls_with_input_tokens=2,
+            output_tokens=8,
+            llm_calls_with_output_tokens=1,
+            total_tokens=28,
+            llm_calls_with_total_tokens=1,
+            cost=0.2,
+            llm_calls_with_cost=1,
+            currency="USD",
+        )
+        _assert_coverage_invariant(merged)
+        run = usage.sum_usage(
+            [
+                {"task": a, "scorers": usage.empty_bucket()},
+                {"task": b, "scorers": b},
+            ]
+        )
+        assert run["task"] == merged
+        assert run["scorers"] == b
 
     def test_cost_is_unknown_not_zero_unless_reported(self):
         assert usage.bucket_of([_call(**{PROMPT: 1})])["cost"] is None
@@ -175,15 +282,19 @@ class TestBuckets:
         total = usage.sum_usage([a, None, b])
         assert total["task"] == _bucket(
             llm_calls=2,
-            llm_calls_with_usage=1,
             input_tokens=4,
+            llm_calls_with_input_tokens=1,
             output_tokens=1,
+            llm_calls_with_output_tokens=1,
             total_tokens=5,
+            llm_calls_with_total_tokens=1,
             cost=0.1,
             llm_calls_with_cost=1,
             currency="USD",
         )
-        assert total["scorers"] == _bucket(llm_calls=1, llm_calls_with_usage=1, input_tokens=7)
+        assert total["scorers"] == _bucket(
+            llm_calls=1, input_tokens=7, llm_calls_with_input_tokens=1
+        )
         assert usage.sum_usage([]) == {"task": _bucket(), "scorers": _bucket()}
 
 
@@ -204,7 +315,7 @@ class TestCollector:
             with _llm(tracer, "second", **{PROMPT: 1, COMPLETION: 1}):
                 pass
         assert case.take()["task"] == _bucket(
-            llm_calls=2, llm_calls_with_usage=2, input_tokens=13, output_tokens=4, total_tokens=17
+            llm_calls=2, **_covered(2, input_tokens=13, output_tokens=4, total_tokens=17)
         )
 
     def test_agent_span_with_aggregate_tokens_is_not_counted(self, tracer):
@@ -358,16 +469,11 @@ class TestEngine:
         result = evaluate(name="u", dataset=_cases(1, 2), task=task, scorers=[judge], local=True)
         first = result.item_results[0].usage
         assert first["task"] == _bucket(
-            llm_calls=1, llm_calls_with_usage=1, input_tokens=1, output_tokens=1, total_tokens=2
+            llm_calls=1, **_covered(1, input_tokens=1, output_tokens=1, total_tokens=2)
         )
         assert first["scorers"] == _bucket(
             llm_calls=1,
-            llm_calls_with_usage=1,
-            input_tokens=100,
-            output_tokens=2,
-            total_tokens=102,
-            cost=0.5,
-            llm_calls_with_cost=1,
+            **_covered(1, input_tokens=100, output_tokens=2, total_tokens=102, cost=0.5),
             currency="USD",
         )
         assert result.usage["task"]["input_tokens"] == 3
@@ -856,12 +962,8 @@ class TestRunnerEndToEnd:
         }
         assert expected["b"]["task"] == _bucket(
             llm_calls=2,
-            llm_calls_with_usage=2,
-            input_tokens=21,
-            output_tokens=5,
-            total_tokens=26,
-            cache_read_tokens=2,
-            cache_write_tokens=1,
+            **_covered(2, input_tokens=21, output_tokens=5, total_tokens=26),
+            **_covered(1, cache_read_tokens=2, cache_write_tokens=1),
         )
         for case_id, case_usage in expected.items():
             assert out.lines[case_id]["usage"] == case_usage, case_id
@@ -875,6 +977,9 @@ class TestRunnerEndToEnd:
         assert run_usage["scorers"]["input_tokens"] == 80
         assert out.run_doc["usage"] == run_usage
         assert out.done["usage"] == run_usage
+        for written in [out.run_doc["usage"], *(line["usage"] for line in out.lines.values())]:
+            _assert_coverage_invariant(written["task"])
+            _assert_coverage_invariant(written["scorers"])
 
         # 4 task calls + 2 judge calls reached the model server; nothing reached traceroot or any
         # other host.

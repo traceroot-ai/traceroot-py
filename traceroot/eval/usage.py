@@ -50,7 +50,10 @@ _TOKEN_FIELDS = (
     "cache_write_tokens",
     "reasoning_tokens",
 )
-_COUNT_FIELDS = ("llm_calls", "llm_calls_with_usage", "llm_calls_with_cost")
+# Each token sum and the cost carry the number of calls they cover, so a sum over fewer calls than
+# llm_calls reads as a lower bound instead of a complete figure.
+_COVERAGE = {field: f"llm_calls_with_{field}" for field in (*_TOKEN_FIELDS, "cost")}
+_COUNT_FIELDS = ("llm_calls", *_COVERAGE.values())
 
 TASK = "task"
 SCORER = "scorer"
@@ -91,7 +94,9 @@ def _first_token(attrs: Mapping[str, Any], keys: tuple[str, ...]) -> int | None:
 
 
 def read_call(attrs: Mapping[str, Any]) -> dict[str, Any]:
-    """The usage one LLM span reports: each token field and the cost, None where absent."""
+    """The usage one LLM span reports: each token field and the cost, None where absent. The total
+    is the reported one, else input + output when both are reported; a missing count is never
+    filled with 0."""
     input_tokens = _first_token(attrs, _INPUT_KEYS)
     output_tokens = _first_token(attrs, _OUTPUT_KEYS)
     total_tokens = _first_token(attrs, _TOTAL_KEYS)
@@ -109,16 +114,22 @@ def read_call(attrs: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def empty_bucket() -> dict[str, Any]:
-    """A bucket for a role that made no instrumented LLM call."""
+    """A bucket for a role that made no instrumented LLM call. Each sum is followed by the number
+    of calls that reported it: 0 exactly when the sum is None, never above ``llm_calls``."""
     return {
         "llm_calls": 0,
-        "llm_calls_with_usage": 0,
         "input_tokens": None,
+        "llm_calls_with_input_tokens": 0,
         "output_tokens": None,
+        "llm_calls_with_output_tokens": 0,
         "total_tokens": None,
+        "llm_calls_with_total_tokens": 0,
         "cache_read_tokens": None,
+        "llm_calls_with_cache_read_tokens": 0,
         "cache_write_tokens": None,
+        "llm_calls_with_cache_write_tokens": 0,
         "reasoning_tokens": None,
+        "llm_calls_with_reasoning_tokens": 0,
         "cost": None,
         "llm_calls_with_cost": 0,
         "currency": None,
@@ -136,13 +147,10 @@ def _plus(a: Any, b: Any) -> Any:
 
 def _add_call(bucket: dict[str, Any], call: Mapping[str, Any]) -> None:
     bucket["llm_calls"] += 1
-    if call["input_tokens"] is not None or call["output_tokens"] is not None:
-        bucket["llm_calls_with_usage"] += 1
-    for field in _TOKEN_FIELDS:
-        bucket[field] = _plus(bucket[field], call[field])
-    if call["cost"] is not None:
-        bucket["cost"] = _plus(bucket["cost"], call["cost"])
-        bucket["llm_calls_with_cost"] += 1
+    for field, coverage in _COVERAGE.items():
+        if call[field] is not None:
+            bucket[field] = _plus(bucket[field], call[field])
+            bucket[coverage] += 1
     bucket["currency"] = "USD" if bucket["cost"] is not None else None
 
 
@@ -155,10 +163,11 @@ def bucket_of(calls: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def merge_buckets(a: Mapping[str, Any], b: Mapping[str, Any]) -> dict[str, Any]:
+    """Two buckets added together: sums and the counts of calls they cover."""
     merged = empty_bucket()
     for field in _COUNT_FIELDS:
         merged[field] = a[field] + b[field]
-    for field in (*_TOKEN_FIELDS, "cost"):
+    for field in _COVERAGE:
         merged[field] = _plus(a[field], b[field])
     merged["currency"] = "USD" if merged["cost"] is not None else None
     return merged
