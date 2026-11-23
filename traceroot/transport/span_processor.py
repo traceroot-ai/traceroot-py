@@ -4,15 +4,24 @@ This module defines the TracerootSpanProcessor class, which extends
 OpenTelemetry's BatchSpanProcessor with traceroot-specific configuration.
 """
 
+import contextlib
 import logging
 import os
 import threading
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Any
 
 from openinference.instrumentation import suppress_tracing
 from opentelemetry import trace as otel_trace
+from opentelemetry.context import (
+    _SUPPRESS_INSTRUMENTATION_KEY,
+    attach,
+    create_key,
+    detach,
+    get_value,
+    set_value,
+)
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
     Compression,
     OTLPSpanExporter,
@@ -150,24 +159,58 @@ def redact_attributes(redact: Redact, attrs: Mapping[str, Any] | None) -> dict[s
 # covered. It reads the AMBIENT context, which is what we want: the engine sets the flag ambiently for
 # the run, so a caller passing an explicit parent Context (as the engine does for its per-case roots)
 # cannot step around the gate. Same ambient read OpenInference's own tracer does.
+#
+# Alongside the flag, the run sets traceroot's own local-run marker. The flag is what instrumentors
+# honour; the marker is what the sampler and the processor below honour. They differ only inside an
+# eval usage scope (allow_local_capture), where the flag is lifted so the integrations build the LLM
+# spans the usage collector counts, on a provider that exports nothing, while the marker keeps
+# every traceroot exporter dropping them.
+_LOCAL_EVAL_RUN_KEY = create_key("traceroot-local-eval-run")
 
 
-def mark_local_eval_run():
+@contextlib.contextmanager
+def mark_local_eval_run() -> Iterator[None]:
     """Suppress tracing for the current context for the duration of a ``local=True`` eval run.
 
-    Returns OpenInference's ``suppress_tracing`` context manager, which sets OTel's tracing
-    suppression flag -- the Python counterpart of the TS SDK's ``suppressTracing(context.active())``.
-    Context-scoped, so it follows asyncio tasks and any worker whose context is copied in, and a
-    concurrent *reported* run in its own context is untouched.
+    Sets OTel's tracing suppression flag through OpenInference's ``suppress_tracing`` -- the Python
+    counterpart of the TS SDK's ``suppressTracing(context.active())`` -- plus traceroot's local-run
+    marker. Context-scoped, so it follows asyncio tasks and any worker whose context is copied in,
+    and a concurrent *reported* run in its own context is untouched.
     """
-    return suppress_tracing()
+    token = attach(set_value(_LOCAL_EVAL_RUN_KEY, True))
+    try:
+        with suppress_tracing():
+            yield
+    finally:
+        detach(token)
+
+
+def in_local_eval_run() -> bool:
+    """True when the current context belongs to a local eval run (or tracing is suppressed)."""
+    return not is_instrumentation_enabled() or bool(get_value(_LOCAL_EVAL_RUN_KEY))
+
+
+@contextlib.contextmanager
+def allow_local_capture() -> Iterator[None]:
+    """Lift the tracing suppression flag inside a local eval run, keeping the local-run marker.
+
+    Only for an eval usage scope whose spans go to a provider that exports nothing: instrumentors
+    build their spans again, and the sampler and processor below still drop any that reach a
+    traceroot exporter, because they read the marker too.
+    """
+    token = attach(set_value(_SUPPRESS_INSTRUMENTATION_KEY, False))
+    try:
+        yield
+    finally:
+        detach(token)
 
 
 class LocalEvalSampler(Sampler):
     """Makes OTel-Python honour the tracing-suppression flag that OTel-JS honours natively.
 
-    Delegates to the provider's real sampler unless tracing is suppressed for this context, in
-    which case the span is DROPped and OTel returns a NonRecordingSpan.
+    Delegates to the provider's real sampler unless tracing is suppressed for this context or it
+    belongs to a local eval run, in which case the span is DROPped and OTel returns a
+    NonRecordingSpan.
     """
 
     def __init__(self, inner: Sampler):
@@ -183,7 +226,7 @@ class LocalEvalSampler(Sampler):
         links=None,
         trace_state=None,
     ) -> SamplingResult:
-        if not is_instrumentation_enabled():
+        if in_local_eval_run():
             return SamplingResult(Decision.DROP, None, trace_state)
         return self._inner.should_sample(
             parent_context, trace_id, name, kind, attributes, links, trace_state
@@ -308,7 +351,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
     def on_start(self, span, parent_context=None):
         if self._shut_down:
             return
-        if not is_instrumentation_enabled():
+        if in_local_eval_run():
             with self._paths_lock:
                 self._local_eval_span_ids[span.context.span_id] = None
             return
