@@ -3,8 +3,16 @@
 import io
 import sys
 
-from traceroot.eval.progress import ConsoleProgress, can_animate, should_show_progress
-from traceroot.eval.results import EvalItemResult, Score
+import pytest
+
+from traceroot.eval import Dataset, EvalCase, FakeTransport, evaluate
+from traceroot.eval.progress import (
+    ConsoleProgress,
+    can_animate,
+    print_run_url,
+    should_show_progress,
+)
+from traceroot.eval.results import EvalItemResult, Score, UploadState
 
 
 def _item(case_id: str, value):
@@ -134,3 +142,55 @@ def test_can_animate_false_under_debugpy(monkeypatch):
     assert can_animate(_TTY()) is True
     monkeypatch.setitem(sys.modules, "debugpy", object())  # VS Code Debug Console
     assert can_animate(_TTY()) is False
+
+
+@pytest.mark.parametrize(("encoding", "arrow"), [("utf-8", "→"), ("cp1252", "->")])
+def test_print_run_url_uses_an_arrow_the_stream_can_encode(encoding, arrow):
+    buffer = io.BytesIO()
+    url = "https://traceroot.ai/evaluations/1"
+    with io.TextIOWrapper(buffer, encoding=encoding, newline="\n") as stream:
+        print_run_url(url, stream)
+        assert buffer.getvalue().decode(encoding) == f"  {arrow} {url}\n\n"
+
+
+@pytest.mark.parametrize("operation", ["write", "flush"])
+def test_print_run_url_ignores_a_broken_pipe(monkeypatch, operation):
+    stream = io.StringIO()
+
+    def broken_pipe(*args):
+        raise BrokenPipeError
+
+    monkeypatch.setattr(stream, operation, broken_pipe)
+    print_run_url("https://traceroot.ai/evaluations/1", stream)
+
+
+def test_print_run_url_ignores_a_closed_stream():
+    stream = io.StringIO()
+    stream.close()
+    print_run_url("https://traceroot.ai/evaluations/1", stream)
+
+
+@pytest.mark.parametrize("stream_name", ["stdout", "stderr"])
+def test_evaluate_returns_uploaded_result_when_console_is_closed(monkeypatch, stream_name):
+    url = "https://traceroot.ai/evaluations/1"
+    transport = FakeTransport()
+    upload = UploadState(status="uploaded", dashboard_url=url)
+    monkeypatch.setattr(transport, "finish_run", lambda *args, **kwargs: upload)
+    stream = io.StringIO()
+    stream.close()
+    monkeypatch.setattr(sys, stream_name, stream)
+    dataset = Dataset(name="d")
+    dataset.upsert(EvalCase(input=1, id="c1", expected=1))
+
+    result = evaluate(
+        name="r",
+        dataset=dataset,
+        task=lambda value: value,
+        scorers=[lambda context: context.output == context.expected],
+        report_to=transport,
+        progress=True,
+    )
+
+    assert result.case_count == 1
+    assert result.upload_state.status == "uploaded"
+    assert result.upload_state.dashboard_url == url

@@ -44,12 +44,30 @@ def should_show_progress(explicit: bool | None) -> bool:
         return False
 
 
+def print_run_summary(summary: str, stream: TextIO | None = None) -> None:
+    """Print a finished run's summary (stdout by default). Best-effort, like the bar."""
+    out = stream if stream is not None else sys.stdout
+    try:
+        out.write(f"{summary}\n")
+        out.flush()
+    except (OSError, ValueError):
+        # The run already finished. Console output is best-effort.
+        pass
+
+
 def print_run_url(url: str, stream: TextIO | None = None) -> None:
     """Print a clickable run link on its own line, followed by a blank line to space it
     from the next evaluate()'s output (same stream as the bar)."""
     out = stream if stream is not None else sys.stderr
-    out.write(f"  → {url}\n\n")
-    out.flush()
+    try:
+        try:
+            out.write(f"  → {url}\n\n")
+        except UnicodeEncodeError:
+            out.write(f"  -> {url}\n\n")
+        out.flush()
+    except (OSError, ValueError):
+        # The run already finished. Console output is best-effort.
+        pass
 
 
 def _term_cols(stream: TextIO) -> int:

@@ -1042,16 +1042,17 @@ async def _run_async_inner(
     # a terminal SHOWS its result (metric means + counts) without the caller writing
     # print(run.summary()). Gated on the reporter, so piped/CI/programmatic callers keep clean
     # stdout and read result.summary() / result.upload_state themselves.
+    # Both prints are best-effort: a closed or broken console must not fail a finished run.
     if reporter is not None:
-        print(result.summary())
+        from traceroot.eval.progress import print_run_summary, print_run_url
 
-    # When the bar was shown (interactive), surface the clickable run link if the
-    # backend returned one. Off-terminal callers read result.upload_state instead.
-    # (Candidate-vs-baseline comparison is the backend's job, not the SDK's.)
-    if reporter is not None and getattr(upload, "dashboard_url", None):
-        from traceroot.eval.progress import print_run_url
+        print_run_summary(result.summary())
 
-        print_run_url(upload.dashboard_url)
+        # Surface the clickable run link if the backend returned one. Off-terminal callers
+        # read result.upload_state instead.
+        # (Candidate-vs-baseline comparison is the backend's job, not the SDK's.)
+        if getattr(upload, "dashboard_url", None):
+            print_run_url(upload.dashboard_url)
 
     return result
 
