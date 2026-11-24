@@ -614,12 +614,18 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
     collected: list[EvalItemResult] = []
     # Capture the registered run ids so a cancel finalizes the partial artifact under the SAME
     # ids the run registered with (reconcilable with the cloud run), not a fresh local id.
-    registered: dict[str, str | None] = {}
+    registered: dict[str, Any] = {}
 
     @_isolated
     def on_run_start(local_run_id: str, run_id: str | None) -> None:
         registered["local_run_id"] = local_run_id
         registered["run_id"] = run_id
+
+    # A cancelled run returns no result: keep the upload state it was finalized with (its link and
+    # its failed and unconfirmed result counts) for the partial artifact.
+    @_isolated
+    def on_run_finish(upload_state: UploadState) -> None:
+        registered["upload_state"] = upload_state
 
     # The engine calls these hooks UNGUARDED, so anything they raise would abort the remaining
     # cases. Reporting a case must never cost us the run: isolate both bodies.
@@ -640,6 +646,7 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
         "on_case_start": on_start,
         "on_case_complete": on_complete,
         "on_run_start": on_run_start,
+        "on_run_finish": on_run_finish,
         # The runner speaks NDJSON on its own channel; never draw a progress bar.
         "progress": False,
     }
@@ -669,6 +676,7 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             candidate_version,
             registered.get("local_run_id"),
             registered.get("run_id"),
+            registered.get("upload_state"),
         )
 
     status = _run_status(result, cancelled=cancelled)
@@ -717,12 +725,15 @@ def _partial_result(
     candidate_version: str | None,
     local_run_id: str | None = None,
     run_id: str | None = None,
+    upload_state: UploadState | None = None,
 ) -> EvalRunResult:
     """Build an incomplete EvalRunResult from the cases that finished before cancel.
 
     Reuses the ids the run registered with (``local_run_id``/``run_id``) so the partial artifact
     reconciles with the cloud run; falls back to a fresh local id only if the run was cancelled
-    before it ever registered.
+    before it ever registered. Likewise ``upload_state`` is the one the run was finalized with,
+    so the artifact keeps its failed and unconfirmed result counts, or a blank one if the run
+    never got that far.
     """
     data = evaluation.dataset
     if isinstance(data, DatasetSnapshot):
@@ -736,7 +747,7 @@ def _partial_result(
         name=evaluation.name,
         item_results=list(collected),
         score_summary=aggregate_scores(list(collected)),
-        upload_state=UploadState(),
+        upload_state=upload_state or UploadState(),
         local_run_id=local_run_id or new_run_id(),
         run_id=run_id,
         candidate_version=candidate_version,
