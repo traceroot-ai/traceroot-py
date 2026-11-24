@@ -107,7 +107,7 @@ def test_native_usage_kept_when_the_langchain_span_is_not_recording():
 
 
 def test_host_exporters_still_see_the_native_span():
-    # On a host provider TraceRoot only filters its own export.
+    # On a host provider traceroot only filters its own export.
     data = run_scenario("host_provider")
     assert data["usage_scopes"] == [LANGCHAIN_SCOPE]
     assert data["native_spans"] == 0

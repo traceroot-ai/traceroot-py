@@ -1,4 +1,4 @@
-"""Shared utilities for the Traceroot SDK."""
+"""Shared utilities for the traceroot SDK."""
 
 import enum
 import json
@@ -45,18 +45,15 @@ def _serialize(value: Any, _seen: set[int]) -> Any:
 
     # Collections
     if isinstance(value, dict):
-        return {_serialize(k, _seen): _serialize(v, _seen) for k, v in value.items()}
+        return _serialize_dict(value, _seen)
     if isinstance(value, (list, tuple)):
-        return [_serialize(v, _seen) for v in value]
+        return _serialize_sequence(value, _seen)
     if isinstance(value, (set, frozenset)):
         # set/frozenset iteration order is not stable across processes (hash randomization),
         # which would make a content-addressed dataset revision change spuriously for the same
         # data. Emit the serialized elements in a deterministic order (by canonical JSON form).
         items = [_serialize(v, _seen) for v in value]
-        return sorted(
-            items,
-            key=lambda x: json.dumps(x, sort_keys=True, ensure_ascii=False, default=str),
-        )
+        return sorted(items, key=_canonical_json)
 
     # Standard library types
     if isinstance(value, datetime):  # datetime before date (datetime is subclass)
@@ -74,6 +71,88 @@ def _serialize(value: Any, _seen: set[int]) -> Any:
 
     # Structured objects (dataclass, pydantic, etc.)
     return _serialize_object(value, _seen)
+
+
+def _serialize_dict(value: dict, _seen: set[int]) -> Any:
+    """Serialize a dict, including one whose key or value is not itself a dict key.
+
+    A tuple key becomes a list, and a list cannot be a dict key, so the old
+    comprehension raised ``TypeError`` into the caller. A dict that contains
+    itself recursed until Python stopped it. String, int, float, bool and None
+    keys stay as they are, so a payload that already serialized is unchanged.
+    """
+    obj_id = id(value)
+    if obj_id in _seen:
+        return "<circular ref: dict>"
+    _seen.add(obj_id)
+    try:
+        serialized: dict[Any, Any] = {}
+        for key, item in value.items():
+            serialized_key = _serialize(key, _seen)
+            if not _kept_dict_key(serialized_key):
+                serialized_key = _canonical_json(serialized_key)
+            serialized[serialized_key] = _serialize(item, _seen)
+        return serialized
+    finally:
+        _seen.discard(obj_id)
+
+
+def _kept_dict_key(key: Any) -> bool:
+    """True when ``json.dumps`` already accepts this key and the old output used it."""
+    return key is None or isinstance(key, (str, int, float, bool))
+
+
+def _serialize_sequence(value: list | tuple, _seen: set[int]) -> Any:
+    """Serialize a list or tuple, including one that contains itself.
+
+    The dict path records its id. This path did not, so a list that holds
+    itself, or a tuple that holds that list, recursed until Python stopped it.
+    A list reached again through a dict was then blamed on the dict.
+    """
+    obj_id = id(value)
+    if obj_id in _seen:
+        kind = "list" if isinstance(value, list) else "tuple"
+        return f"<circular ref: {kind}>"
+    _seen.add(obj_id)
+    try:
+        return [_serialize(item, _seen) for item in value]
+    finally:
+        _seen.discard(obj_id)
+
+
+def _canonical_json(value: Any) -> str:
+    """Stable JSON for a dict key or a set element.
+
+    ``sort_keys`` compares keys with ``<``. A mapping that has both an int key
+    and a str key raises TypeError, and that used to escape to the caller.
+    Stringify those keys and sort again. A list of strings still takes the
+    first path, so a tuple key keeps its old spelling.
+    """
+    try:
+        return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str)
+    except TypeError:
+        return json.dumps(_string_keys(value), sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _string_keys(value: Any) -> Any:
+    """Copy ``value`` so every dict key is a str ``sort_keys`` can compare.
+
+    An int key ``1`` and a str key ``"1"`` stay distinct. The type name is
+    part of the int key's spelling.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(key, str):
+                text = key
+            else:
+                dumped = json.dumps(key, ensure_ascii=False, default=str)
+                text = f"{type(key).__name__}:{dumped}"
+            out[text] = _string_keys(item)
+        return out
+    if isinstance(value, list):
+        return [_string_keys(item) for item in value]
+    return value
 
 
 def _serialize_float(value: float) -> Any:

@@ -26,7 +26,7 @@ class TestCloudOnlyDefault:
     def test_default_evaluate_requires_reporting(self):
         # Cloud-only: with no credentials + an unsynced (inline) dataset there is nothing to
         # report to, so evaluate() raises rather than silently running locally.
-        with pytest.raises(RuntimeError, match="reports to the TraceRoot platform"):
+        with pytest.raises(RuntimeError, match="reports to the traceroot platform"):
             evaluate(name="r", dataset=_ds(1), task=echo, scorers=[exact])
 
 

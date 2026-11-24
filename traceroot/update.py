@@ -43,7 +43,7 @@ def update_current_span(
         usage: Token usage dict
             (e.g., {"input_tokens": 100, "output_tokens": 50}).
         cost: Total cost of this LLM call in USD (e.g. 0.0123).
-            Replaces TraceRoot's computed price for this span.
+            Replaces traceroot's computed price for this span.
         prompt: The prompt/messages sent to the LLM.
 
     Example:
@@ -99,7 +99,7 @@ def update_current_trace(
     """Update the current trace with additional information.
 
     This sets trace-level attributes on the current span. These attributes
-    are useful for filtering and grouping traces in the Traceroot UI.
+    are useful for filtering and grouping traces in the traceroot UI.
 
     Args:
         user_id: ID of the user who initiated the trace.

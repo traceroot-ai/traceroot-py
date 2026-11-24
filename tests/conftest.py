@@ -1,4 +1,4 @@
-"""Shared test fixtures for the Traceroot SDK test suite."""
+"""Shared test fixtures for the traceroot SDK test suite."""
 
 import pytest
 from opentelemetry import trace

@@ -15,8 +15,8 @@ in the events; the caller decides the process exit code. It emits ``fatal`` befo
 dying whenever it can.
 
 Local-only by default: unless ``reporting`` is explicitly enabled, the runner
-disables TraceRoot span export and never uses a reporting transport, so a run makes
-no TraceRoot reporting/dataset-sync/telemetry-export/platform request - even if the
+disables traceroot span export and never uses a reporting transport, so a run makes
+no traceroot reporting/dataset-sync/telemetry-export/platform request - even if the
 evaluated app called ``traceroot.initialize()``. (User task/scorer code may still
 call LLM providers, tools, or other services; the runner neither intercepts nor
 restricts that.)
@@ -146,7 +146,7 @@ def _load_options() -> dict[str, Any]:
 
 
 def _enforce_local_only() -> None:
-    """Guarantee no TraceRoot data leaves this process in local-only mode.
+    """Guarantee no traceroot data leaves this process in local-only mode.
 
     Disables span export (so an app that called initialize() exports nothing) by
     resetting any existing client and forcing TRACEROOT_ENABLED=false BEFORE the
@@ -380,7 +380,7 @@ def _ensure_gitignore(directory: Path) -> None:
         return
     try:
         gi.write_text(
-            "# TraceRoot local evaluation artifacts -- may contain payloads. Do not commit.\n*\n"
+            "# traceroot local evaluation artifacts -- may contain payloads. Do not commit.\n*\n"
         )
     except OSError:
         pass

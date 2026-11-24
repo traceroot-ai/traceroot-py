@@ -1,4 +1,4 @@
-"""Span attribute keys used by Traceroot SDK.
+"""Span attribute keys used by traceroot SDK.
 
 This module defines the OpenTelemetry span attribute keys used throughout
 the SDK for consistent attribute naming.
@@ -6,7 +6,7 @@ the SDK for consistent attribute naming.
 
 
 class SpanAttributes:
-    """OTel span attribute keys used by Traceroot."""
+    """OTel span attribute keys used by traceroot."""
 
     # =========================================================================
     # Span Attributes (core tracing)

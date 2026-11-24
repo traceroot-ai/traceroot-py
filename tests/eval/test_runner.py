@@ -58,7 +58,7 @@ mixed_eval = Evaluation(name="mixed", dataset=ds, task=task, scorers=[good, bad]
 
 INSTRUMENTED_EVAL = """
 import traceroot
-# The evaluated app already configured TraceRoot instrumentation:
+# The evaluated app already configured traceroot instrumentation:
 traceroot.initialize(api_key="tr-fake-key", host_url="http://127.0.0.1:9")
 
 from traceroot import Dataset, Evaluation
@@ -257,7 +257,7 @@ class TestLocalOnlyNoNetwork:
         # 1. No reporting/dataset-sync HTTP happened.
         assert calls == []
         # 2. Span export is disabled: the app's initialize() produced a DISABLED client,
-        #    so no telemetry is exported to TraceRoot (trace_id is None).
+        #    so no telemetry is exported to traceroot (trace_id is None).
         client = traceroot.get_client()
         assert client is not None and client.enabled is False
         case = next(e for e in events if e["type"] == "case_completed")

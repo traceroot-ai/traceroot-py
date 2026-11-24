@@ -1,7 +1,7 @@
-"""Span processor for Traceroot OpenTelemetry integration.
+"""Span processor for traceroot OpenTelemetry integration.
 
 This module defines the TracerootSpanProcessor class, which extends
-OpenTelemetry's BatchSpanProcessor with Traceroot-specific configuration.
+OpenTelemetry's BatchSpanProcessor with traceroot-specific configuration.
 """
 
 import logging
@@ -45,7 +45,7 @@ _PATH_MAP_MAX: int = 1024
 _PathMap = OrderedDict[str, list[str]]
 Redact = Callable[[dict[str, Any]], dict[str, Any]]
 _REDACTION_FAILED = "[redaction failed]"
-# TraceRoot keys that carry user content, so redact sees them; other traceroot.* keys are held back.
+# traceroot keys that carry user content, so redact sees them; other traceroot.* keys are held back.
 _REDACTABLE_KEYS = frozenset(
     {
         SpanAttributes.SPAN_INPUT,
@@ -60,7 +60,7 @@ _REDACTABLE_KEYS = frozenset(
     }
 )
 # Held back from redact: mirrors the user, session, model, token, cost, span-kind and error-type keys
-# TraceRoot ingest reads.
+# traceroot ingest reads.
 _HELD_BACK_KEYS = frozenset(
     {
         "user.id",
@@ -103,7 +103,7 @@ def _blanked(theirs: dict[str, Any], ours: dict[str, Any]) -> dict[str, Any]:
 
 
 def redact_attributes(redact: Redact, attrs: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Run ``redact`` over ``attrs``, holding back the keys TraceRoot depends on.
+    """Run ``redact`` over ``attrs``, holding back the keys traceroot depends on.
 
     Held-back keys are not passed in and are merged back unchanged. If ``redact`` raises (or
     returns a non-dict), it fails closed: every value except numbers and booleans is withheld,
@@ -120,7 +120,7 @@ def redact_attributes(redact: Redact, attrs: Mapping[str, Any] | None) -> dict[s
         return {**redact(theirs), **ours}
     except Exception as exc:
         # Type name only: the message may quote the value being redacted.
-        logger.warning("TraceRoot: redact raised %s", type(exc).__name__)
+        logger.warning("traceroot: redact raised %s", type(exc).__name__)
         return _blanked(theirs, ours)
 
 
@@ -135,17 +135,17 @@ def redact_attributes(redact: Redact, attrs: Mapping[str, Any] | None) -> dict[s
 # honours. Setting it buys two things:
 #   1. every OpenInference instrumentor short-circuits in its own tracer and returns INVALID_SPAN,
 #      so an instrumented LLM/tool span is never even built (no attribute work at all); and
-#   2. on a provider TraceRoot owns, LocalEvalSampler below returns DROP for anything else, so a raw
+#   2. on a provider traceroot owns, LocalEvalSampler below returns DROP for anything else, so a raw
 #      tracer.start_span() -- which no instrumentor mediates -- is non-recording too.
 #
 # Step 2 exists only because OTel-Python's SDK does not consult the flag in Tracer.start_span the
 # way OTel-JS does (its _is_enabled() checks the per-scope tracer configurator and nothing else), so
 # the sampler is the shim that teaches the Python SDK to honour the same flag. On a host provider
-# TraceRoot merely joins, the sampler is left alone: wrapping it would change what the host's own
+# traceroot merely joins, the sampler is left alone: wrapping it would change what the host's own
 # exporters see, and only for tracers created after initialize(). There TracerootSpanProcessor
 # drops local-run spans itself, so the boundary is the same either way -- a span born inside a local
-# run never reaches TraceRoot. A joined host still exports every span; local-run spans are left
-# untouched, others also carry TraceRoot's traceroot.* attributes.
+# run never reaches traceroot. A joined host still exports every span; local-run spans are left
+# untouched, others also carry traceroot's traceroot.* attributes.
 #
 # The flag is read through opentelemetry-instrumentation's public is_instrumentation_enabled(), so no
 # private OTel constant sits in the guarantee path, and both the current and legacy key spellings are
@@ -167,7 +167,7 @@ def mark_local_eval_run():
 
 # Anthropic's SDK (>=1.14.0) starts a span of its own for each API call, on the global tracer
 # provider. An integration above the client (e.g. LangChain's ChatAnthropic) records the same call,
-# and TraceRoot would price both. Nothing in either span links them, and equal token counts do not
+# and traceroot would price both. Nothing in either span links them, and equal token counts do not
 # prove they are one call, so the integration says so while the call runs, with mark_recorded_by.
 # Platform clients add a suffix to the scope, e.g. "com.anthropic.sdk.python.bedrock".
 _ANTHROPIC_SCOPE = "com.anthropic.sdk.python"
@@ -176,7 +176,7 @@ _recording_span: ContextVar[Span | None] = ContextVar("traceroot_recording_span"
 
 @contextmanager
 def mark_recorded_by(span: Span | None) -> Iterator[None]:
-    """Keep Anthropic's native spans started in the block out of TraceRoot's export.
+    """Keep Anthropic's native spans started in the block out of traceroot's export.
 
     ``span`` records the call.
 
@@ -233,12 +233,12 @@ class LocalEvalSampler(Sampler):
 
 
 class TracerootSpanProcessor(BatchSpanProcessor):
-    """OpenTelemetry span processor that exports spans to Traceroot API.
+    """OpenTelemetry span processor that exports spans to traceroot API.
 
     This processor extends OpenTelemetry's BatchSpanProcessor with
-    Traceroot-specific
+    traceroot-specific
     configuration and defaults. It uses the standard OTLPSpanExporter to send
-    OTLP-formatted trace data (protobuf) to the Traceroot backend.
+    OTLP-formatted trace data (protobuf) to the traceroot backend.
 
     The API layer handles protobuf → JSON conversion before storing to S3.
 
@@ -264,8 +264,8 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         """Initialize the span processor.
 
         Args:
-            api_key: Traceroot API key for authentication.
-            host_url: Traceroot API host URL.
+            api_key: traceroot API key for authentication.
+            host_url: traceroot API host URL.
             flush_at: Max batch size before flush. Falls back to
                 TRACEROOT_FLUSH_AT
                 env var, then DEFAULT_FLUSH_AT.
@@ -278,9 +278,9 @@ class TracerootSpanProcessor(BatchSpanProcessor):
             git_ref: Git reference (commit SHA, tag, branch). When provided,
                 stamped as ``traceroot.git.ref`` on every recording span.
             redact: Rewrites each finished span's attributes before export, so
-                personal data never reaches TraceRoot (other exporters still see
+                personal data never reaches traceroot (other exporters still see
                 the original span). Also runs on event attributes and the status
-                message. TraceRoot's own bookkeeping keys are not passed in;
+                message. traceroot's own bookkeeping keys are not passed in;
                 recorded input, output, metadata and prompt are. Eval results
                 are redacted too; datasets and scorer definitions are not. A
                 raising function fails closed: every value except numbers and
@@ -341,7 +341,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         # flight may still stamp attributes).
         self._shut_down = False
         # Recording spans started inside a local=True eval run (joined host provider, whose sampler
-        # is left alone): drop them at on_end so they never reach TraceRoot. Also holds the native
+        # is left alone): drop them at on_end so they never reach traceroot. Also holds the native
         # spans of a model call an integration records (see mark_recorded_by).
         self._local_eval_span_ids: OrderedDict[int, None] = OrderedDict()
 
@@ -446,7 +446,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         super().on_end(self._redacted(span) if self._redact else span)
 
     def _redacted(self, span) -> ReadableSpan:
-        # Only TraceRoot's exporter gets this copy; other processors see the original span.
+        # Only traceroot's exporter gets this copy; other processors see the original span.
         # Attributes are a plain dict here, so dropped-attribute counts read 0 on the copy.
         # The status message rides along with the attributes and is popped back out.
         status = span.status
