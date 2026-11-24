@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import sys
+from contextlib import nullcontext
+from contextvars import copy_context
 from pathlib import Path
 from unittest.mock import patch
 
@@ -117,7 +119,11 @@ def run_mock(mode, api, style, beta):
     client = client_cls(api_key="offline-placeholder", http_client=http_client, **options)
     # Cache resources before initialization to exercise existing clients.
     resource = client.beta.messages if beta else client.messages
+    # Windows initializes the async loop's self-pipe using a local socket connection.
+    # Create the loop before blocking network connections from the code under test.
+    runner_context = asyncio.Runner() if api == "async" else nullcontext()
     with (
+        runner_context as runner,
         patch("traceroot.transport.span_processor.OTLPSpanExporter", return_value=exporter),
         patch("socket.socket.connect", side_effect=AssertionError("Unexpected network access")),
         patch("socket.socket.connect_ex", side_effect=AssertionError("Unexpected network access")),
@@ -182,7 +188,8 @@ def run_mock(mode, api, style, beta):
                 sync_call()
                 client.close()
             else:
-                asyncio.run(run_async())
+                # Capture the span and attributes entered after the runner was created.
+                runner.run(run_async(), context=copy_context())
         traceroot.flush()
         spans = exporter.get_finished_spans()
         usage = [
