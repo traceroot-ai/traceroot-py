@@ -1,4 +1,4 @@
-"""Regression tests for #226: ChatAnthropic calls counted by both LangChain and Anthropic's tracing.
+"""Regression tests: ChatAnthropic calls counted by both LangChain and Anthropic's own tracing.
 
 Each scenario runs in a fresh process, because tracer providers and instrumentation are process-wide.
 """
@@ -26,11 +26,12 @@ OUTPUT_TOKENS = 53
 
 
 def run_scenario(name):
-    # Isolate process-wide tracer providers and instrumentation wrappers.
     env = {
         k: v
         for k, v in os.environ.items()
-        if not k.startswith(("ANTHROPIC_", "TRACEROOT_", "OTEL_", "OPENINFERENCE_"))
+        if not k.startswith(
+            ("ANTHROPIC_", "TRACEROOT_", "OTEL_", "OPENINFERENCE_", "LANGSMITH_", "LANGCHAIN_")
+        )
     }
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve()), name],
@@ -68,6 +69,16 @@ def test_one_usage_per_chat_anthropic_call(scenario):
     assert data["context_spans"] == 2
 
 
+@pytest.mark.parametrize("scenario", ["stream_without_usage", "astream_without_usage"])
+def test_stream_without_usage_keeps_the_native_span(scenario):
+    # With stream_usage=False the LangChain span has no token counts; the native span is the record.
+    data = run_scenario(scenario)
+    assert data["requests"] == 1
+    assert data["usage_scopes"] == [NATIVE_SCOPE]
+    assert data["input_tokens"] == INPUT_TOKENS
+    assert data["output_tokens"] == OUTPUT_TOKENS
+
+
 def test_failure_to_wrap_chat_anthropic_does_not_break_the_import(caplog):
     from traceroot.instrumentation import langchain
 
@@ -101,6 +112,13 @@ def test_host_exporters_still_see_the_native_span():
     assert data["usage_scopes"] == [LANGCHAIN_SCOPE]
     assert data["native_spans"] == 0
     assert data["host_native_spans"] == 1
+
+
+def test_model_built_before_initialize_counts_once():
+    data = run_scenario("model_before_initialize")
+    assert data["requests"] == 1
+    assert data["usage_scopes"] == [LANGCHAIN_SCOPE]
+    assert data["native_spans"] == 0
 
 
 def test_chat_anthropic_imported_after_initialize_is_covered():
@@ -162,14 +180,18 @@ class Offline:
     def __init__(self):
         self.requests = []
 
-    def respond(self, request):
+    def respond(self, request, *, is_async=False):
         import httpx2
 
         self.requests.append(request)
         if json.loads(request.content).get("stream"):
-            return httpx2.Response(
-                200, content=SSE_BODY, headers={"content-type": "text/event-stream"}
-            )
+            # An unread body, as from the network: Anthropic's span records a stream's usage only
+            # while it is read, so a body that is already in memory would leave the usage out.
+            async def chunks():
+                yield SSE_BODY.encode()
+
+            body = chunks() if is_async else iter([SSE_BODY.encode()])
+            return httpx2.Response(200, content=body, headers={"content-type": "text/event-stream"})
         return httpx2.Response(200, json=MESSAGE)
 
     def client(self):
@@ -189,14 +211,16 @@ class Offline:
         return anthropic.AsyncAnthropic(
             api_key="offline-placeholder",
             max_retries=0,
-            http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(self.respond)),
+            http_client=httpx2.AsyncClient(
+                transport=httpx2.MockTransport(lambda request: self.respond(request, is_async=True))
+            ),
         )
 
     def chat(self, **options):
         from langchain_anthropic import ChatAnthropic
 
         chat = ChatAnthropic(model=MODEL, api_key="offline-placeholder", max_tokens=100, **options)
-        # Clients exist before initialize(), as in an app that builds its model at import time.
+        # Clients are made with the model: before initialize() in model_before_initialize.
         chat.__dict__["_client"] = self.client()
         chat.__dict__["_async_client"] = self.async_client()
         return chat
@@ -304,6 +328,8 @@ def run_mock(scenario):
         trace.set_tracer_provider(host_provider)
     if scenario != "import_after_initialize":
         import langchain_anthropic  # noqa: F401
+    # An app that builds its model, and so its clients, at import time.
+    early_chat = offline.chat() if scenario == "model_before_initialize" else None
     # Unlike test_anthropic_usage.py, no socket.connect guard: on Windows asyncio's event loop
     # connects a socket pair at startup, so the guard would fail every async scenario. Every
     # client here uses a MockTransport, and the exporter is in memory.
@@ -331,8 +357,19 @@ def run_mock(scenario):
                 "langchain_not_recording",
             ):
                 offline.chat().invoke("hi")
+            elif scenario == "model_before_initialize":
+                early_chat.invoke("hi")
             elif scenario == "langgraph":
                 run_langgraph(offline)
+            elif scenario == "stream_without_usage":
+                list(offline.chat(stream_usage=False).stream("hi"))
+            elif scenario == "astream_without_usage":
+                chat = offline.chat(stream_usage=False)
+
+                async def adrain():
+                    return [chunk async for chunk in chat.astream("hi")]
+
+                asyncio.run(adrain())
             elif scenario == "raw_call_between_chunks":
                 client = offline.client()
                 for index, _ in enumerate(offline.chat().stream("hi")):

@@ -36,7 +36,11 @@ def _on_chat_model_start(
     wrapped: Callable[..., Any], _instance: Any, args: Any, kwargs: Any
 ) -> Any:
     run_managers = wrapped(*args, **kwargs)
-    _llm_run_ids.set(tuple(manager.run_id for manager in run_managers))
+    # Runs in every LangChain chat model call: a failure here only skips the deduplication.
+    try:
+        _llm_run_ids.set(tuple(manager.run_id for manager in run_managers))
+    except Exception:
+        logger.debug("Could not note the LLM runs of a chat model call", exc_info=True)
     return run_managers
 
 
@@ -44,7 +48,10 @@ async def _aon_chat_model_start(
     wrapped: Callable[..., Any], _instance: Any, args: Any, kwargs: Any
 ) -> Any:
     run_managers = await wrapped(*args, **kwargs)
-    _llm_run_ids.set(tuple(manager.run_id for manager in run_managers))
+    try:
+        _llm_run_ids.set(tuple(manager.run_id for manager in run_managers))
+    except Exception:
+        logger.debug("Could not note the LLM runs of a chat model call", exc_info=True)
     return run_managers
 
 
@@ -61,12 +68,18 @@ def _llm_span() -> Span | None:
         return None
 
 
+# With stream_usage=False, a stream's token counts are only on Anthropic's span, so keep that span.
+# Only the model's setting is checked: a stream_usage argument given to one call doesn't reach here.
 def _create(wrapped: Callable[..., Any], _instance: Any, args: Any, kwargs: Any) -> Any:
+    if args[0].get("stream") and _instance.stream_usage is False:
+        return wrapped(*args, **kwargs)
     with mark_recorded_by(_llm_span()):
         return wrapped(*args, **kwargs)
 
 
 async def _acreate(wrapped: Callable[..., Any], _instance: Any, args: Any, kwargs: Any) -> Any:
+    if args[0].get("stream") and _instance.stream_usage is False:
+        return await wrapped(*args, **kwargs)
     with mark_recorded_by(_llm_span()):
         return await wrapped(*args, **kwargs)
 
@@ -101,3 +114,6 @@ class LangChainInstrumentor:
         )
         register_post_import_hook(_wrap_chat_anthropic, "langchain_anthropic")
         LangChainInstrumentor._hooked = True
+
+    def uninstrument(self, **_kwargs: object) -> None:
+        _Inner().uninstrument()

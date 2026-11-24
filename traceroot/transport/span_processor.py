@@ -176,7 +176,9 @@ _recording_span: ContextVar[Span | None] = ContextVar("traceroot_recording_span"
 
 @contextmanager
 def mark_recorded_by(span: Span | None) -> Iterator[None]:
-    """Keep native spans started in the block out of TraceRoot's export: ``span`` records the call.
+    """Keep Anthropic's native spans started in the block out of TraceRoot's export.
+
+    ``span`` records the call.
 
     Keep the block to the code that makes the call: it must not span a ``yield`` to the application,
     whose own API calls are not the recorded one. ``None`` marks nothing. Other processors on the
