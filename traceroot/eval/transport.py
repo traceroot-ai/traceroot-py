@@ -9,10 +9,21 @@ transport that records calls instead of making HTTP requests).
 from __future__ import annotations
 
 import dataclasses
+import inspect
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 from traceroot.eval.results import EvalItemResult, UploadState
 from traceroot.eval.types import EvalCase, Score
+
+
+def _takes_parameter(fn: Callable[..., Any], name: str) -> bool:
+    """Whether ``fn`` declares a parameter called ``name``. A transport method, or an override of
+    one, written before an optional parameter existed doesn't, and would fail on the argument."""
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 class EvalCompletionError(RuntimeError):
