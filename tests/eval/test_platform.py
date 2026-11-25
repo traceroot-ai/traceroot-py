@@ -4,6 +4,8 @@ Network is stubbed via PlatformTransport._request so no real HTTP happens.
 """
 
 import json
+import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -11,7 +13,7 @@ import pytest
 import traceroot
 from traceroot import Dataset, EvalCase, Score, evaluate
 from traceroot.eval.platform import PlatformTransport, pull_dataset, pull_dataset_version
-from traceroot.eval.results import UploadState
+from traceroot.eval.results import EvalItemResult, UploadState
 from traceroot.eval.transport import RunHandle
 
 
@@ -459,6 +461,40 @@ class TestPlatformTransport:
         t = RecordingTransport("ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h")
         r = t.publish_dataset("d", 3)
         assert r.status == "local_only"
+
+
+class TestLateResultDuringCompletion:
+    def test_a_result_recorded_while_the_run_completes_does_not_break_completion(self):
+        # A cancelled run is completed without waiting for every result upload, so a late reply
+        # can record its case on another thread while finish_run totals the cases.
+        t = RecordingTransport("ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h")
+        handle = t.create_run("r", "d", None)
+        for i in range(50_000):
+            t._contrib[f"tc{i}"] = (False, 0, True)
+
+        def item(case_id):
+            score = Score(name="acc", value=1.0)
+            return EvalItemResult(case_id, "in", "out", None, [score], {}, None, None)
+
+        stop = threading.Event()
+
+        def late_replies():
+            i = 0
+            while not stop.is_set():
+                t.record_item_result(handle, item(f"late{i}"))
+                i += 1
+
+        interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)  # switch threads often, as a busy process might
+        writer = threading.Thread(target=late_replies, daemon=True)
+        writer.start()
+        try:
+            for _ in range(20):
+                assert t.finish_run(handle, "incomplete").status == "uploaded"
+        finally:
+            stop.set()
+            writer.join()
+            sys.setswitchinterval(interval)
 
 
 class TestEvalPaths:

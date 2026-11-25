@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -387,6 +388,9 @@ class PlatformTransport:
         # upload() with the same transport) REPLACES its contribution instead of
         # double-counting the completion totals.
         self._contrib: dict[str, tuple[bool, int, bool]] = {}
+        # A cancelled run is completed without waiting for every result upload, so a late reply can
+        # record its case on its upload thread while finish_run totals the cases.
+        self._contrib_lock = threading.Lock()
 
     # --- HTTP seam (overridable in tests) ---
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
@@ -529,11 +533,12 @@ class PlatformTransport:
         # retry or repeated upload replaces (not adds to) the completion aggregate. A case
         # that produced at least one score (and no task error) counts toward scored_count;
         # the SDK derives no case-level pass/fail (every score carries its own `passed`).
-        self._contrib[item_result.case_id] = (
-            item_result.error is not None,
-            len(item_result.scorer_errors) + non_finite,
-            item_result.error is None and len(item_result.scores) > non_finite,
-        )
+        with self._contrib_lock:
+            self._contrib[item_result.case_id] = (
+                item_result.error is not None,
+                len(item_result.scorer_errors) + non_finite,
+                item_result.error is None and len(item_result.scores) > non_finite,
+            )
 
     def record_scores(self, run: RunHandle, case_id: str, scores: list[Score]) -> None:
         # Already sent inside record_item_result (which carries the full item).
@@ -574,9 +579,11 @@ class PlatformTransport:
         # Pure reporter: the engine passes the terminal ``status`` (else derived from error counts).
         # Derive the aggregate from the per-case map so the totals always match the DISTINCT cases
         # actually persisted (no inflation from retries/replays).
-        task_errors = sum(1 for task_error, _, _ in self._contrib.values() if task_error)
-        scorer_errors = sum(n for _, n, _ in self._contrib.values())
-        scored = sum(1 for _, _, was_scored in self._contrib.values() if was_scored)
+        with self._contrib_lock:
+            contrib = list(self._contrib.values())
+        task_errors = sum(1 for task_error, _, _ in contrib if task_error)
+        scorer_errors = sum(n for _, n, _ in contrib)
+        scored = sum(1 for _, _, was_scored in contrib if was_scored)
         effective = status or (
             "completed_with_errors" if (task_errors or scorer_errors) else "completed"
         )
