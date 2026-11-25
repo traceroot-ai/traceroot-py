@@ -100,6 +100,17 @@ class _HeldReply(FakeTransport):
         return sorted(c[1] for c in self.calls if c[0] == "record_item_result")
 
 
+class _HeldReplyTakingTimeout(_HeldReply):
+    """A ``_HeldReply`` whose close takes the time it is offered (``offered``), as
+    PlatformTransport's does, but ignores it, so only the run's own wait bounds the save."""
+
+    offered: float | None = None
+
+    def finish_run(self, run, status=None, emitted_metrics=None, timeout=None):
+        self.offered = timeout
+        return super().finish_run(run, status, emitted_metrics)
+
+
 async def _task(x):
     if x == "stalled":
         await asyncio.sleep(60)  # still computing when Ctrl+C arrives
@@ -181,6 +192,7 @@ def _interrupted_run(transport, case_ids, ready, tmp_path, then=None):
     return events, run_doc, case_ids_saved, written_after
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="signal.pthread_kill is POSIX")
 class TestHeldReply:
     def test_a_saved_result_whose_reply_is_held_is_kept_once_and_counted_unconfirmed(
         self, tmp_path, monkeypatch
@@ -283,7 +295,7 @@ class TestSlowClose:
         monkeypatch.setattr(engine, "_CANCEL_SAVE_S", 1.0)
         thread_errors = []
         monkeypatch.setattr(threading, "excepthook", thread_errors.append)
-        t = _HeldReply(close="silent")
+        t = _HeldReplyTakingTimeout(close="silent")
         try:
             events, run_doc, case_ids, written_after = _interrupted_run(
                 t,
@@ -294,7 +306,8 @@ class TestSlowClose:
         finally:
             t.close_reply.set()  # TraceRoot answers only after the run was saved
 
-        # The close had the whole budget, and the run didn't wait past it.
+        # The close was offered the whole budget, and the run didn't wait past it.
+        assert t.offered is not None and 0.75 < t.offered <= 1.0, t.offered
         assert 0.9 <= written_after < 1.5, f"run file written {written_after:.1f}s after"
         assert case_ids == ["a", "b"]
         assert sorted(_completed(events)) == ["a", "b"]
@@ -312,7 +325,7 @@ class TestSlowClose:
         # drain ends. The budget still counts from the cancellation.
         monkeypatch.setattr(engine, "_CANCEL_DRAIN_S", 1.5)
         monkeypatch.setattr(engine, "_CANCEL_SAVE_S", 3.0)
-        t = _HeldReply(held="slow", close="silent")
+        t = _HeldReplyTakingTimeout(held="slow", close="silent")
         try:
             _events, run_doc, case_ids, written_after = _interrupted_run(
                 t,
@@ -324,9 +337,28 @@ class TestSlowClose:
             t.reply.set()
             t.close_reply.set()
 
+        # The close was offered what the drain left.
+        assert t.offered is not None and 1.25 < t.offered <= 1.5, t.offered
         assert 2.5 <= written_after < 3.75, f"run file written {written_after:.1f}s after"
         assert case_ids == ["a", "b", "slow"]
         assert run_doc["upload"]["unconfirmed_result_count"] == 1
+        assert run_doc["upload"]["close_confirmed"] is False
+
+    def test_a_close_that_takes_no_timeout_is_still_bounded(self, tmp_path, monkeypatch):
+        # A transport whose finish_run has no timeout parameter isn't offered one.
+        monkeypatch.setattr(engine, "_CANCEL_SAVE_S", 1.0)
+        t = _HeldReply(close="silent")
+        try:
+            _events, run_doc, case_ids, written_after = _interrupted_run(
+                t,
+                ["a", "stalled"],
+                lambda events: len(_completed(events)) == 1 and _started(events, "stalled"),
+                tmp_path,
+            )
+        finally:
+            t.close_reply.set()
+        assert 0.9 <= written_after < 1.5, f"run file written {written_after:.1f}s after"
+        assert case_ids == ["a"]
         assert run_doc["upload"]["close_confirmed"] is False
 
     def test_a_close_traceroot_rejects_is_recorded_with_the_counts(self, tmp_path):
@@ -500,6 +532,7 @@ class _FakeTraceRoot(http.server.ThreadingHTTPServer):
         self.silent_close = silent_close
         self.results: list[str] = []
         self.completed_as: str | None = None
+        self.close_requests = 0
         self.held_saved = threading.Event()
         self.release = threading.Event()
         super().__init__(("127.0.0.1", 0), _FakeTraceRootHandler)
@@ -540,6 +573,7 @@ class _FakeTraceRootHandler(http.server.BaseHTTPRequestHandler):
             return self._reply({})
         if self.path.endswith("/complete"):
             self.server.completed_as = json.loads(body)["status"]
+            self.server.close_requests += 1
             if self.server.silent_close:
                 self.server.release.wait(_NEVER_S)
                 return None  # the runner is gone by now
@@ -683,8 +717,9 @@ def test_ctrl_c_saves_the_run_when_traceroot_never_answers_closing_it(tmp_path, 
     assert case_ids == expected
     assert run_doc["upload"]["close_confirmed"] is False
     assert run_doc["upload"]["unconfirmed_result_count"] == (0 if held is None else 1)
-    # The close was sent, as incomplete; TraceRoot just never answered it.
+    # The close was sent, as incomplete, once: no retry fits in what is left of the budget.
     assert host.completed_as == "incomplete"
+    assert host.close_requests == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process groups, SIGTERM and SIGHUP are POSIX")

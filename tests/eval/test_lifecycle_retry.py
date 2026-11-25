@@ -10,6 +10,9 @@ traceroot-ts/tests/eval-lifecycle-retry.test.ts.
 
 from __future__ import annotations
 
+import socket
+import time
+
 import pytest
 
 from traceroot.eval.platform import PlatformTransport, _retry_delay_ms
@@ -120,6 +123,79 @@ class TestPermanentFailuresAreNot:
         with pytest.raises(RuntimeError):
             t.record_item_result(_RUN, _item())
         assert t.tries("/results") == 1
+
+
+class _Bounded(_Flaky):
+    """Also records the timeout each attempt is given."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.timeouts: list[float] = []
+
+    def _request(self, method, path, body=None, timeout=None):
+        self.timeouts.append(timeout)
+        return super()._request(method, path, body)
+
+
+def _registered(**kwargs) -> _Bounded:
+    t = _Bounded("ds_1", api_key="tr-x", host_url="https://h", failures=0)
+    t.create_run("e", "d", None)
+    t._remaining.clear()
+    t.timeouts.clear()
+    for name, value in kwargs.items():
+        setattr(t, name, value)
+    return t
+
+
+class TestABoundedClose:
+    """A cancelled run closes within the time it has left to be saved: ``finish_run(timeout=)``
+    bounds the retries too. Parity with the TypeScript SDK's bounded ``finishRun``."""
+
+    def test_a_retry_that_fits_in_the_bound_is_made(self):
+        t = _registered(_failures=1, retry_base_delay_ms=100)
+        assert t.finish_run(_RUN, "incomplete", timeout=2.0).status == "uploaded"
+        assert t.tries("/complete") == 2
+        # Each attempt gets the time left, never the full 30 s.
+        assert 1.8 < t.timeouts[0] <= 2.0
+        assert t.timeouts[1] <= t.timeouts[0] - 0.1
+
+    def test_a_retry_whose_backoff_would_end_past_the_bound_is_not_started(self):
+        t = _registered(_failures=99, retry_base_delay_ms=500)
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            t.finish_run(_RUN, "incomplete", timeout=0.3)
+        assert t.tries("/complete") == 1
+        assert time.monotonic() - started < 0.3, "waited for a retry that could not fit"
+
+    def test_no_attempt_is_made_with_no_time_left(self):
+        t = _registered()
+        with pytest.raises(TimeoutError):
+            t.finish_run(_RUN, "incomplete", timeout=0.0)
+        assert t.tries("/complete") == 0
+
+    def test_without_a_bound_each_attempt_is_called_as_before(self):
+        # No timeout argument at all, so an overridden request seam that doesn't take one works.
+        t = _t(failures=0)
+        t.create_run("e", "d", None)
+        assert t.finish_run(_RUN).status == "uploaded"
+
+    def test_an_attempt_still_waiting_at_the_bound_is_cut_off(self):
+        # A TraceRoot that takes the request and never answers it.
+        silent = socket.socket()
+        silent.bind(("127.0.0.1", 0))
+        silent.listen()
+        try:
+            t = PlatformTransport(
+                "ds_1", api_key="tr-x", host_url=f"http://127.0.0.1:{silent.getsockname()[1]}"
+            )
+            t.run_id = "run_1"
+            started = time.monotonic()
+            with pytest.raises(OSError):
+                t.finish_run(_RUN, "incomplete", timeout=0.3)
+            waited = time.monotonic() - started
+        finally:
+            silent.close()
+        assert 0.25 < waited < 1.0, f"gave up after {waited:.2f}s"
 
 
 class TestBackoff:
