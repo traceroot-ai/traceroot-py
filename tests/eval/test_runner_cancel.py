@@ -151,6 +151,7 @@ def _interrupted_run(transport, case_ids, ready, tmp_path, then=None):
     return events, run_doc, case_ids_saved, written_after
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="signal.pthread_kill is POSIX")
 class TestHeldReply:
     def test_a_saved_result_whose_reply_is_held_is_kept_once_and_counted_unconfirmed(
         self, tmp_path, monkeypatch
