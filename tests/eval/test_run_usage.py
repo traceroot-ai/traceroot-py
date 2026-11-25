@@ -24,9 +24,15 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 import traceroot
 from tests.utils import reset_traceroot
 from traceroot.client import TracerootClient
-from traceroot.eval import EvalRunResult, FakeTransport, evaluate, usage
+from traceroot.eval import Dataset, EvalRunResult, Evaluation, FakeTransport, evaluate, usage
 from traceroot.eval.results import EvalItemResult, RunDatasetRef, UploadState
-from traceroot.eval.runner import _case_metadata, write_artifacts
+from traceroot.eval.runner import (
+    Emitter,
+    _CancelledError,
+    _case_metadata,
+    _run_one,
+    write_artifacts,
+)
 from traceroot.instrumentation import Integration
 from traceroot.transport.span_processor import (
     LocalEvalSampler,
@@ -679,6 +685,41 @@ def _result(item_usage, run_usage):
         dataset=RunDatasetRef(dataset_id="ds", revision="r", dataset_version_id=None, case_count=1),
         usage=run_usage,
     )
+
+
+class TestCancelledRun:
+    def test_run_usage_follows_the_local_setting_the_engine_ran_with(self, tmp_path, monkeypatch):
+        # A reported runner run of an Evaluation declared local=True runs the engine locally. Here
+        # capture is visible only to an exporting run, so the engine records each case's usage as
+        # not captured, and the cancelled run's total must say the same rather than 0 calls.
+        monkeypatch.setattr(usage, "capture_active", lambda local: not local)
+        calls = {"n": 0}
+
+        async def task(x):
+            calls["n"] += 1
+            if calls["n"] == 2:  # Ctrl+C arrives after the first case finished
+                raise KeyboardInterrupt()
+            return x
+
+        ds = Dataset("u")
+        for i in range(3):
+            ds.add(input=i, id=f"c{i}", expected=i)
+        evaluation = Evaluation(
+            name="u", dataset=ds, task=task, scorers=[lambda ctx: 1.0], local=True
+        )
+        events = []
+        with pytest.raises(_CancelledError):
+            _run_one(
+                evaluation,
+                {"reporting": True, "out_dir": str(tmp_path), "max_concurrency": 1},
+                Emitter(lambda line: events.append(json.loads(line))),
+            )
+
+        done = next(e for e in events if e["type"] == "evaluation_completed")
+        assert done["status"] == "incomplete"
+        assert [e["usage"] for e in events if e["type"] == "case_completed"] == [None]
+        assert done["usage"] is None
+        assert json.loads(Path(done["artifact"]["run"]).read_text())["usage"] is None
 
 
 class TestArtifacts:

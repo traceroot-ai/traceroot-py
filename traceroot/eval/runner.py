@@ -683,7 +683,10 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             candidate_version,
             registered.get("local_run_id"),
             registered.get("run_id"),
-            usage_captured=eval_usage.capture_active(local=not bool(options.get("reporting"))),
+            # The engine's own setting: a reported run keeps the Evaluation's local=.
+            usage_captured=eval_usage.capture_active(
+                local=bool(run_kwargs.get("local", evaluation.local))
+            ),
         )
 
     status = _run_status(result, cancelled=cancelled)
