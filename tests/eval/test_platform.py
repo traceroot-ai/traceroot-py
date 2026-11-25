@@ -497,6 +497,40 @@ class TestLateResultDuringCompletion:
             sys.setswitchinterval(interval)
 
 
+class TestCloseLeftWaiting:
+    def test_a_close_waiting_on_traceroot_does_not_hold_up_recording_a_result(self):
+        # A cancelled run stops waiting for a close TraceRoot doesn't answer and leaves it on its
+        # thread. A result reply arriving meanwhile must still be recorded.
+        entered = threading.Event()
+        release = threading.Event()
+
+        class SilentClose(RecordingTransport):
+            def _request(self, method, path, body=None, timeout=None):
+                if path.endswith("/complete"):
+                    entered.set()
+                    release.wait(10)
+                return super()._request(method, path, body)
+
+        t = SilentClose("ds_1", scorer_names=["acc"], api_key="tr-x", host_url="https://h")
+        handle = t.create_run("r", "d", None)
+        closing = threading.Thread(
+            target=t.finish_run, args=(handle, "incomplete"), kwargs={"timeout": 10}, daemon=True
+        )
+        closing.start()
+        try:
+            assert entered.wait(5)
+            score = Score(name="acc", value=1.0)
+            late = EvalItemResult("late", "in", "out", None, [score], {}, None, None)
+            recording = threading.Thread(target=t.record_item_result, args=(handle, late))
+            recording.start()
+            recording.join(2)
+            assert not recording.is_alive(), "recording a result waited on the close"
+            assert "late" in t._contrib
+        finally:
+            release.set()
+            closing.join(5)
+
+
 class TestEvalPaths:
     def test_eval_calls_use_api_v1_public_prefix(self):
         # Eval endpoints are proxied by the Python backend under /api/v1/public/*,

@@ -301,20 +301,38 @@ def _start_upload(call: Callable[[], Any]) -> asyncio.Future:
     return future
 
 
-async def _close_cancelled_run(close: Callable[[], Any], cancelled_at: float) -> Any:
+def _takes_close_timeout(transport: EvalTransport) -> bool:
+    """Whether the transport's ``finish_run`` declares ``timeout``, as PlatformTransport's does.
+    Only then is it passed: a transport written without it would fail on the argument."""
+    try:
+        return "timeout" in inspect.signature(transport.finish_run).parameters
+    except (TypeError, ValueError):
+        return False
+
+
+async def _close_cancelled_run(
+    transport: EvalTransport, close: Callable[..., Any], cancelled_at: float
+) -> Any:
     """Close a cancelled run on TraceRoot, waiting for its answer until ``_CANCEL_SAVE_S`` after
     ``cancelled_at`` (a ``time.monotonic()`` mark) and no longer.
 
-    Returns what ``close`` returns, or ``UploadState(close_confirmed=False)`` when TraceRoot hasn't
-    answered by then. The close runs on a daemon thread (see ``_start_upload``), so one left
-    waiting holds up neither saving the run nor the process exit; when it ends, only its outcome
-    is retrieved. A close that fails raises, as on any run.
+    A transport that takes a ``timeout`` is given the time left, so it neither waits on a reply
+    nor retries past it. The run's own wait ends at the same moment either way, for a transport
+    that can't bound itself. Returns what ``close`` returns, or
+    ``UploadState(close_confirmed=False)`` when TraceRoot hasn't answered by then. The close runs on
+    a daemon thread (see ``_start_upload``), so one left waiting holds up neither saving the run
+    nor the process exit; when it ends, only its outcome is retrieved. A close that fails raises,
+    as on any run.
     """
-    closing = _start_upload(close)
+    deadline = cancelled_at + _CANCEL_SAVE_S
+    bound = (
+        {"timeout": max(0.0, deadline - time.monotonic())}
+        if _takes_close_timeout(transport)
+        else {}
+    )
+    closing = _start_upload(lambda: close(**bound))
     try:
-        await asyncio.wait(
-            {closing}, timeout=max(0.0, cancelled_at + _CANCEL_SAVE_S - time.monotonic())
-        )
+        await asyncio.wait({closing}, timeout=max(0.0, deadline - time.monotonic()))
     finally:
         left_running = not closing.done()
         if left_running:
@@ -1121,17 +1139,18 @@ async def _run_async_inner(
             # status None so the error counts decide.
             terminal_status = "incomplete" if body_error is not None else None
 
-            def close() -> Any:
+            def close(**bound: Any) -> Any:
                 return active_transport.finish_run(
                     run_handle,
                     status=terminal_status,
                     emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
+                    **bound,
                 )
 
             if cancelled_at:
                 # Bounded, so a TraceRoot slow to answer can't keep the cancelled run from being
                 # saved (see _CANCEL_SAVE_S).
-                upload = await _close_cancelled_run(close, min(cancelled_at))
+                upload = await _close_cancelled_run(active_transport, close, min(cancelled_at))
             else:
                 upload = await _off_loop(close)
         except BaseException as completion_exc:
