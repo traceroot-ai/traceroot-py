@@ -733,7 +733,7 @@ def _partial_result(
     reconciles with the cloud run; falls back to a fresh local id only if the run was cancelled
     before it ever registered. Likewise ``upload_state`` is the one the run was finalized with,
     so the artifact keeps its failed and unconfirmed result counts, or a blank one if the run
-    never got that far.
+    never got that far. A registered run that never got that far wasn't closed on TraceRoot.
     """
     data = evaluation.dataset
     if isinstance(data, DatasetSnapshot):
@@ -747,7 +747,7 @@ def _partial_result(
         name=evaluation.name,
         item_results=list(collected),
         score_summary=aggregate_scores(list(collected)),
-        upload_state=upload_state or UploadState(),
+        upload_state=upload_state or UploadState(close_confirmed=run_id is None),
         local_run_id=local_run_id or new_run_id(),
         run_id=run_id,
         candidate_version=candidate_version,

@@ -70,7 +70,7 @@ class TestRunArtifactReader:
 
 
 class TestUploadBlock:
-    """The ``upload`` block loads whichever counts it carries: an older run file has fewer keys,
+    """The ``upload`` block loads whichever fields it carries: an older run file has fewer keys,
     and one written by a newer SDK may have a key this version doesn't know."""
 
     def _shapes(self, upload, tmp_path):
@@ -86,11 +86,13 @@ class TestUploadBlock:
             "dashboard_url": None,
             "failed_result_count": 2,
             "unconfirmed_result_count": 1,
+            "close_confirmed": False,
         }
         for shape, d in self._shapes(upload, tmp_path).items():
             state = EvalRunResult.from_dict(d).upload_state
             assert state.failed_result_count == 2, shape
             assert state.unconfirmed_result_count == 1, shape
+            assert state.close_confirmed is False, shape
             assert state.to_dict() == upload, shape
 
     def test_an_older_upload_block_reads_zero_counts(self, tmp_path):
@@ -99,6 +101,19 @@ class TestUploadBlock:
             state = EvalRunResult.from_dict(d).upload_state
             assert state.failed_result_count == 0, shape
             assert state.unconfirmed_result_count == 0, shape
+
+    def test_an_upload_block_without_close_confirmed_reads_a_confirmed_close(self, tmp_path):
+        # Run files from before the field was written: their runs were closed before saving.
+        upload = {"status": "uploaded", "dashboard_url": None, "failed_result_count": 0}
+        for shape, d in self._shapes(upload, tmp_path).items():
+            assert EvalRunResult.from_dict(d).upload_state.close_confirmed is True, shape
+
+    def test_a_closed_run_writes_close_confirmed_true(self, tmp_path):
+        run = evaluate(name="r", dataset=_ds(1), task=echo, scorers=[acc])
+        assert run.upload_state.close_confirmed is True
+        runner = json.loads(_write_runner_artifact(run, tmp_path).read_text())
+        assert runner["upload"]["close_confirmed"] is True
+        assert run.to_dict()["upload"]["close_confirmed"] is True
 
     def test_an_unknown_upload_key_does_not_fail_the_load(self, tmp_path):
         upload = {

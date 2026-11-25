@@ -1,12 +1,16 @@
-"""Ctrl+C while a finished case's result is still waiting for TraceRoot's reply.
+"""Ctrl+C while TraceRoot is slow to answer a cancelled run.
 
 A result upload is a blocking call on a worker thread. Cancelling the run can't stop it, and
 TraceRoot may already have saved the result when only its reply is late. A cancelled run keeps
-that case, reported once and counted as unconfirmed when no reply came, and writes its run file
-within traceroot-cli's 10 s grace however long the reply takes.
+that case, reported once and counted as unconfirmed when no reply came.
+
+Closing the run on TraceRoot is the last step before a cancelled run is saved. It gets what is left
+of ``_CANCEL_SAVE_S`` after the cancellation; a close TraceRoot hasn't acknowledged by then is left
+behind, and the run is saved with ``close_confirmed`` false. Either way the run file is written
+within traceroot-cli's 10 s grace.
 
 These tests interrupt a run with SIGINT, as the terminal does, while a fake TraceRoot holds the
-reply to one saved result.
+reply to one saved result or to closing the run.
 """
 
 import asyncio
@@ -24,8 +28,9 @@ from pathlib import Path
 import pytest
 
 import traceroot
-from traceroot.eval import Dataset, Evaluation
-from traceroot.eval.runner import Emitter, _CancelledError, _run_one
+from traceroot.eval import Dataset, Evaluation, engine
+from traceroot.eval.engine import _CANCEL_SAVE_S
+from traceroot.eval.runner import Emitter, _CancelledError, _partial_result, _run_one
 from traceroot.eval.transport import FakeTransport
 
 # traceroot-cli sends SIGTERM to the runner this long after Ctrl+C, and SIGKILL 2 s later.
@@ -47,15 +52,24 @@ def _isolate():
 class _HeldReply(FakeTransport):
     """A TraceRoot that saves each result as it arrives (``calls``, as FakeTransport records them)
     but holds its reply to ``held``'s until ``reply`` is set, for up to ``_HOLD_S``. A result for
-    ``failing`` is rejected instead."""
+    ``failing`` is rejected instead.
 
-    def __init__(self, held: str | None = None, failing: str | None = None) -> None:
+    ``close`` is how it answers closing the run: at once (None), ``"silent"`` (it takes the close
+    but replies only once ``close_reply`` is set, for up to ``_HOLD_S``) or ``"failing"`` (it
+    rejects the close)."""
+
+    def __init__(
+        self, held: str | None = None, failing: str | None = None, close: str | None = None
+    ) -> None:
         super().__init__()
         self.held = held
         self.failing = failing
+        self.close = close
         self.held_saved = threading.Event()
         self.reply = threading.Event()
         self.replied = threading.Event()
+        self.close_reply = threading.Event()
+        self.close_replied = threading.Event()
 
     def record_item_result(self, run, item_result):
         if item_result.case_id == self.failing:
@@ -65,6 +79,15 @@ class _HeldReply(FakeTransport):
             self.held_saved.set()
             self.reply.wait(_HOLD_S)
             self.replied.set()
+
+    def finish_run(self, run, status=None, emitted_metrics=None):
+        state = super().finish_run(run, status, emitted_metrics)
+        if self.close == "failing":
+            raise RuntimeError("HTTP 503: unavailable")
+        if self.close == "silent":
+            self.close_reply.wait(_HOLD_S)
+            self.close_replied.set()
+        return state
 
     def saved(self) -> list[str]:
         return sorted(c[1] for c in self.calls if c[0] == "record_item_result")
@@ -184,6 +207,7 @@ class TestHeldReply:
         assert run_doc["is_final"] is False
         assert run_doc["upload"]["unconfirmed_result_count"] == 1
         assert run_doc["upload"]["failed_result_count"] == 0
+        assert run_doc["upload"]["close_confirmed"] is True
         done = next(e for e in events if e["type"] == "evaluation_completed")
         assert done["status"] == "incomplete"
         assert done["counts"]["cases"] == 4
@@ -222,6 +246,7 @@ class TestHeldReply:
         assert case_ids == ["a", "b", "slow"]
         assert run_doc["upload"]["unconfirmed_result_count"] == 0
         assert run_doc["upload"]["failed_result_count"] == 0
+        assert run_doc["upload"]["close_confirmed"] is True
         assert t.saved() == case_ids
 
     def test_an_interrupted_run_keeps_its_failed_result_count(self, tmp_path):
@@ -237,6 +262,93 @@ class TestHeldReply:
         assert t.saved() == ["a"]
         assert run_doc["upload"]["failed_result_count"] == 1
         assert run_doc["upload"]["unconfirmed_result_count"] == 0
+        assert run_doc["upload"]["close_confirmed"] is True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="signal.pthread_kill is POSIX")
+class TestSlowClose:
+    """Closing a cancelled run gets what is left of ``_CANCEL_SAVE_S`` after the cancellation.
+    Shortened here; the end-to-end tests below use the real bounds."""
+
+    def test_a_close_traceroot_never_answers_is_left_behind_and_the_run_saved(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(engine, "_CANCEL_SAVE_S", 1.0)
+        thread_errors = []
+        monkeypatch.setattr(threading, "excepthook", thread_errors.append)
+        t = _HeldReply(close="silent")
+        try:
+            events, run_doc, case_ids, written_after = _interrupted_run(
+                t,
+                ["a", "b", "stalled"],
+                lambda events: len(_completed(events)) == 2 and _started(events, "stalled"),
+                tmp_path,
+            )
+        finally:
+            t.close_reply.set()  # TraceRoot answers only after the run was saved
+
+        # The close had the whole budget, and the run didn't wait past it.
+        assert 0.9 <= written_after < 1.5, f"run file written {written_after:.1f}s after"
+        assert case_ids == ["a", "b"]
+        assert sorted(_completed(events)) == ["a", "b"]
+        assert run_doc["status"] == "incomplete"
+        assert run_doc["upload"]["close_confirmed"] is False
+        assert ("finish_run", "incomplete") in t.calls
+
+        # The late answer, after the run was saved, changes nothing and raises nowhere.
+        assert t.close_replied.wait(5)
+        time.sleep(0.2)  # let the close thread finish with it
+        assert thread_errors == []
+
+    def test_the_close_gets_only_what_the_drain_left_of_the_budget(self, tmp_path, monkeypatch):
+        # Nothing else is running, so the run sees its cancellation only once the held result's
+        # drain ends. The budget still counts from the cancellation.
+        monkeypatch.setattr(engine, "_CANCEL_DRAIN_S", 1.5)
+        monkeypatch.setattr(engine, "_CANCEL_SAVE_S", 3.0)
+        t = _HeldReply(held="slow", close="silent")
+        try:
+            _events, run_doc, case_ids, written_after = _interrupted_run(
+                t,
+                ["a", "b", "slow"],
+                lambda events: t.held_saved.is_set() and len(_completed(events)) == 2,
+                tmp_path,
+            )
+        finally:
+            t.reply.set()
+            t.close_reply.set()
+
+        assert 2.5 <= written_after < 3.75, f"run file written {written_after:.1f}s after"
+        assert case_ids == ["a", "b", "slow"]
+        assert run_doc["upload"]["unconfirmed_result_count"] == 1
+        assert run_doc["upload"]["close_confirmed"] is False
+
+    def test_a_close_traceroot_rejects_is_recorded_with_the_counts(self, tmp_path):
+        t = _HeldReply(failing="bad", close="failing")
+        _events, run_doc, case_ids, _ = _interrupted_run(
+            t,
+            ["a", "bad", "stalled"],
+            lambda events: len(_completed(events)) == 2 and _started(events, "stalled"),
+            tmp_path,
+        )
+        assert case_ids == ["a", "bad"]
+        assert run_doc["status"] == "incomplete"
+        assert run_doc["upload"]["close_confirmed"] is False
+        assert run_doc["upload"]["failed_result_count"] == 1
+        assert ("finish_run", "incomplete") in t.calls
+
+
+class TestRunSavedBeforeItWasFinalized:
+    """A run saved without the engine having reported how it was finalized (stopped again while
+    it was being closed, say) can't claim that TraceRoot closed it."""
+
+    def test_a_registered_run_is_saved_with_an_unconfirmed_close(self):
+        evaluation = _evaluation(FakeTransport(), ["a"])
+        partial = _partial_result(evaluation, [], None, "local_1", "run_1")
+        assert partial.upload_state.close_confirmed is False
+
+    def test_a_run_that_never_registered_has_nothing_to_close(self):
+        evaluation = _evaluation(FakeTransport(), ["a"])
+        assert _partial_result(evaluation, [], None).upload_state.close_confirmed is True
 
 
 # ---------------------------------------------------------------------------
@@ -266,26 +378,70 @@ held_reply = Evaluation(
 )
 """
 
+# Three cases finish and one is still computing when the run is stopped.
+_STALLED_EVAL_SRC = """
+import asyncio
+
+from traceroot import Dataset, Evaluation
+
+ds = Dataset("stalled")
+for case_id in ("a", "b", "c", "stalled"):
+    ds.add(input=case_id, id=case_id, expected=case_id)
+
+async def task(x):
+    if x == "stalled":
+        await asyncio.sleep(60)
+    return x
+
+def scored(ctx):
+    return 1.0
+
+stalled = Evaluation(
+    name="stalled",
+    dataset=ds,
+    task=task,
+    scorers=[scored],
+    dataset_id="ds_stalled",
+    max_concurrency=4,
+)
+"""
+
+# How long the fake TraceRoot holds a reply it never sends: past the end of any test.
+_NEVER_S = 120.0
+
 
 class _FakeTraceRoot(http.server.ThreadingHTTPServer):
     """Just the endpoints an uploaded run calls. Saves each case result as it arrives, but holds
-    its reply to ``held``'s for ``hold_s``."""
+    its reply to ``held``'s for ``hold_s``. With ``silent_close`` it takes the request closing the
+    run and never answers it. Serves while used as a context manager."""
 
-    def __init__(self, held: str, hold_s: float) -> None:
+    def __init__(
+        self, held: str | None = None, hold_s: float = 0.0, silent_close: bool = False
+    ) -> None:
         self.held = held
         self.hold_s = hold_s
+        self.silent_close = silent_close
         self.results: list[str] = []
         self.completed_as: str | None = None
         self.held_saved = threading.Event()
         self.release = threading.Event()
         super().__init__(("127.0.0.1", 0), _FakeTraceRootHandler)
 
+    def __enter__(self):
+        threading.Thread(target=self.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self.release.set()
+        self.shutdown()
+        self.server_close()
+
     @property
     def url(self) -> str:
         return f"http://127.0.0.1:{self.server_address[1]}"
 
     def handle_error(self, request, client_address):
-        pass  # the runner exits without reading the held reply: a broken pipe is expected
+        pass  # the runner exits without reading a held reply: a broken pipe is expected
 
 
 class _FakeTraceRootHandler(http.server.BaseHTTPRequestHandler):
@@ -307,6 +463,9 @@ class _FakeTraceRootHandler(http.server.BaseHTTPRequestHandler):
             return self._reply({})
         if self.path.endswith("/complete"):
             self.server.completed_as = json.loads(body)["status"]
+            if self.server.silent_close:
+                self.server.release.wait(_NEVER_S)
+                return None  # the runner is gone by now
         return self._reply({})  # completion, span export
 
     def _reply(self, payload: dict) -> None:
@@ -324,14 +483,16 @@ def _read_events(path) -> list[dict]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGINT are POSIX")
-@pytest.mark.parametrize("hold_s", [8.0, _HOLD_S], ids=["held-8s", "held-to-timeout"])
-def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path, hold_s):
-    host = _FakeTraceRoot(held="slow", hold_s=hold_s)
-    threading.Thread(target=host.serve_forever, daemon=True).start()
+def _stopped_runner(tmp_path, host, src, ready, signum=signal.SIGINT):
+    """Run the evaluation in ``src`` through the runner as traceroot-cli does for an uploaded run:
+    in a process group of its own, ``signum`` sent to the group once ``ready(events)`` holds, and
+    the group killed if it is still running ``_CLI_GRACE_S`` later.
+
+    Returns (exit status, or None when it had to be killed; events; runner output; wall-clock time
+    the signal was sent; seconds from the signal until the runner exited)."""
     evals = tmp_path / "evals"
     evals.mkdir()
-    (evals / "held_reply_eval.py").write_text(_EVAL_SRC)
+    (evals / "stopped_eval.py").write_text(src)
     event_file = tmp_path / "events.ndjson"
     env = {k: v for k, v in os.environ.items() if not k.startswith(("TRACEROOT_", "OTEL_"))}
     # What the CLI sets for an uploaded run.
@@ -342,7 +503,7 @@ def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path
         TRACEROOT_EVAL_OPTIONS=json.dumps({"reporting": True, "out_dir": str(tmp_path / "runs")}),
     )
     log_path = tmp_path / "runner.log"
-    killed = False
+    status: int | None = None
     with open(log_path, "w") as log_file:
         child = subprocess.Popen(
             [sys.executable, "-m", "traceroot.eval.runner", str(evals)],
@@ -354,39 +515,51 @@ def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path
         )
         try:
             deadline = time.monotonic() + 60
-            while not (
-                host.held_saved.is_set()
-                and len([e for e in _read_events(event_file) if e["type"] == "case_completed"]) == 3
-            ):
+            while not ready(_read_events(event_file)):
                 assert child.poll() is None, log_path.read_text()
                 assert time.monotonic() < deadline, log_path.read_text()
                 time.sleep(0.05)
 
-            os.killpg(child.pid, signal.SIGINT)
+            sent_at = time.time()
+            sent = time.monotonic()
+            os.killpg(child.pid, signum)
             try:
-                child.wait(_CLI_GRACE_S)
+                status = child.wait(_CLI_GRACE_S)
             except subprocess.TimeoutExpired:
-                killed = True
-                os.killpg(child.pid, signal.SIGKILL)
-                child.wait()
+                pass
+            exited_after = time.monotonic() - sent
         finally:
             if child.poll() is None:
                 os.killpg(child.pid, signal.SIGKILL)
                 child.wait()
-            host.release.set()
-            host.shutdown()
-            host.server_close()
+    return status, _read_events(event_file), log_path.read_text(), sent_at, exited_after
 
-    log = log_path.read_text()
-    assert not killed, f"the runner was still running {_CLI_GRACE_S}s after SIGINT\n{log}"
-    assert child.returncode == 130, log
 
-    events = _read_events(event_file)
+def _written_at(events: list[dict]) -> float:
+    """Wall-clock time the run's terminal event's run file and cases file were last written."""
+    done = next(e for e in events if e["type"] == "evaluation_completed")
+    return max(Path(done["artifact"][k]).stat().st_mtime for k in ("run", "cases"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGINT are POSIX")
+@pytest.mark.parametrize("hold_s", [8.0, _HOLD_S], ids=["held-8s", "held-to-timeout"])
+def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path, hold_s):
+    with _FakeTraceRoot(held="slow", hold_s=hold_s) as host:
+        status, events, log, _, _ = _stopped_runner(
+            tmp_path,
+            host,
+            _EVAL_SRC,
+            lambda events: host.held_saved.is_set() and len(_completed(events)) == 3,
+        )
+
+    assert status is not None, f"the runner was still running {_CLI_GRACE_S}s after SIGINT\n{log}"
+    assert status == 130, log
+
     assert events[-1] == {"type": "suite_completed", "evaluations": 1, "cancelled": True}
     done = next(e for e in events if e["type"] == "evaluation_completed")
     assert done["status"] == "incomplete"
     assert done["counts"]["cases"] == 4
-    assert [e["case_id"] for e in events if e["type"] == "case_completed"].count("slow") == 1
+    assert _completed(events).count("slow") == 1
 
     run_doc, case_ids = _saved(events)
     assert run_doc["status"] == "incomplete"
@@ -394,6 +567,44 @@ def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path
     assert case_ids == ["a", "b", "c", "slow"]
     assert run_doc["upload"]["unconfirmed_result_count"] == 1
     assert run_doc["upload"]["failed_result_count"] == 0
+    assert run_doc["upload"]["close_confirmed"] is True
     # TraceRoot holds the same four, and the run was closed incomplete.
     assert sorted(host.results) == case_ids
+    assert host.completed_as == "incomplete"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGINT are POSIX")
+@pytest.mark.parametrize("held", [None, "slow"], ids=["nothing-uploading", "after-a-held-result"])
+def test_ctrl_c_saves_the_run_when_traceroot_never_answers_closing_it(tmp_path, held):
+    with _FakeTraceRoot(held=held, hold_s=_NEVER_S, silent_close=True) as host:
+        if held is None:
+            src, expected = _STALLED_EVAL_SRC, ["a", "b", "c"]
+
+            def ready(events):
+                return len(_completed(events)) == 3 and _started(events, "stalled")
+
+        else:
+            # Nothing else is running, so the run sees its cancellation only once the held
+            # result's drain ends; the close still gets only what is left of the budget.
+            src, expected = _EVAL_SRC, ["a", "b", "c", "slow"]
+
+            def ready(events):
+                return host.held_saved.is_set() and len(_completed(events)) == 3
+
+        status, events, log, sent_at, exited_after = _stopped_runner(tmp_path, host, src, ready)
+
+    assert status is not None, f"the runner was still running {_CLI_GRACE_S}s after SIGINT\n{log}"
+    assert status == 130, log
+    # Saved once the budget ran out, not before and not after, and exited right after that.
+    written_after = _written_at(events) - sent_at
+    assert _CANCEL_SAVE_S - 1 <= written_after < _CANCEL_SAVE_S + 0.5, f"{written_after:.1f}s"
+    assert exited_after < _CANCEL_SAVE_S + 1.5, f"exited {exited_after:.1f}s after SIGINT\n{log}"
+
+    assert events[-1] == {"type": "suite_completed", "evaluations": 1, "cancelled": True}
+    run_doc, case_ids = _saved(events)
+    assert run_doc["status"] == "incomplete"
+    assert case_ids == expected
+    assert run_doc["upload"]["close_confirmed"] is False
+    assert run_doc["upload"]["unconfirmed_result_count"] == (0 if held is None else 1)
+    # The close was sent, as incomplete; TraceRoot just never answered it.
     assert host.completed_as == "incomplete"
