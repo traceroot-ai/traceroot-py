@@ -1009,16 +1009,39 @@ async def _run_async_inner(
     # the result (the platform run_id is separate, assigned by the backend).
     local_run_id = new_run_id()
 
+    # When the run's cancellation was seen (time.monotonic()): by the registration below, by a case
+    # whose result was uploading, which holds the cancellation back for up to _CANCEL_DRAIN_S, or
+    # by the gather. The earliest is when the run was cancelled; _CANCEL_SAVE_S counts from it.
+    cancelled_at: list[float] = []
+    # A cancellation that arrived while the dataset was publishing, which blocks this thread, is
+    # delivered here: a run cancelled before it registers is never registered.
+    await asyncio.sleep(0)
+
     # Register the run up front so scorer descriptors + the run_id are available before the
     # per-case traces are stamped.
-    run_handle = await _off_loop(
-        lambda: active_transport.create_run(
-            name=name,
-            dataset_name=dataset_name,
-            metadata=run_metadata,
-            client_run_id=local_run_id,
+    registering = asyncio.ensure_future(
+        _off_loop(
+            lambda: active_transport.create_run(
+                name=name,
+                dataset_name=dataset_name,
+                metadata=run_metadata,
+                client_run_id=local_run_id,
+            )
         )
     )
+    interrupted: asyncio.CancelledError | None = None
+    try:
+        await asyncio.wait({registering})
+    except asyncio.CancelledError as cancel:
+        # Cancelled while the run was registering. The registration isn't cut short (TraceRoot
+        # may already have created the run), but the budget counts from now. A run that registered
+        # runs no case and is closed as incomplete below, within what is left of it.
+        cancelled_at.append(time.monotonic())
+        await asyncio.wait({registering})
+        if registering.cancelled() or registering.exception() is not None:
+            raise  # never registered: nothing to close
+        interrupted = cancel
+    run_handle = registering.result()
     # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the runner
     # runner on SIGINT) can finalize its partial artifact under the SAME ids the run registered
     # with, keeping it reconcilable with the cloud run.
@@ -1072,10 +1095,6 @@ async def _run_async_inner(
     # Results a cancelled run kept although TraceRoot hadn't acknowledged their upload (see
     # _CANCEL_DRAIN_S), surfaced the same way: TraceRoot may or may not have them.
     unconfirmed_results: list[str] = []
-    # When the run's cancellation was seen (time.monotonic()): by a case whose result was
-    # uploading, which holds the cancellation back for up to _CANCEL_DRAIN_S, or by the gather
-    # below. The earliest is when the run was cancelled; _CANCEL_SAVE_S counts from it.
-    cancelled_at: list[float] = []
     body_error: BaseException | None = None
     case_tasks = [
         asyncio.ensure_future(
@@ -1098,9 +1117,11 @@ async def _run_async_inner(
                 cancelled_at=cancelled_at,
             )
         )
-        for c in cases
+        for c in (cases if interrupted is None else ())
     ]
     try:
+        if interrupted is not None:
+            raise interrupted  # cancelled while registering: closed as incomplete below
         item_results = await asyncio.gather(*case_tasks)
         results_list = list(item_results)
         summary = aggregate_scores(results_list)

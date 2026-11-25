@@ -277,6 +277,69 @@ class TestHeldReply:
         assert run_doc["upload"]["close_confirmed"] is True
 
 
+class _SlowRegistration(_HeldReply):
+    """A ``_HeldReply`` that takes ``register_s`` to register the run (``registering`` is set as
+    it starts) and gives it an id, as TraceRoot does."""
+
+    def __init__(self, register_s: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.register_s = register_s
+        self.registering = threading.Event()
+
+    def create_run(self, *args, **kwargs):
+        self.registering.set()
+        time.sleep(self.register_s)
+        handle = super().create_run(*args, **kwargs)
+        self.run_id = "run_1"
+        return handle
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="signal.pthread_kill is POSIX")
+class TestCancelledWhileRegistering:
+    def test_the_registered_run_is_closed_within_the_budget_from_the_signal(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(engine, "_CANCEL_SAVE_S", 1.5)
+        t = _SlowRegistration(register_s=0.5, close="silent")
+        try:
+            events, run_doc, case_ids, written_after = _interrupted_run(
+                t, ["a", "b"], lambda events: t.registering.is_set(), tmp_path
+            )
+        finally:
+            t.close_reply.set()
+
+        # The registration isn't cut short, but the budget counts from the signal, not from its end.
+        assert 1.25 <= written_after < 1.9, f"run file written {written_after:.1f}s after"
+        assert case_ids == []
+        assert _completed(events) == []
+        assert run_doc["status"] == "incomplete"
+        assert run_doc["run_id"] == "run_1"
+        assert run_doc["upload"]["close_confirmed"] is False
+        assert ("finish_run", "incomplete") in t.calls
+
+    def test_a_run_cancelled_before_it_registers_is_not_registered(self, monkeypatch):
+        # Publishing the dataset blocks the run's own thread, so a Ctrl+C during it is seen only
+        # once it ends, and then the run isn't registered at all.
+        publishing = threading.Event()
+
+        def publish(data):
+            publishing.set()
+            time.sleep(0.3)
+
+        t = FakeTransport()
+        monkeypatch.setenv("TRACEROOT_API_KEY", "tr-test-key")
+        monkeypatch.setattr(engine, "_auto_publish", publish)
+        monkeypatch.setattr(engine, "_auto_transport", lambda *a, **k: t)
+        ds = Dataset("unsynced")
+        ds.add(input="a", id="a", expected="a")
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+        _ctrl_c_when(publishing.is_set)
+        with pytest.raises(KeyboardInterrupt):
+            engine._run(name="r", data=ds, task=_task, scorers=[_ok])
+        assert publishing.is_set()
+        assert [c[0] for c in t.calls] == []
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="signal.pthread_kill is POSIX")
 class TestSlowClose:
     """Closing a cancelled run gets what is left of ``_CANCEL_SAVE_S`` after the cancellation.
@@ -483,14 +546,21 @@ _NEVER_S = 120.0
 class _FakeTraceRoot(http.server.ThreadingHTTPServer):
     """Just the endpoints an uploaded run calls. Saves each case result as it arrives, but holds
     its reply to ``held``'s for ``hold_s``. With ``silent_close`` it takes the request closing the
-    run and never answers it. Serves while used as a context manager."""
+    run and never answers it. It answers the run's registration ``register_s`` after it arrives
+    (at ``registered_at``). Serves while used as a context manager."""
 
     def __init__(
-        self, held: str | None = None, hold_s: float = 0.0, silent_close: bool = False
+        self,
+        held: str | None = None,
+        hold_s: float = 0.0,
+        silent_close: bool = False,
+        register_s: float = 0.0,
     ) -> None:
         self.held = held
         self.hold_s = hold_s
         self.silent_close = silent_close
+        self.register_s = register_s
+        self.registered_at: float | None = None
         self.results: list[str] = []
         self.completed_as: str | None = None
         self.close_requests = 0
@@ -524,6 +594,8 @@ class _FakeTraceRootHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
         if self.path == "/api/v1/public/evaluation-runs":
+            self.server.registered_at = time.monotonic()
+            time.sleep(self.server.register_s)
             return self._reply({"evaluation_run_id": "run_1"})
         if self.path.endswith("/results"):
             case_id = json.loads(body)["test_case_id"]
@@ -684,6 +756,37 @@ def test_ctrl_c_saves_the_run_when_traceroot_never_answers_closing_it(tmp_path, 
     if held is None:
         # No thread outlived the run, so the process exited the ordinary way.
         assert (tmp_path / "atexit-ran").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGINT are POSIX")
+def test_ctrl_c_while_the_run_registers_counts_the_budget_from_the_signal(tmp_path):
+    # TraceRoot takes 2 s to register the run and never answers closing it; Ctrl+C lands 100 ms
+    # into the registration.
+    with _FakeTraceRoot(silent_close=True, register_s=2.0) as host:
+        status, events, log, sent_at, exited_after = _stopped_runner(
+            tmp_path,
+            host,
+            _STALLED_EVAL_SRC,
+            lambda events: (
+                host.registered_at is not None and time.monotonic() - host.registered_at >= 0.1
+            ),
+        )
+
+    assert status is not None, f"the runner was still running {_CLI_GRACE_S}s after SIGINT\n{log}"
+    assert status == 130, log
+    # The registration finished; the close got only what was left of the budget.
+    written_after = _written_at(events) - sent_at
+    assert _CANCEL_SAVE_S - 1 <= written_after < _CANCEL_SAVE_S + 0.5, f"{written_after:.1f}s"
+    assert exited_after < _CANCEL_SAVE_S + 1.5, f"exited {exited_after:.1f}s after SIGINT\n{log}"
+
+    run_doc, case_ids = _saved(events)
+    assert run_doc["status"] == "incomplete"
+    assert case_ids == []
+    # Saved under the run TraceRoot registered, which was closed as incomplete.
+    assert run_doc["run_id"] == "run_1"
+    assert run_doc["upload"]["close_confirmed"] is False
+    assert host.completed_as == "incomplete"
+    assert host.close_requests == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGINT are POSIX")
