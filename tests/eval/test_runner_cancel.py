@@ -324,9 +324,13 @@ class TestCancelledWhileRegistering:
         assert run_doc["upload"]["close_confirmed"] is False
         assert ("finish_run", "incomplete") in t.calls
 
-    def test_a_run_cancelled_before_it_registers_is_not_registered(self, monkeypatch):
+    def test_a_run_cancelled_before_it_registers_is_not_registered(
+        self, monkeypatch, memory_exporter
+    ):
         # Publishing the dataset blocks the run's own thread, so a Ctrl+C during it is seen only
         # once it ends, and then the run isn't registered at all.
+        # With an API key set, the run initializes tracing, so the suite's shared provider
+        # (memory_exporter) has to be registered first, or the later tracing tests get no spans.
         publishing = threading.Event()
 
         def publish(data):
