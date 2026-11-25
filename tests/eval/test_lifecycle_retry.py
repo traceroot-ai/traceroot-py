@@ -179,6 +179,19 @@ class TestABoundedClose:
         t.create_run("e", "d", None)
         assert t.finish_run(_RUN).status == "uploaded"
 
+    def test_a_request_seam_that_takes_no_timeout_is_called_without_one(self):
+        # An override of the seam written without the parameter still closes the run...
+        t = _t(failures=0)
+        t.create_run("e", "d", None)
+        assert t.finish_run(_RUN, "incomplete", timeout=1.0).status == "uploaded"
+        # ... and the bound still applies to its retries.
+        t._remaining.clear()
+        t._failures = 99
+        t.retry_base_delay_ms = 500
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            t.finish_run(_RUN, "incomplete", timeout=0.3)
+        assert t.tries("/complete") == 2
+
     def test_an_attempt_still_waiting_at_the_bound_is_cut_off(self):
         # A TraceRoot that takes the request and never answers it.
         silent = socket.socket()

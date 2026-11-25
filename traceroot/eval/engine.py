@@ -36,7 +36,13 @@ from traceroot.eval.results import (
 )
 from traceroot.eval.scorers import scorer_name
 from traceroot.eval.tracer import eval_tracer as _eval_tracer  # span-export tracer (own module)
-from traceroot.eval.transport import EvalCompletionError, EvalTransport, FakeTransport, RunHandle
+from traceroot.eval.transport import (
+    EvalCompletionError,
+    EvalTransport,
+    FakeTransport,
+    RunHandle,
+    _takes_parameter,
+)
 from traceroot.eval.types import (
     Dataset,
     DatasetSnapshot,
@@ -301,23 +307,14 @@ def _start_upload(call: Callable[[], Any]) -> asyncio.Future:
     return future
 
 
-def _takes_close_timeout(transport: EvalTransport) -> bool:
-    """Whether the transport's ``finish_run`` declares ``timeout``, as PlatformTransport's does.
-    Only then is it passed: a transport written without it would fail on the argument."""
-    try:
-        return "timeout" in inspect.signature(transport.finish_run).parameters
-    except (TypeError, ValueError):
-        return False
-
-
 async def _close_cancelled_run(
     transport: EvalTransport, close: Callable[..., Any], cancelled_at: float
 ) -> Any:
     """Close a cancelled run on TraceRoot, waiting for its answer until ``_CANCEL_SAVE_S`` after
     ``cancelled_at`` (a ``time.monotonic()`` mark) and no longer.
 
-    A transport that takes a ``timeout`` is given the time left, so it neither waits on a reply
-    nor retries past it. The run's own wait ends at the same moment either way, for a transport
+    A transport whose ``finish_run`` takes a ``timeout``, as PlatformTransport's does, is given the
+    time left, so it neither waits on a reply nor retries past it. The run's own wait ends at the same moment either way, for a transport
     that can't bound itself. Returns what ``close`` returns, or
     ``UploadState(close_confirmed=False)`` when TraceRoot hasn't answered by then. The close runs on
     a daemon thread (see ``_start_upload``), so one left waiting holds up neither saving the run
@@ -327,7 +324,7 @@ async def _close_cancelled_run(
     deadline = cancelled_at + _CANCEL_SAVE_S
     bound = (
         {"timeout": max(0.0, deadline - time.monotonic())}
-        if _takes_close_timeout(transport)
+        if _takes_parameter(transport.finish_run, "timeout")
         else {}
     )
     closing = _start_upload(lambda: close(**bound))

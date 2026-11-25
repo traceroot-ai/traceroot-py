@@ -487,11 +487,16 @@ held_reply = Evaluation(
 )
 """
 
-# Three cases finish and one is still computing when the run is stopped.
+# Three cases finish and one is still computing when the run is stopped. The process's atexit
+# handlers leave a file in the runner's directory when they run.
 _STALLED_EVAL_SRC = """
 import asyncio
+import atexit
+from pathlib import Path
 
 from traceroot import Dataset, Evaluation
+
+atexit.register(lambda: Path("atexit-ran").write_text("1"))
 
 ds = Dataset("stalled")
 for case_id in ("a", "b", "c", "stalled"):
@@ -511,6 +516,39 @@ stalled = Evaluation(
     task=task,
     scorers=[scored],
     dataset_id="ds_stalled",
+    max_concurrency=4,
+)
+"""
+
+# As above, but the case still computing is a sync task blocked in a call the cancellation can't
+# interrupt, as a task reading a provider's stream can be: its thread outlives the run.
+_STUCK_EVAL_SRC = """
+import atexit
+import time
+from pathlib import Path
+
+from traceroot import Dataset, Evaluation
+
+atexit.register(lambda: Path("atexit-ran").write_text("1"))
+
+ds = Dataset("stuck")
+for case_id in ("a", "b", "c", "stuck"):
+    ds.add(input=case_id, id=case_id, expected=case_id)
+
+def task(x):
+    if x == "stuck":
+        time.sleep(60)
+    return x
+
+def scored(ctx):
+    return 1.0
+
+stuck = Evaluation(
+    name="stuck",
+    dataset=ds,
+    task=task,
+    scorers=[scored],
+    dataset_id="ds_stuck",
     max_concurrency=4,
 )
 """
@@ -720,6 +758,35 @@ def test_ctrl_c_saves_the_run_when_traceroot_never_answers_closing_it(tmp_path, 
     # The close was sent, as incomplete, once: no retry fits in what is left of the budget.
     assert host.completed_as == "incomplete"
     assert host.close_requests == 1
+    if held is None:
+        # No thread outlived the run, so the process exited the ordinary way.
+        assert (tmp_path / "atexit-ran").exists()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGINT are POSIX")
+def test_ctrl_c_exits_although_a_task_thread_cannot_be_stopped(tmp_path):
+    with _FakeTraceRoot(silent_close=True) as host:
+        status, events, log, sent_at, exited_after = _stopped_runner(
+            tmp_path,
+            host,
+            _STUCK_EVAL_SRC,
+            lambda events: len(_completed(events)) == 3 and _started(events, "stuck"),
+        )
+
+    assert status is not None, f"the runner was still running {_CLI_GRACE_S}s after SIGINT\n{log}"
+    assert status == 130, log
+    written_after = _written_at(events) - sent_at
+    assert _CANCEL_SAVE_S - 1 <= written_after < _CANCEL_SAVE_S + 0.5, f"{written_after:.1f}s"
+    # Ended without waiting for the blocked thread, well inside the CLI's grace.
+    assert exited_after < _CLI_GRACE_S - 0.5, f"exited {exited_after:.1f}s after SIGINT\n{log}"
+    # ... which skips the process's atexit handlers: the run was saved and its spans flushed.
+    assert not (tmp_path / "atexit-ran").exists()
+
+    assert events[-1] == {"type": "suite_completed", "evaluations": 1, "cancelled": True}
+    run_doc, case_ids = _saved(events)
+    assert run_doc["status"] == "incomplete"
+    assert case_ids == ["a", "b", "c"]
+    assert run_doc["upload"]["close_confirmed"] is False
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="process groups, SIGTERM and SIGHUP are POSIX")

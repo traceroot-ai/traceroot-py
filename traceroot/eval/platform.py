@@ -33,7 +33,7 @@ from urllib.parse import quote
 from traceroot.eval.ids import new_run_id, stable_dataset_id
 from traceroot.eval.results import EvalItemResult, UploadState
 from traceroot.eval.results import case_status as _case_status
-from traceroot.eval.transport import PublishResult, RunHandle
+from traceroot.eval.transport import PublishResult, RunHandle, _takes_parameter
 from traceroot.eval.types import Dataset, EvalCase, Score, _content_revision
 from traceroot.transport.span_processor import Redact, redact_attributes
 from traceroot.utils import serialize_value
@@ -421,8 +421,9 @@ class PlatformTransport:
         alone get another chance. Only transient failures; a rejected payload is re-raised at once.
 
         ``deadline`` (a ``time.monotonic()`` mark) bounds the whole call: each attempt's socket
-        timeout is cut to the time left, and a retry whose backoff would end past it isn't made,
-        so the last error is raised instead. Without one, every attempt is made as before.
+        timeout is cut to the time left (when ``_request`` takes one), and a retry whose backoff
+        would end past it isn't made, so the last error is raised instead. Without one, every
+        attempt is made as before.
         """
         for attempt in range(1, max(1, self.retry_attempts) + 1):
             try:
@@ -431,6 +432,10 @@ class PlatformTransport:
                 left = deadline - time.monotonic()
                 if left <= 0:
                     raise TimeoutError(f"{method} {path}: no time left to make the request")
+                if not _takes_parameter(self._request, "timeout"):
+                    # An override of the request seam written without ``timeout``: the deadline
+                    # still bounds its retries, and the run's own wait bounds the attempt.
+                    return self._request(method, path, body)
                 return self._request(method, path, body, timeout=min(_HTTP_TIMEOUT_S, left))
             except Exception as exc:
                 if attempt >= self.retry_attempts or not _is_retryable(exc):
