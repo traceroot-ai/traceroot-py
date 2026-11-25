@@ -157,6 +157,7 @@ class TestCollections:
 
         assert serialize_value({Mixed({1: "a", "b": 2})}) == [{1: "a", "b": 2}]
 
+
 # ---- Standard library types ----
 
 
