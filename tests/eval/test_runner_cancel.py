@@ -690,18 +690,26 @@ def _written_at(events: list[dict]) -> float:
     return max(Path(done["artifact"][k]).stat().st_mtime for k in ("run", "cases"))
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGINT are POSIX")
-@pytest.mark.parametrize("hold_s", [8.0, _HOLD_S], ids=["held-8s", "held-to-timeout"])
-def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path, hold_s):
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups and these signals are POSIX")
+@pytest.mark.parametrize(
+    ("signame", "hold_s"),
+    [("SIGINT", 8.0), ("SIGINT", _HOLD_S), ("SIGTERM", 8.0), ("SIGHUP", 8.0)],
+    ids=["held-8s", "held-to-timeout", "sigterm-held-8s", "sighup-held-8s"],
+)
+def test_a_stopped_run_keeps_a_result_traceroot_saved_but_had_not_acknowledged(
+    tmp_path, signame, hold_s
+):
+    # SIGTERM and SIGHUP stop a run exactly as Ctrl+C does.
     with _FakeTraceRoot(held="slow", hold_s=hold_s) as host:
         status, events, log, _, _ = _stopped_runner(
             tmp_path,
             host,
             _EVAL_SRC,
             lambda events: host.held_saved.is_set() and len(_completed(events)) == 3,
+            signum=getattr(signal, signame),
         )
 
-    assert status is not None, f"the runner was still running {_CLI_GRACE_S}s after SIGINT\n{log}"
+    assert status is not None, f"still running {_CLI_GRACE_S}s after {signame}\n{log}"
     assert status == 130, log
 
     assert events[-1] == {"type": "suite_completed", "evaluations": 1, "cancelled": True}
@@ -712,6 +720,7 @@ def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path
 
     run_doc, case_ids = _saved(events)
     assert run_doc["status"] == "incomplete"
+    assert run_doc["is_final"] is False
     assert sorted(c["case_id"] for c in run_doc["cases"]) == ["a", "b", "c", "slow"]
     assert case_ids == ["a", "b", "c", "slow"]
     assert run_doc["upload"]["unconfirmed_result_count"] == 1
@@ -787,31 +796,3 @@ def test_ctrl_c_exits_although_a_task_thread_cannot_be_stopped(tmp_path):
     assert run_doc["status"] == "incomplete"
     assert case_ids == ["a", "b", "c"]
     assert run_doc["upload"]["close_confirmed"] is False
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups, SIGTERM and SIGHUP are POSIX")
-@pytest.mark.parametrize("signame", ["SIGTERM", "SIGHUP"])
-def test_sigterm_and_sighup_stop_a_run_as_ctrl_c_does(tmp_path, signame):
-    # The same run as the Ctrl+C test above: one saved result's reply comes 8 s later, past the
-    # drain, so the run is saved without waiting for it.
-    with _FakeTraceRoot(held="slow", hold_s=8.0) as host:
-        status, events, log, _, _ = _stopped_runner(
-            tmp_path,
-            host,
-            _EVAL_SRC,
-            lambda events: host.held_saved.is_set() and len(_completed(events)) == 3,
-            signum=getattr(signal, signame),
-        )
-
-    assert status is not None, f"the runner was still running {_CLI_GRACE_S}s after {signame}"
-    assert status == 130, log
-
-    assert events[-1] == {"type": "suite_completed", "evaluations": 1, "cancelled": True}
-    run_doc, case_ids = _saved(events)
-    assert run_doc["status"] == "incomplete"
-    assert run_doc["is_final"] is False
-    assert case_ids == ["a", "b", "c", "slow"]
-    assert run_doc["upload"]["unconfirmed_result_count"] == 1
-    assert run_doc["upload"]["close_confirmed"] is True
-    assert sorted(host.results) == case_ids
-    assert host.completed_as == "incomplete"
