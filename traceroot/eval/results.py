@@ -86,6 +86,10 @@ class UploadState:
     # Results a cancelled run kept although TraceRoot hadn't acknowledged their upload when the
     # run was saved, so TraceRoot may or may not have them.
     unconfirmed_result_count: int = 0
+    # False when the run was saved before TraceRoot acknowledged closing it: a cancelled run waits
+    # for that only until it has to be saved, and is saved anyway when the close fails or takes
+    # longer. TraceRoot may then still show the run as running.
+    close_confirmed: bool = True
 
     @property
     def partial(self) -> bool:
@@ -98,13 +102,14 @@ class UploadState:
             "dashboard_url": self.dashboard_url,
             "failed_result_count": self.failed_result_count,
             "unconfirmed_result_count": self.unconfirmed_result_count,
+            "close_confirmed": self.close_confirmed,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any] | None) -> UploadState:
         """Read an ``upload`` block back, taking only this class's own fields: an older run file
-        lacks the newer counts, and one written by a newer SDK may carry keys this one doesn't
-        know. Neither may fail the load."""
+        lacks the newer fields (read as zero counts and a confirmed close), and one written by a
+        newer SDK may carry keys this one doesn't know. Neither may fail the load."""
         known = {f.name for f in dataclasses.fields(cls)}
         return cls(**{k: v for k, v in (d or {}).items() if k in known})
 

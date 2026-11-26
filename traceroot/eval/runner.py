@@ -33,6 +33,7 @@ import os
 import random
 import sys
 import threading
+import time
 import traceback
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -733,7 +734,7 @@ def _partial_result(
     reconciles with the cloud run; falls back to a fresh local id only if the run was cancelled
     before it ever registered. Likewise ``upload_state`` is the one the run was finalized with,
     so the artifact keeps its failed and unconfirmed result counts, or a blank one if the run
-    never got that far.
+    never got that far. A registered run that never got that far wasn't closed on TraceRoot.
     """
     data = evaluation.dataset
     if isinstance(data, DatasetSnapshot):
@@ -747,7 +748,7 @@ def _partial_result(
         name=evaluation.name,
         item_results=list(collected),
         score_summary=aggregate_scores(list(collected)),
-        upload_state=upload_state or UploadState(),
+        upload_state=upload_state or UploadState(close_confirmed=run_id is None),
         local_run_id=local_run_id or new_run_id(),
         run_id=run_id,
         candidate_version=candidate_version,
@@ -821,5 +822,39 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+# How long a cancelled runner's ordinary exit may take before the process ends anyway. Exiting
+# joins every non-daemon thread, including a task's worker thread still blocked in a call the
+# cancellation can't interrupt (a sync task reading a provider's stream, say), which would hold
+# the exit until traceroot-cli kills the runner 10 s after the signal. By then the run file is
+# written and the spans are flushed, so only the exit is bounded.
+_CANCELLED_EXIT_GRACE_S = 1.0
+
+
+def _exit_cancelled_within_grace(code: int) -> None:
+    """Start a daemon thread that ends the process with ``code`` if its ordinary exit hasn't
+    finished within ``_CANCELLED_EXIT_GRACE_S``.
+
+    An exit that finishes in time runs its atexit handlers as usual, and the thread ends with the
+    process. One held up by a thread that won't finish skips them. stdout and stderr are flushed
+    first; the event channel needs nothing, since every event is flushed as it is written.
+    """
+
+    def end() -> None:
+        time.sleep(_CANCELLED_EXIT_GRACE_S)
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.flush()
+            except Exception:
+                pass
+        os._exit(code)
+
+    threading.Thread(target=end, name="traceroot-eval-exit", daemon=True).start()
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    exit_code = main()
+    if exit_code == 130:
+        # Cancelled: saved and flushed, so a thread the cancellation couldn't stop mustn't hold
+        # the exit. Any other run exits as it always has.
+        _exit_cancelled_within_grace(exit_code)
+    sys.exit(exit_code)

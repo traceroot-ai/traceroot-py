@@ -33,7 +33,7 @@ from urllib.parse import quote
 from traceroot.eval.ids import new_run_id, stable_dataset_id
 from traceroot.eval.results import EvalItemResult, UploadState
 from traceroot.eval.results import case_status as _case_status
-from traceroot.eval.transport import PublishResult, RunHandle
+from traceroot.eval.transport import PublishResult, RunHandle, _takes_parameter
 from traceroot.eval.types import Dataset, EvalCase, Score, _content_revision
 from traceroot.transport.span_processor import Redact, redact_attributes
 from traceroot.utils import serialize_value
@@ -263,7 +263,17 @@ def _redact_metadata(metadata: dict) -> Any:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _http_json(method: str, url: str, api_key: str, body: dict | None = None) -> dict:
+# Socket timeout for a request to TraceRoot.
+_HTTP_TIMEOUT_S = 30.0
+
+
+def _http_json(
+    method: str,
+    url: str,
+    api_key: str,
+    body: dict | None = None,
+    timeout: float = _HTTP_TIMEOUT_S,
+) -> dict:
     # Serialize the body consistently (like _json_dumps) so valid but non-JSON-native SDK metadata
     # doesn't fail locally with a TypeError before the request is even sent.
     data = json.dumps(serialize_value(body)).encode() if body is not None else None
@@ -272,7 +282,7 @@ def _http_json(method: str, url: str, api_key: str, body: dict | None = None) ->
     if data is not None:
         req.add_header("Content-Type", "application/json")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode()
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
@@ -393,10 +403,14 @@ class PlatformTransport:
         self._contrib_lock = threading.Lock()
 
     # --- HTTP seam (overridable in tests) ---
-    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
-        return _http_json(method, f"{self.host_url}{path}", self.api_key, body)
+    def _request(
+        self, method: str, path: str, body: dict | None = None, timeout: float = _HTTP_TIMEOUT_S
+    ) -> dict:
+        return _http_json(method, f"{self.host_url}{path}", self.api_key, body, timeout)
 
-    def _request_with_retry(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _request_with_retry(
+        self, method: str, path: str, body: dict | None = None, deadline: float | None = None
+    ) -> dict:
         """One LIFECYCLE request, with a small bounded retry.
 
         Per-case result POSTs are deliberately not retried: they are isolated (a dropped one costs
@@ -405,14 +419,31 @@ class PlatformTransport:
         calls with no such isolation -- a blip on register aborts the evaluation before a single
         case runs, and one on complete leaves a finished run stuck in 'running' -- so those two
         alone get another chance. Only transient failures; a rejected payload is re-raised at once.
+
+        ``deadline`` (a ``time.monotonic()`` mark) bounds the whole call: each attempt's socket
+        timeout is cut to the time left (when ``_request`` takes one), and a retry whose backoff
+        would end past it isn't made, so the last error is raised instead. Without one, every
+        attempt is made as before.
         """
         for attempt in range(1, max(1, self.retry_attempts) + 1):
             try:
-                return self._request(method, path, body)
+                if deadline is None:
+                    return self._request(method, path, body)
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    raise TimeoutError(f"{method} {path}: no time left to make the request")
+                if not _takes_parameter(self._request, "timeout"):
+                    # An override of the request seam written without ``timeout``: the deadline
+                    # still bounds its retries, and the run's own wait bounds the attempt.
+                    return self._request(method, path, body)
+                return self._request(method, path, body, timeout=min(_HTTP_TIMEOUT_S, left))
             except Exception as exc:
                 if attempt >= self.retry_attempts or not _is_retryable(exc):
                     raise
-                time.sleep(_retry_delay_ms(attempt, self.retry_base_delay_ms) / 1000.0)
+                delay = _retry_delay_ms(attempt, self.retry_base_delay_ms) / 1000.0
+                if deadline is not None and time.monotonic() + delay >= deadline:
+                    raise
+                time.sleep(delay)
         raise AssertionError("unreachable: the loop either returns or raises")
 
     # --- EvalTransport protocol ---
@@ -575,7 +606,11 @@ class PlatformTransport:
         run: RunHandle,
         status: str | None = None,
         emitted_metrics: dict[str, list[str]] | None = None,
+        timeout: float | None = None,
     ) -> UploadState:
+        # ``timeout`` (seconds) bounds closing the run, retries included: a cancelled run is closed
+        # within the time it has left to be saved. None leaves the usual attempts and timeouts.
+        deadline = None if timeout is None else time.monotonic() + timeout
         # Pure reporter: the engine passes the terminal ``status`` (else derived from error counts).
         # Derive the aggregate from the per-case map so the totals always match the DISTINCT cases
         # actually persisted (no inflation from retries/replays).
@@ -604,6 +639,7 @@ class PlatformTransport:
             "POST",
             f"/api/v1/public/evaluation-runs/{self.run_id}/complete",
             body,
+            deadline=deadline,
         )
         # Join the backend's UI-relative run path with our host to form a clickable
         # link; None when the backend did not return one (older/self-hosted).

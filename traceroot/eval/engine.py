@@ -36,7 +36,13 @@ from traceroot.eval.results import (
 )
 from traceroot.eval.scorers import scorer_name
 from traceroot.eval.tracer import eval_tracer as _eval_tracer  # span-export tracer (own module)
-from traceroot.eval.transport import EvalCompletionError, EvalTransport, FakeTransport, RunHandle
+from traceroot.eval.transport import (
+    EvalCompletionError,
+    EvalTransport,
+    FakeTransport,
+    RunHandle,
+    _takes_parameter,
+)
 from traceroot.eval.types import (
     Dataset,
     DatasetSnapshot,
@@ -254,16 +260,25 @@ async def _off_loop(call: Callable[[], Any]) -> Any:
 # spans. The TypeScript SDK's CANCEL_DRAIN_MS is the same bound.
 _CANCEL_DRAIN_S = 5.0
 
+# How long after its cancellation a cancelled run is saved by. Closing the run on TraceRoot gets
+# what the drain left of it; a close TraceRoot hasn't acknowledged by then is left running and the
+# run is saved with close_confirmed=False. traceroot-cli kills the runner 10s after the signal,
+# which leaves 2s for writing the run file, flushing spans and exiting. The TypeScript SDK's
+# CANCEL_SAVE_MS is the same bound.
+_CANCEL_SAVE_S = 8.0
+
 
 def _start_upload(call: Callable[[], Any]) -> asyncio.Future:
-    """Run one BLOCKING result upload on a daemon thread; the returned future settles with it.
+    """Run one BLOCKING upload request (a result, or closing a cancelled run) on a daemon thread;
+    the returned future settles with it.
 
-    Not ``_off_loop``: a cancelled run stops waiting for an upload after ``_CANCEL_DRAIN_S``, but
-    ``asyncio.run`` waits for the default executor's threads when it closes the loop, and the
-    interpreter waits for any executor's threads at exit. An upload whose reply is held for the
-    whole 30s timeout would then keep the run from being saved, and the runner from exiting, past
-    the point where traceroot-cli kills it. Nothing waits for a daemon thread: an upload still
-    running at exit ends with the process, its result already counted as unconfirmed.
+    Not ``_off_loop``: a cancelled run stops waiting for an upload after ``_CANCEL_DRAIN_S``, and
+    for closing the run at ``_CANCEL_SAVE_S``, but ``asyncio.run`` waits for the default executor's
+    threads when it closes the loop, and the interpreter waits for any executor's threads at exit.
+    A request whose reply is held for the whole 30s timeout would then keep the run from being
+    saved, and the runner from exiting, past the point where traceroot-cli kills it. Nothing waits
+    for a daemon thread: a request still running at exit ends with the process, already recorded
+    as unconfirmed.
     """
     loop = asyncio.get_running_loop()
     future: asyncio.Future = loop.create_future()
@@ -290,6 +305,38 @@ def _start_upload(call: Callable[[], Any]) -> asyncio.Future:
 
     threading.Thread(target=upload, name="traceroot-eval-upload", daemon=True).start()
     return future
+
+
+async def _close_cancelled_run(
+    transport: EvalTransport, close: Callable[..., Any], cancelled_at: float
+) -> Any:
+    """Close a cancelled run on TraceRoot, waiting for its answer until ``_CANCEL_SAVE_S`` after
+    ``cancelled_at`` (a ``time.monotonic()`` mark) and no longer.
+
+    A transport whose ``finish_run`` takes a ``timeout``, as PlatformTransport's does, is given the
+    time left, so it neither waits on a reply nor retries past it. The run's own wait ends at the same moment either way, for a transport
+    that can't bound itself. Returns what ``close`` returns, or
+    ``UploadState(close_confirmed=False)`` when TraceRoot hasn't answered by then. The close runs on
+    a daemon thread (see ``_start_upload``), so one left waiting holds up neither saving the run
+    nor the process exit; when it ends, only its outcome is retrieved. A close that fails raises,
+    as on any run.
+    """
+    deadline = cancelled_at + _CANCEL_SAVE_S
+    bound = (
+        {"timeout": max(0.0, deadline - time.monotonic())}
+        if _takes_parameter(transport.finish_run, "timeout")
+        else {}
+    )
+    closing = _start_upload(lambda: close(**bound))
+    try:
+        await asyncio.wait({closing}, timeout=max(0.0, deadline - time.monotonic()))
+    finally:
+        left_running = not closing.done()
+        if left_running:
+            closing.add_done_callback(_observe)
+    if left_running:
+        return UploadState(close_confirmed=False)
+    return closing.result()
 
 
 async def _bounded(coro: Any, deadline: float | None, timeout: float | None) -> Any:
@@ -474,6 +521,7 @@ async def _run_case(
     dropped_results: list[str] | None = None,
     local: bool = False,
     unconfirmed_results: list[str] | None = None,
+    cancelled_at: list[float] | None = None,
 ) -> EvalItemResult:
     # A local run gets a NON-EXPORTING tracer: swapping the transport alone would still ship the
     # case input/output out of the process on the per-case spans.
@@ -647,6 +695,8 @@ async def _run_case(
             # saved it, so the case is kept rather than dropped; its reply gets until the drain
             # bound to arrive.
             interrupted = cancel
+            if cancelled_at is not None:
+                cancelled_at.append(time.monotonic())
             await asyncio.wait({uploading}, timeout=_CANCEL_DRAIN_S)
         if not uploading.done():
             # Kept without a reply: counted as unconfirmed. When the upload settles later it only
@@ -854,7 +904,8 @@ async def _run_async_inner(
     ``on_case_start``/``on_case_complete`` are internal hooks the runner uses to
     stream per-case events; ``on_case_complete(item, duration_ms)``.
     ``on_run_finish(upload_state)`` is called once the run is finalized on the platform, also
-    when it was cancelled and so returns no result.
+    when it was cancelled and so returns no result. A cancelled run is finalized also when
+    TraceRoot didn't acknowledge closing it, with ``close_confirmed=False``.
     """
     if local and transport is not None:
         raise ValueError(_LOCAL_AND_TRANSPORT)
@@ -958,16 +1009,39 @@ async def _run_async_inner(
     # the result (the platform run_id is separate, assigned by the backend).
     local_run_id = new_run_id()
 
+    # When the run's cancellation was seen (time.monotonic()): by the registration below, by a case
+    # whose result was uploading, which holds the cancellation back for up to _CANCEL_DRAIN_S, or
+    # by the gather. The earliest is when the run was cancelled; _CANCEL_SAVE_S counts from it.
+    cancelled_at: list[float] = []
+    # A cancellation that arrived while the dataset was publishing, which blocks this thread, is
+    # delivered here: a run cancelled before it registers is never registered.
+    await asyncio.sleep(0)
+
     # Register the run up front so scorer descriptors + the run_id are available before the
     # per-case traces are stamped.
-    run_handle = await _off_loop(
-        lambda: active_transport.create_run(
-            name=name,
-            dataset_name=dataset_name,
-            metadata=run_metadata,
-            client_run_id=local_run_id,
+    registering = asyncio.ensure_future(
+        _off_loop(
+            lambda: active_transport.create_run(
+                name=name,
+                dataset_name=dataset_name,
+                metadata=run_metadata,
+                client_run_id=local_run_id,
+            )
         )
     )
+    interrupted: asyncio.CancelledError | None = None
+    try:
+        await asyncio.wait({registering})
+    except asyncio.CancelledError as cancel:
+        # Cancelled while the run was registering. The registration isn't cut short (TraceRoot
+        # may already have created the run), but the budget counts from now. A run that registered
+        # runs no case and is closed as incomplete below, within what is left of it.
+        cancelled_at.append(time.monotonic())
+        await asyncio.wait({registering})
+        if registering.cancelled() or registering.exception() is not None:
+            raise  # never registered: nothing to close
+        interrupted = cancel
+    run_handle = registering.result()
     # Surface the registered ids immediately so a caller that is interrupted mid-run (e.g. the runner
     # runner on SIGINT) can finalize its partial artifact under the SAME ids the run registered
     # with, keeping it reconcilable with the cloud run.
@@ -1040,17 +1114,21 @@ async def _run_async_inner(
                 dropped_results=dropped_results,
                 local=local,
                 unconfirmed_results=unconfirmed_results,
+                cancelled_at=cancelled_at,
             )
         )
-        for c in cases
+        for c in (cases if interrupted is None else ())
     ]
     try:
+        if interrupted is not None:
+            raise interrupted  # cancelled while registering: closed as incomplete below
         item_results = await asyncio.gather(*case_tasks)
         results_list = list(item_results)
         summary = aggregate_scores(results_list)
     except BaseException as exc:  # remembered, then re-raised untouched
         body_error = exc
         if isinstance(exc, asyncio.CancelledError):
+            cancelled_at.append(time.monotonic())
             # gather() raises as soon as one cancelled case settles, but a case cancelled while
             # its result was uploading waits up to _CANCEL_DRAIN_S for the reply before reporting
             # (see _run_case). Finish the run only once the cases this cancellation reached have
@@ -1078,13 +1156,21 @@ async def _run_async_inner(
             # with the TypeScript SDK. An errored CASE is not an unfinished run: that path leaves
             # status None so the error counts decide.
             terminal_status = "incomplete" if body_error is not None else None
-            upload = await _off_loop(
-                lambda: active_transport.finish_run(
+
+            def close(**bound: Any) -> Any:
+                return active_transport.finish_run(
                     run_handle,
                     status=terminal_status,
                     emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()},
+                    **bound,
                 )
-            )
+
+            if cancelled_at:
+                # Bounded, so a TraceRoot slow to answer can't keep the cancelled run from being
+                # saved (see _CANCEL_SAVE_S).
+                upload = await _close_cancelled_run(active_transport, close, min(cancelled_at))
+            else:
+                upload = await _off_loop(close)
         except BaseException as completion_exc:
             if body_error is None:
                 # The run itself succeeded: one clear error naming the completion failure, with
@@ -1100,6 +1186,15 @@ async def _run_async_inner(
                 f"run completion also failed: {_fmt_error(completion_exc)} "
                 "(the run may stay 'running' on the platform)"
             )
+            if cancelled_at and on_run_finish is not None:
+                # The cancelled run is saved all the same, as one TraceRoot didn't close.
+                on_run_finish(
+                    UploadState(
+                        failed_result_count=len(dropped_results),
+                        unconfirmed_result_count=len(unconfirmed_results),
+                        close_confirmed=False,
+                    )
+                )
         else:
             if (dropped_results or unconfirmed_results) and isinstance(upload, UploadState):
                 upload = dataclasses.replace(
