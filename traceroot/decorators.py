@@ -12,7 +12,7 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from traceroot.constants import SDK_VERSION, TRACEROOT_TRACER_NAME, SpanKind
-from traceroot.git_context import capture_source_location
+from traceroot.git_context import capture_definition_location, capture_source_location
 from traceroot.span_attributes import SpanAttributes
 from traceroot.utils import serialize_value, set_span_attribute
 
@@ -143,7 +143,7 @@ def observe(
                     session_id,
                     user_id,
                 )
-                _set_source_context(span)
+                _set_source_context(span, func)
                 gen = func(*args, **kwargs)
                 async for item in _wrap_async_generator(gen, span, capture_output):
                     yield item
@@ -169,7 +169,7 @@ def observe(
                     session_id,
                     user_id,
                 )
-                _set_source_context(span)
+                _set_source_context(span, func)
                 gen = func(*args, **kwargs)
                 yield from _wrap_sync_generator(gen, span, capture_output)
 
@@ -194,7 +194,7 @@ def observe(
                         session_id,
                         user_id,
                     )
-                    _set_source_context(span)
+                    _set_source_context(span, func)
 
                     try:
                         result = await func(*args, **kwargs)
@@ -227,7 +227,7 @@ def observe(
                         session_id,
                         user_id,
                     )
-                    _set_source_context(span)
+                    _set_source_context(span, func)
 
                     try:
                         result = func(*args, **kwargs)
@@ -288,14 +288,20 @@ async def _wrap_async_generator(
         span.end()
 
 
-def _set_source_context(span: trace.Span) -> None:
+def _set_source_context(span: trace.Span, func: Callable[..., Any] | None = None) -> None:
     """Set source location attributes on span.
 
     Git repo/ref are now stamped on every recording span by the
     TracerootSpanProcessor (constructor-injected), so this function only
     handles the per-call source file/line/function context.
+
+    ``func`` is the decorated function, used as a fallback when the call
+    stack holds no user frame (a coroutine resumed by the event loop, with
+    its caller no longer on the stack).
     """
     source = capture_source_location()
+    if not source.get("git_source_file") and func is not None:
+        source = capture_definition_location(func)
     if source.get("git_source_file"):
         span.set_attribute(SpanAttributes.GIT_SOURCE_FILE, source["git_source_file"])
     if source.get("git_source_line"):

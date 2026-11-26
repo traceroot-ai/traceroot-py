@@ -5,7 +5,9 @@ import logging
 import os
 import re
 import subprocess
-from collections.abc import Mapping
+import sys
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from traceroot.env import GITHUB_REPOSITORY, GITHUB_SHA
 
@@ -52,8 +54,52 @@ def _get_git_root() -> str | None:
         return None
 
 
+def _is_stdlib_frame(frame: Any) -> bool:
+    """True when ``frame`` belongs to a module from the Python standard library.
+
+    ``filename`` alone is not enough: on Windows the stdlib directory also
+    contains ``site-packages``, and a virtualenv can live anywhere. The
+    module name is stable across platforms and lets user code that shadows a
+    stdlib name keep its frame (``__main__`` and project modules are not in
+    ``sys.stdlib_module_names``).
+    """
+    module_name = frame.f_globals.get("__name__")
+    if not isinstance(module_name, str):
+        return False
+    root = module_name.partition(".")[0]
+    return root in sys.stdlib_module_names
+
+
+def _source_from_code(code: Any) -> dict[str, str | int | None]:
+    """Build the source-location payload from a code object."""
+    if code is None:
+        return {}
+    return {
+        "git_source_file": _relative_path(code.co_filename),
+        "git_source_line": code.co_firstlineno,
+        "git_source_function": code.co_name,
+    }
+
+
+def capture_definition_location(func: Callable[..., Any]) -> dict[str, str | int | None]:
+    """Source location of a function's definition.
+
+    Used as a fallback when the call stack holds no user frame (a coroutine
+    resumed by the event loop with its caller no longer on the stack). The
+    definition is still a line in the user's file, which is always more useful
+    than an empty location.
+    """
+    return _source_from_code(getattr(func, "__code__", None))
+
+
 def capture_source_location() -> dict[str, str | int | None]:
     """Walk up the call stack to find the first frame outside SDK internals.
+
+    Standard-library frames are skipped as well. That matters for async
+    functions: when the event loop starts a coroutine (``asyncio.run``,
+    ``create_task``, ``gather``) the frame just above the SDK is
+    ``asyncio/events.py``, not user code. Without this skip the recorded
+    location points into Python's own installation.
 
     Returns dict with git_source_file, git_source_line, git_source_function.
     """
@@ -76,6 +122,10 @@ def capture_source_location() -> dict[str, str | int | None]:
 
             # Skip frames from frozen/built-in modules
             if filename.startswith("<"):
+                continue
+
+            # Skip the standard library (asyncio/events.py and friends)
+            if _is_stdlib_frame(frame):
                 continue
 
             # Found user code
