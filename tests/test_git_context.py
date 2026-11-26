@@ -102,6 +102,10 @@ def test_client_warns_when_git_unresolved(monkeypatch, caplog):
     with caplog.at_level(logging.WARNING):
         client_mod.TracerootClient(api_key="test", git_repo=None, git_ref=None)
     assert any("git context incomplete" in r.message for r in caplog.records)
+    # The docs link in the warning must point at the live docs host.
+    assert any(
+        "https://traceroot.ai/docs/tracing/git-context" in r.getMessage() for r in caplog.records
+    )
 
 
 def test_client_treats_empty_git_env_as_unset(monkeypatch, caplog):

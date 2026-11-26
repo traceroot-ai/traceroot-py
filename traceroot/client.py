@@ -145,7 +145,7 @@ class TracerootClient:
                 "traceroot: git context incomplete (repo=%s, ref=%s). The AI "
                 "agent needs both to correlate traces to source. Set "
                 "TRACEROOT_GIT_REPO / TRACEROOT_GIT_REF — see "
-                "https://docs.traceroot.ai/tracing/git-context",
+                "https://traceroot.ai/docs/tracing/git-context",
                 self.git_repo or "unset",
                 self.git_ref or "unset",
             )
