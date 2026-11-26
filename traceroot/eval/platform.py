@@ -383,6 +383,7 @@ class PlatformTransport:
         self.run_id: str | None = None
         self.run_url: str | None = None  # absolute UI run link, when the backend returns one
         self.run_path: str | None = None  # UI-relative run path (back-compat fallback)
+        self.run_number: int | None = None  # short number the run page shows (``#12``)
         # Per-case contribution keyed by test_case_id, so a retried case (or a repeated
         # upload() with the same transport) REPLACES its contribution instead of
         # double-counting the completion totals.
@@ -454,6 +455,9 @@ class PlatformTransport:
         # UI live on different origins; keep run_path as a same-origin fallback.
         self.run_url = resp.get("run_url")
         self.run_path = resp.get("run_path")
+        # Optional: older/self-hosted backends do not send a run number.
+        run_number = resp.get("run_number")
+        self.run_number = run_number if isinstance(run_number, int) else None
         return RunHandle(name=name, dataset_name=dataset_name, metadata=metadata)
 
     def _scorer_refs(self) -> list[dict[str, Any]]:
@@ -603,7 +607,7 @@ class PlatformTransport:
         # Prefer the backend's absolute run_url; fall back to host_url + run_path for a
         # control plane that predates run_url (keeps the same-origin behavior).
         url = self.run_url or (f"{self.host_url}{self.run_path}" if self.run_path else None)
-        return UploadState(status="uploaded", dashboard_url=url)
+        return UploadState(status="uploaded", dashboard_url=url, run_number=self.run_number)
 
     def publish_dataset(self, dataset_name: str, item_count: int) -> PublishResult:
         # Datasets are server/UI-owned; the SDK cannot create them. Stay local-only.

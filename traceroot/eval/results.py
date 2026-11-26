@@ -79,6 +79,10 @@ class UploadState:
 
     status: Literal["uploaded"] = "uploaded"
     dashboard_url: str | None = None
+    # The short number the platform and the run page use to name the run (``#12``). Absent on
+    # older/self-hosted backends that do not return one, so it defaults to None and an existing
+    # run file without the key still loads.
+    run_number: int | None = None
     # Per-case result POSTs that failed and were dropped (reporting is best-effort so the run
     # still completes). Counted so a run that reports "uploaded" with silently-missing results
     # is detectable instead of looking green.
@@ -93,6 +97,7 @@ class UploadState:
         return {
             "status": self.status,
             "dashboard_url": self.dashboard_url,
+            "run_number": self.run_number,
             "failed_result_count": self.failed_result_count,
         }
 
