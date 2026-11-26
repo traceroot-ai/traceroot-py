@@ -57,6 +57,7 @@ def initialize(
     git_repo: str | None = None,
     git_ref: str | None = None,
     redact: Redact | None = None,
+    global_attributes: dict[str, str | int | float | bool] | None = None,
 ) -> TracerootClient:
     """Initialize the global traceroot client.
 
@@ -83,6 +84,13 @@ def initialize(
             redacted too; datasets and scorer definitions are not. A raising
             function fails closed: every value except numbers and booleans is
             withheld, and recorded metadata is dropped.
+        global_attributes: Attributes stamped as span metadata on every span
+            (root and children), so a tool that controls a child process's
+            environment can tag the spans it produces and query them back by
+            metadata. Falls back to the TRACEROOT_GLOBAL_ATTRIBUTES env var
+            (a JSON object). Keys are used verbatim; reserve the
+            ``traceroot.`` prefix for SDK- and tool-set values. Per-call
+            metadata wins on a key collision.
 
     Returns:
         The TracerootClient instance.
@@ -124,6 +132,7 @@ def initialize(
             git_repo=git_repo,
             git_ref=git_ref,
             redact=redact,
+            global_attributes=global_attributes,
         )
     return _client
 

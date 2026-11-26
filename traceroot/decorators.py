@@ -14,7 +14,7 @@ from opentelemetry.trace import Status, StatusCode
 from traceroot.constants import SDK_VERSION, TRACEROOT_TRACER_NAME, SpanKind
 from traceroot.git_context import capture_source_location
 from traceroot.span_attributes import SpanAttributes
-from traceroot.utils import serialize_value, set_span_attribute
+from traceroot.utils import merge_span_metadata, serialize_value, set_span_attribute
 
 logger = logging.getLogger(__name__)
 
@@ -341,9 +341,9 @@ def _set_span_attributes(
         except Exception as e:
             logger.debug(f"Failed to capture input: {e}")
 
-    # Set metadata
+    # Set metadata, keeping any global attributes the processor stamped at start
     if metadata:
-        set_span_attribute(span, SpanAttributes.SPAN_METADATA, metadata)
+        set_span_attribute(span, SpanAttributes.SPAN_METADATA, merge_span_metadata(span, metadata))
 
     # Set tags
     if tags:

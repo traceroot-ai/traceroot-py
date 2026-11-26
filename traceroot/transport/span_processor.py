@@ -4,6 +4,7 @@ This module defines the TracerootSpanProcessor class, which extends
 OpenTelemetry's BatchSpanProcessor with traceroot-specific configuration.
 """
 
+import json
 import logging
 import os
 import threading
@@ -221,6 +222,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         git_repo: str | None = None,
         git_ref: str | None = None,
         redact: Redact | None = None,
+        global_attributes: dict[str, str | int | float | bool] | None = None,
     ):
         """Initialize the span processor.
 
@@ -246,6 +248,8 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 are redacted too; datasets and scorer definitions are not. A
                 raising function fails closed: every value except numbers and
                 booleans is withheld, and recorded metadata is dropped.
+            global_attributes: Attributes stamped as span metadata on every
+                recording span at start. Per-call metadata is merged on top.
         """
         # Resolve flush_at with env var fallback
         if flush_at is None:
@@ -291,6 +295,7 @@ class TracerootSpanProcessor(BatchSpanProcessor):
         self._git_repo = git_repo
         self._git_ref = git_ref
         self._redact = redact
+        self._global_attributes = dict(global_attributes) if global_attributes else None
         self._paths_lock = threading.RLock()
         # Bounded OrderedDict: evicts oldest entry when capacity is exceeded,
         # eliminating the on_end race where a parent was removed before a
@@ -319,6 +324,12 @@ class TracerootSpanProcessor(BatchSpanProcessor):
                 span.set_attribute("traceroot.git.repo", self._git_repo)
             if self._git_ref:
                 span.set_attribute("traceroot.git.ref", self._git_ref)
+            if self._global_attributes:
+                # Span-level metadata, so the backend's existing `metadata` filter can
+                # find it on every span without a schema change.
+                span.set_attribute(
+                    SpanAttributes.SPAN_METADATA, json.dumps(self._global_attributes)
+                )
 
             try:
                 # span.parent is the SpanContext of the parent (set by the SDK at

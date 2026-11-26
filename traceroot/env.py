@@ -120,6 +120,21 @@ Useful for tracking traces across deployments.
 **Example:** ``v1.2.3`` or ``abc123def``
 """
 
+TRACEROOT_GLOBAL_ATTRIBUTES = "TRACEROOT_GLOBAL_ATTRIBUTES"
+"""
+.. envvar:: TRACEROOT_GLOBAL_ATTRIBUTES
+
+JSON object of attributes stamped on every span (root and children) as span
+metadata, so a tool that controls a child process's environment can tag the
+spans it produces and query them back by metadata.
+
+Keys are used verbatim. Reserve the ``traceroot.`` prefix for SDK- and
+tool-set values so they cannot be confused with an application's own
+metadata.
+
+**Example:** ``{"traceroot.run_id": "run-123"}``
+"""
+
 TRACEROOT_SERVICE_NAME = "TRACEROOT_SERVICE_NAME"
 """
 .. envvar:: TRACEROOT_SERVICE_NAME

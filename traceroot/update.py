@@ -10,7 +10,7 @@ from typing import Any
 from opentelemetry import trace
 
 from traceroot.span_attributes import SpanAttributes
-from traceroot.utils import set_span_attribute
+from traceroot.utils import merge_span_metadata, set_span_attribute
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ def update_current_span(
     # Core span attributes
     set_span_attribute(span, SpanAttributes.SPAN_INPUT, input)
     set_span_attribute(span, SpanAttributes.SPAN_OUTPUT, output)
-    set_span_attribute(span, SpanAttributes.SPAN_METADATA, metadata)
+    set_span_attribute(span, SpanAttributes.SPAN_METADATA, merge_span_metadata(span, metadata))
 
     # LLM-specific attributes
     set_span_attribute(span, SpanAttributes.LLM_MODEL, model)
