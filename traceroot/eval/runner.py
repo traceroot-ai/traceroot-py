@@ -26,11 +26,13 @@ The event stream is the authoritative interface.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import importlib.util
 import json
 import os
 import random
+import signal
 import sys
 import threading
 import time
@@ -62,7 +64,8 @@ _DEFAULT_RUN_DIR = ".traceroot/eval/runs"
 
 
 class _CancelledError(Exception):
-    """Internal: an evaluation was interrupted (SIGINT) and finalized as incomplete."""
+    """Internal: an evaluation was interrupted (SIGINT, SIGTERM or SIGHUP) and finalized as
+    incomplete."""
 
 
 # =============================================================================
@@ -772,6 +775,49 @@ def _fmt(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+# Signals that stop a run as Ctrl+C does. traceroot-cli forwards both to the runner along with
+# SIGINT: SIGTERM comes from `kill`, a cancelled CI job or a stopped container, SIGHUP from a
+# closed terminal. Windows has no SIGHUP.
+_STOP_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGTERM", "SIGHUP") if hasattr(signal, name)
+)
+
+
+def _as_ctrl_c(signum: int, frame: Any) -> None:
+    """Handle a stop signal exactly as SIGINT is handled at this moment. During a run that is
+    ``asyncio.run``'s handler, which cancels the run on the first signal and raises
+    KeyboardInterrupt on the next, so a SIGTERM after a Ctrl+C is a second Ctrl+C. Otherwise it
+    raises KeyboardInterrupt."""
+    handler = signal.getsignal(signal.SIGINT)
+    if not callable(handler):
+        handler = signal.default_int_handler
+    handler(signal.SIGINT, frame)
+
+
+@contextlib.contextmanager
+def _stop_signals_as_ctrl_c():
+    """Make SIGTERM and SIGHUP stop the runner as Ctrl+C does, for the duration.
+
+    Only where Ctrl+C is handled in Python: on the main thread, the only one that may set
+    handlers, and while SIGINT is neither ignored nor left to the system. A stop signal that is
+    already ignored or handled keeps its handling.
+    """
+    if threading.current_thread() is not threading.main_thread() or not callable(
+        signal.getsignal(signal.SIGINT)
+    ):
+        yield
+        return
+    installed = [s for s in _STOP_SIGNALS if signal.getsignal(s) is signal.SIG_DFL]
+    for signum in installed:
+        signal.signal(signum, _as_ctrl_c)
+    try:
+        yield
+    finally:
+        for signum in installed:
+            if signal.getsignal(signum) is _as_ctrl_c:  # not one the evaluation set since
+                signal.signal(signum, signal.SIG_DFL)
+
+
 def _flush_spans() -> None:
     """Drain the span exporter before the process goes away. A no-op in local-only mode (no
     client, export disabled); best-effort otherwise - a flush that fails is a lost trace, not
@@ -790,35 +836,37 @@ def main(argv: list[str] | None = None) -> int:
     - Unrecoverable harness failure: emit a structured ``fatal`` event and STILL exit 0.
       The presence of the ``fatal`` event -- not a nonzero code -- is what marks a run a
       harness failure, so the caller reads the stream as authoritative.
-    - Cancellation (SIGINT): finalize a partial ``incomplete`` artifact and exit 130
-      (the one code that corroborates the ``fatal``/cancelled signal).
+    - Cancellation (SIGINT, or SIGTERM / SIGHUP, which are handled the same way): finalize a
+      partial ``incomplete`` artifact and exit 130 (the one code that corroborates the
+      ``fatal``/cancelled signal).
 
     Every return path flushes first: each result carries a ``trace_id``, so a span left
     unbatched at exit is a run whose trace drill-down is permanently empty.
     """
     paths = list(argv if argv is not None else sys.argv[1:])
     emitter = Emitter(_open_channel())
-    try:
-        # Parse options INSIDE the error boundary so malformed TRACEROOT_EVAL_OPTIONS produces a
-        # structured `fatal` event (and the exit-0 contract) instead of an uncaught traceback.
-        options = _load_options()
-        cancelled = run_suite(paths, options, emitter)
-        if cancelled:
-            return 130  # SIGINT: run was finalized as incomplete; the caller maps 130
-    except KeyboardInterrupt:  # safety net if SIGINT lands outside an in-flight case
-        emitter.emit({"type": "fatal", "kind": "cancelled", "message": "interrupted"})
-        return 130
-    except Exception as exc:  # last-resort harness failure
-        emitter.emit(
-            {
-                "type": "fatal",
-                "kind": "harness_error",
-                "message": _fmt(exc),
-                "traceback": traceback.format_exc(),
-            }
-        )
-    finally:
-        _flush_spans()
+    with _stop_signals_as_ctrl_c():
+        try:
+            # Parse options INSIDE the error boundary so malformed TRACEROOT_EVAL_OPTIONS produces
+            # a structured `fatal` event (and the exit-0 contract) instead of an uncaught traceback.
+            options = _load_options()
+            cancelled = run_suite(paths, options, emitter)
+            if cancelled:
+                return 130  # SIGINT: run was finalized as incomplete; the caller maps 130
+        except KeyboardInterrupt:  # safety net if SIGINT lands outside an in-flight case
+            emitter.emit({"type": "fatal", "kind": "cancelled", "message": "interrupted"})
+            return 130
+        except Exception as exc:  # last-resort harness failure
+            emitter.emit(
+                {
+                    "type": "fatal",
+                    "kind": "harness_error",
+                    "message": _fmt(exc),
+                    "traceback": traceback.format_exc(),
+                }
+            )
+        finally:
+            _flush_spans()
     return 0
 
 

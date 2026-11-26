@@ -10,7 +10,8 @@ behind, and the run is saved with ``close_confirmed`` false. Either way the run 
 within traceroot-cli's 10 s grace.
 
 These tests interrupt a run with SIGINT, as the terminal does, while a fake TraceRoot holds the
-reply to one saved result or to closing the run.
+reply to one saved result or to closing the run. SIGTERM and SIGHUP, which traceroot-cli forwards
+too, stop a run the same way.
 """
 
 import asyncio
@@ -30,7 +31,13 @@ import pytest
 import traceroot
 from traceroot.eval import Dataset, Evaluation, engine
 from traceroot.eval.engine import _CANCEL_SAVE_S
-from traceroot.eval.runner import Emitter, _CancelledError, _partial_result, _run_one
+from traceroot.eval.runner import (
+    Emitter,
+    _CancelledError,
+    _partial_result,
+    _run_one,
+    _stop_signals_as_ctrl_c,
+)
 from traceroot.eval.transport import FakeTransport
 
 # traceroot-cli sends SIGTERM to the runner this long after Ctrl+C, and SIGKILL 2 s later.
@@ -450,6 +457,76 @@ class TestRunSavedBeforeItWasFinalized:
         assert _partial_result(evaluation, [], None).upload_state.close_confirmed is True
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="SIGHUP and raise_signal semantics are POSIX")
+class TestStopSignals:
+    """SIGTERM and SIGHUP are handled exactly as SIGINT is at that moment."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_handlers(self):
+        saved = {s: signal.getsignal(s) for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)}
+        yield
+        for signum, handler in saved.items():
+            signal.signal(signum, handler)
+
+    def test_they_reach_the_sigint_handler_and_are_restored_after(self):
+        seen = []
+        signal.signal(signal.SIGINT, lambda signum, frame: seen.append(signum))
+        with _stop_signals_as_ctrl_c():
+            signal.raise_signal(signal.SIGTERM)
+            signal.raise_signal(signal.SIGHUP)
+        assert seen == [signal.SIGINT, signal.SIGINT]
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_DFL
+
+    def test_the_first_cancels_a_run_and_the_next_is_a_second_ctrl_c(self):
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+        second: list[type] = []
+
+        async def run():
+            signal.raise_signal(signal.SIGTERM)
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                try:
+                    signal.raise_signal(signal.SIGHUP)
+                except KeyboardInterrupt as exc:
+                    second.append(type(exc))
+                raise
+
+        with _stop_signals_as_ctrl_c(), pytest.raises(KeyboardInterrupt):
+            asyncio.run(run())
+        assert second == [KeyboardInterrupt]
+
+    def test_outside_a_run_they_raise_keyboard_interrupt(self):
+        with _stop_signals_as_ctrl_c(), pytest.raises(KeyboardInterrupt):
+            signal.raise_signal(signal.SIGTERM)
+
+    def test_nothing_is_installed_when_sigint_is_ignored(self):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        with _stop_signals_as_ctrl_c():
+            assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+            assert signal.getsignal(signal.SIGHUP) is signal.SIG_DFL
+
+    def test_an_ignored_signal_stays_ignored(self):
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        with _stop_signals_as_ctrl_c():
+            assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+            assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
+        assert signal.getsignal(signal.SIGHUP) is signal.SIG_IGN
+
+    def test_nothing_is_installed_off_the_main_thread(self):
+        seen = []
+
+        def enter() -> None:
+            with _stop_signals_as_ctrl_c():
+                seen.append(signal.getsignal(signal.SIGTERM))
+
+        thread = threading.Thread(target=enter)
+        thread.start()
+        thread.join()
+        assert seen == [signal.SIG_DFL]
+
+
 # ---------------------------------------------------------------------------
 # The runner as traceroot-cli drives it: a process group of its own, SIGINT to the group, and the
 # group killed if it is still alive when the CLI's grace runs out.
@@ -689,18 +766,26 @@ def _written_at(events: list[dict]) -> float:
     return max(Path(done["artifact"][k]).stat().st_mtime for k in ("run", "cases"))
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups and SIGINT are POSIX")
-@pytest.mark.parametrize("hold_s", [8.0, _HOLD_S], ids=["held-8s", "held-to-timeout"])
-def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path, hold_s):
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups and these signals are POSIX")
+@pytest.mark.parametrize(
+    ("signame", "hold_s"),
+    [("SIGINT", 8.0), ("SIGINT", _HOLD_S), ("SIGTERM", 8.0), ("SIGHUP", 8.0)],
+    ids=["held-8s", "held-to-timeout", "sigterm-held-8s", "sighup-held-8s"],
+)
+def test_a_stopped_run_keeps_a_result_traceroot_saved_but_had_not_acknowledged(
+    tmp_path, signame, hold_s
+):
+    # SIGTERM and SIGHUP stop a run exactly as Ctrl+C does.
     with _FakeTraceRoot(held="slow", hold_s=hold_s) as host:
         status, events, log, _, _ = _stopped_runner(
             tmp_path,
             host,
             _EVAL_SRC,
             lambda events: host.held_saved.is_set() and len(_completed(events)) == 3,
+            signum=getattr(signal, signame),
         )
 
-    assert status is not None, f"the runner was still running {_CLI_GRACE_S}s after SIGINT\n{log}"
+    assert status is not None, f"still running {_CLI_GRACE_S}s after {signame}\n{log}"
     assert status == 130, log
 
     assert events[-1] == {"type": "suite_completed", "evaluations": 1, "cancelled": True}
@@ -711,6 +796,7 @@ def test_ctrl_c_keeps_a_result_traceroot_saved_but_had_not_acknowledged(tmp_path
 
     run_doc, case_ids = _saved(events)
     assert run_doc["status"] == "incomplete"
+    assert run_doc["is_final"] is False
     assert sorted(c["case_id"] for c in run_doc["cases"]) == ["a", "b", "c", "slow"]
     assert case_ids == ["a", "b", "c", "slow"]
     assert run_doc["upload"]["unconfirmed_result_count"] == 1
