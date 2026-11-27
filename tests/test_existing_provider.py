@@ -167,3 +167,44 @@ def test_creates_and_sets_own_provider_without_a_global_sdk_provider(existing, w
     assert ("cannot be shared" in caplog.text) == bool(warning)
     assert (warning or "") in caplog.text
     reset_traceroot()
+
+
+def _init_own_provider():
+    reset_traceroot()
+    with (
+        patch("opentelemetry.trace.get_tracer_provider", return_value=trace.ProxyTracerProvider()),
+        patch("opentelemetry.trace.set_tracer_provider"),
+    ):
+        return _init()
+
+
+def _llm_span_with_long_history(client, n_messages):
+    """OpenAI Agents' on_span_end shape: output.value first, then one attribute per message field."""
+    with client._provider.get_tracer("t").start_as_current_span("response") as span:
+        span.set_attribute("output.value", "final answer")
+        for i in range(n_messages):
+            span.set_attribute(f"llm.input_messages.{i}.message.role", "user")
+            span.set_attribute(f"llm.input_messages.{i}.message.content", "hi")
+    client.flush()
+
+
+def test_own_provider_keeps_output_on_attribute_heavy_llm_span(traceroot_exported, monkeypatch):
+    monkeypatch.delenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", raising=False)
+    monkeypatch.delenv("OTEL_ATTRIBUTE_COUNT_LIMIT", raising=False)
+    client = _init_own_provider()
+    _llm_span_with_long_history(client, 100)  # OTel's default limit of 128 would evict output.value
+
+    span = traceroot_exported[0]
+    assert span.attributes["output.value"] == "final answer"
+    assert span.dropped_attributes == 0
+    reset_traceroot()
+
+
+def test_own_provider_honours_otel_attribute_count_limit_env(traceroot_exported, monkeypatch):
+    monkeypatch.delenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", raising=False)  # would take precedence
+    monkeypatch.setenv("OTEL_ATTRIBUTE_COUNT_LIMIT", "50")
+    client = _init_own_provider()
+    _llm_span_with_long_history(client, 100)
+
+    assert traceroot_exported[0].dropped_attributes > 0
+    reset_traceroot()
