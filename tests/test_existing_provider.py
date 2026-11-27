@@ -188,7 +188,9 @@ def _llm_span_with_long_history(client, n_messages):
     client.flush()
 
 
-def test_own_provider_keeps_output_on_attribute_heavy_llm_span(traceroot_exported):
+def test_own_provider_keeps_output_on_attribute_heavy_llm_span(traceroot_exported, monkeypatch):
+    monkeypatch.delenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", raising=False)
+    monkeypatch.delenv("OTEL_ATTRIBUTE_COUNT_LIMIT", raising=False)
     client = _init_own_provider()
     _llm_span_with_long_history(client, 100)  # OTel's default limit of 128 would evict output.value
 
@@ -199,6 +201,7 @@ def test_own_provider_keeps_output_on_attribute_heavy_llm_span(traceroot_exporte
 
 
 def test_own_provider_honours_otel_attribute_count_limit_env(traceroot_exported, monkeypatch):
+    monkeypatch.delenv("OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT", raising=False)  # would take precedence
     monkeypatch.setenv("OTEL_ATTRIBUTE_COUNT_LIMIT", "50")
     client = _init_own_provider()
     _llm_span_with_long_history(client, 100)
