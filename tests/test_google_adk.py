@@ -1,4 +1,4 @@
-"""Tests for the Google ADK integration's ADK 2.x workflow/node spans.
+"""Tests for the Google ADK integration on the ADK 2.x Workflow runtime.
 
 End-to-end tests run a real ADK Workflow with a fake LLM in a fresh subprocess each, because the
 behavior depends on whether ``node_tracing`` is first imported before or after instrumentation.
@@ -11,10 +11,8 @@ import subprocess
 import sys
 
 import pytest
-from opentelemetry.sdk.trace import TracerProvider
 
 from traceroot.constants import SDK_NAME
-from traceroot.instrumentation.google_adk import GoogleADKInstrumentor, _NodeSpanTracer
 
 requires_adk = pytest.mark.skipif(
     importlib.util.find_spec("google.adk") is None
@@ -100,6 +98,8 @@ print(json.dumps([
         "trace_id": s.context.trace_id,
         "session_id": s.attributes.get("session.id"),
         "traceroot_sdk": s.attributes.get("traceroot.sdk.name"),
+        "input": s.attributes.get("input.value"),
+        "output": s.attributes.get("output.value"),
     }
     for s in EXPORTED
 ]))
@@ -211,7 +211,7 @@ def test_workflow_and_node_spans_are_chain_spans_nested_once(order):
     ):
         assert parents[child] == "invoke_workflow probe_wf", child
     assert parents["invoke_node b"] == "invoke_workflow inner_wf"
-    assert parents["execute_tool lookup"] == "call_llm"
+    assert parents["execute_tool lookup"] == "agent_run [helper]"
     assert parents["observed_lookup"] == "execute_tool lookup"
 
     assert len({s["trace_id"] for s in spans}) == 1
@@ -219,45 +219,36 @@ def test_workflow_and_node_spans_are_chain_spans_nested_once(order):
     assert {s["traceroot_sdk"] for s in spans} == {SDK_NAME}
 
 
-_UNINSTRUMENT = """
-from google.adk.telemetry import node_tracing, tracing
-from traceroot.instrumentation.google_adk import GoogleADKInstrumentor
-
-GoogleADKInstrumentor().uninstrument()
-assert node_tracing.tracer is tracing.tracer
-"""
+# The documented setup: a plain Agent at the root, no Workflow.
+_AGENT_ROOT = (
+    _PRELUDE + _INIT + _WORKFLOW.replace("InMemoryRunner(node=root,", "InMemoryRunner(agent=agent,")
+)
 
 
 @requires_adk
-def test_uninstrument_hands_node_spans_back_to_adk():
-    # Initialize first, so the binding we replaced was OpenInference's (now retired) proxy.
-    spans = _run_script(_PRELUDE + _INIT + _UNINSTRUMENT + _WORKFLOW)
-    node_spans = [s for s in spans if s["name"].startswith(("invoke_workflow", "invoke_node"))]
+def test_agent_llm_and_tool_spans_carry_input_and_output():
+    spans = _run_script(_AGENT_ROOT)
+    parents = {s["name"]: s["parent"] for s in spans}
+    llm_calls = [s for s in spans if s["name"] == "call_llm"]
+    (tool,) = [s for s in spans if s["name"] == "execute_tool lookup"]
 
-    assert {s["name"] for s in node_spans} >= {"invoke_workflow probe_wf", "invoke_node a"}
-    assert {s["kind"] for s in node_spans} == {None}
+    # No workflow span: ADK opens one around a bare Agent, and OpenInference suppresses it.
+    assert sorted(parents) == sorted(
+        [
+            "invocation [probe]",
+            "agent_run [helper]",
+            "call_llm",
+            "execute_tool lookup",
+            "observed_lookup",
+        ]
+    )
+    assert parents["agent_run [helper]"] == "invocation [probe]"
 
+    assert [s["kind"] for s in llm_calls] == ["LLM", "LLM"]
+    assert all("help" in s["input"] for s in llm_calls)
+    assert "lookup" in llm_calls[0]["output"]
+    assert "final answer" in llm_calls[1]["output"]
 
-@requires_adk
-def test_repeat_instrument_and_uninstrument_do_not_stack_wrappers():
-    from google.adk.telemetry import node_tracing, tracing
-
-    provider = TracerProvider()
-    try:
-        GoogleADKInstrumentor().instrument(tracer_provider=provider)
-        ours = node_tracing.tracer
-        assert isinstance(ours, _NodeSpanTracer)
-        GoogleADKInstrumentor().instrument(tracer_provider=provider)
-        assert node_tracing.tracer is ours
-    finally:
-        GoogleADKInstrumentor().uninstrument()
-    assert node_tracing.tracer is tracing.tracer
-
-
-def test_no_op_without_adk_node_tracing(monkeypatch):
-    """google-adk 1.x has no workflow runtime (no telemetry.node_tracing): nothing to patch."""
-    import openinference.instrumentation.google_adk as oi_adk
-
-    monkeypatch.setattr(oi_adk.GoogleADKInstrumentor, "instrument", lambda *a, **k: None)
-    monkeypatch.setitem(sys.modules, "google.adk.telemetry", None)
-    GoogleADKInstrumentor().instrument(tracer_provider=TracerProvider())
+    assert tool["kind"] == "TOOL"
+    assert json.loads(tool["input"]) == {"q": "x"}
+    assert "found x" in tool["output"]
