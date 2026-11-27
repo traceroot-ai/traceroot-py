@@ -16,7 +16,11 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 import traceroot
 from tests.utils import reset_traceroot
 from traceroot import observe
-from traceroot.transport.span_processor import LocalEvalSampler, mark_local_eval_run
+from traceroot.transport.span_processor import (
+    LocalEvalSampler,
+    mark_local_eval_run,
+    mark_recorded_by,
+)
 
 
 @pytest.fixture
@@ -103,6 +107,61 @@ def test_local_run_spans_skip_traceroot_but_reach_host_for_early_and_late_tracer
     host_spans = [s.name for s in memory_exporter.get_finished_spans()]
     assert host_spans == ["early-local", "late-local", "control"]
     assert [s.name for s in traceroot_exported] == ["control"]
+
+
+def test_native_spans_of_a_recorded_call_skip_traceroot_but_reach_host(
+    memory_exporter, traceroot_exported
+):
+    host_provider = trace.get_tracer_provider()
+    _init()
+    app = host_provider.get_tracer("app")
+    native = host_provider.get_tracer("com.anthropic.sdk.python")
+    bedrock = host_provider.get_tracer("com.anthropic.sdk.python.bedrock")
+    lookalike = host_provider.get_tracer("com.anthropic.sdk.pythonic")
+
+    with app.start_as_current_span("llm") as llm, mark_recorded_by(llm):
+        with native.start_as_current_span("native"):
+            pass
+        with bedrock.start_as_current_span("native-bedrock"):
+            pass
+        with lookalike.start_as_current_span("lookalike"):
+            pass
+        with app.start_as_current_span("app-child"):
+            pass
+    with native.start_as_current_span("native-unmarked"):
+        pass
+    traceroot.flush()
+
+    host_spans = [s.name for s in memory_exporter.get_finished_spans()]
+    assert host_spans == [
+        "native",
+        "native-bedrock",
+        "lookalike",
+        "app-child",
+        "llm",
+        "native-unmarked",
+    ]
+    assert [s.name for s in traceroot_exported] == [
+        "lookalike",
+        "app-child",
+        "llm",
+        "native-unmarked",
+    ]
+
+
+@pytest.mark.parametrize("span", [None, trace.INVALID_SPAN], ids=["none", "not-recording"])
+def test_native_span_kept_when_the_marking_span_is_not_recorded(
+    memory_exporter, traceroot_exported, span
+):
+    host_provider = trace.get_tracer_provider()
+    _init()
+    native = host_provider.get_tracer("com.anthropic.sdk.python")
+
+    with mark_recorded_by(span), native.start_as_current_span("native"):
+        pass
+    traceroot.flush()
+
+    assert [s.name for s in traceroot_exported] == ["native"]
 
 
 def test_joined_provider_sampler_is_left_alone(memory_exporter, traceroot_exported):
