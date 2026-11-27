@@ -74,7 +74,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://traceroot.ai/"
-Documentation = "https://docs.traceroot.ai"
+Documentation = "https://traceroot.ai/docs"
 Repository = "https://github.com/traceroot-ai/traceroot-py"
 "Bug Reports" = "https://github.com/traceroot-ai/traceroot-py/issues"
 
