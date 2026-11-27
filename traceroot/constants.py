@@ -30,6 +30,11 @@ DEFAULT_HOST_URL = "https://app.traceroot.ai"
 DEFAULT_FLUSH_AT = 100
 """Default maximum batch size before triggering a flush."""
 
+DEFAULT_SPAN_ATTRIBUTE_COUNT_LIMIT = 1024
+"""Attributes kept per span. OpenInference flattens each chat message into several attributes,
+so OTel's default of 128 evicts the oldest (output.value, model, token counts) on long runs.
+DEFAULT_FLUSH_AT x 1024 stays under the ingest worker's INGEST_MAX_OBJECTS (500,000)."""
+
 DEFAULT_FLUSH_INTERVAL = 5.0
 """Default interval in seconds between automatic flushes."""
 

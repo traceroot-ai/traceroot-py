@@ -5,12 +5,17 @@ import logging
 import os
 
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.environment_variables import (
+    OTEL_ATTRIBUTE_COUNT_LIMIT,
+    OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT,
+)
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 
 from traceroot.constants import (
     DEFAULT_FLUSH_AT,
     DEFAULT_FLUSH_INTERVAL,
     DEFAULT_HOST_URL,
+    DEFAULT_SPAN_ATTRIBUTE_COUNT_LIMIT,
     DEFAULT_TIMEOUT,
 )
 from traceroot.env import (
@@ -194,7 +199,13 @@ class TracerootClient:
                 "traceroot span processor to it instead of creating a new one."
             )
         else:
-            self._provider = TracerProvider()
+            # None lets SpanLimits read OTEL_[SPAN_]ATTRIBUTE_COUNT_LIMIT when the user set one.
+            env_limit = (
+                OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT in os.environ
+                or OTEL_ATTRIBUTE_COUNT_LIMIT in os.environ
+            )
+            limit = None if env_limit else DEFAULT_SPAN_ATTRIBUTE_COUNT_LIMIT
+            self._provider = TracerProvider(span_limits=SpanLimits(max_span_attributes=limit))
             if not isinstance(existing, trace.ProxyTracerProvider):
                 logger.warning(
                     "traceroot: the global TracerProvider (%s) is not an OpenTelemetry SDK "
