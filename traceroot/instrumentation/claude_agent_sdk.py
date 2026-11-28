@@ -541,7 +541,16 @@ def wrap_query(original: Any, tracer_provider: Any = None) -> Any:
                             "traceroot: failed to process claude_agent_sdk message",
                             exc_info=True,
                         )
-                    yield message
+                    # Hold query_ctx only while the SDK runs, not while the caller has the
+                    # message (as the TS SDK does). A caller that stops reading early never
+                    # resumes this generator; the event loop closes it later in another
+                    # task, so a context still attached here would stay current in the
+                    # caller and parent its later spans under this finished query.
+                    otel_context.detach(token)
+                    try:
+                        yield message
+                    finally:
+                        token = otel_context.attach(query_ctx)
             finally:
                 otel_context.detach(token)
         except Exception as exc:
@@ -661,7 +670,12 @@ def wrap_client(client_cls: Any, tracer_provider: Any = None) -> tuple[Any, Any,
                         "traceroot: failed to process claude_agent_sdk message",
                         exc_info=True,
                     )
-                yield message
+                # Same as wrap_query: hold the turn's context only while the SDK runs.
+                otel_context.detach(token)
+                try:
+                    yield message
+                finally:
+                    token = otel_context.attach(state.query_ctx)
         except asyncio.CancelledError:
             # The claude_agent_sdk subprocess transport (anyio) can raise
             # CancelledError during normal cleanup — e.g. when subagents
@@ -674,7 +688,10 @@ def wrap_client(client_cls: Any, tracer_provider: Any = None) -> tuple[Any, Any,
             raise
         finally:
             otel_context.detach(token)
-            _safe_end_client_turn(self, error)
+            # An abandoned stream is closed late, possibly after the next query() has
+            # started a new turn on this client. End only the turn this stream served.
+            if _CLIENT_STATES.get(self) is state:
+                _safe_end_client_turn(self, error)
 
     async def wrapped_disconnect(self: Any) -> None:
         # Covers explicit disconnect() and `async with` exit (__aexit__ calls
