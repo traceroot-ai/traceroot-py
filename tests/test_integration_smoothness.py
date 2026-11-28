@@ -274,6 +274,156 @@ def test_generator_span_closes_on_early_exit(spans):
     assert len(finished) == 1
 
 
+def _assert_children_nest_under(finished, parent_name: str, child_name: str, count: int) -> None:
+    parent = next(s for s in finished if s.name == parent_name)
+    children = [s for s in finished if s.name == child_name]
+    assert len(children) == count
+    for child in children:
+        assert child.parent is not None
+        assert child.parent.span_id == parent.context.span_id
+        assert child.context.trace_id == parent.context.trace_id
+
+
+def test_sync_generator_span_is_parent_of_nested_spans(spans):
+    """Spans started inside a generator body must nest under the generator's span."""
+
+    @observe(name="child-step")
+    def step(i):
+        return i
+
+    @observe(name="parent-stream")
+    def stream():
+        for i in range(3):
+            yield step(i)
+
+    assert list(stream()) == [0, 1, 2]
+
+    _assert_children_nest_under(spans.get_finished_spans(), "parent-stream", "child-step", 3)
+
+
+@pytest.mark.asyncio
+async def test_async_generator_span_is_parent_of_nested_spans(spans):
+    """Spans started inside an async generator body must nest under its span."""
+
+    @observe(name="async-child-step")
+    async def step(i):
+        return i
+
+    @observe(name="async-parent-stream")
+    async def stream():
+        for i in range(3):
+            yield await step(i)
+
+    assert [item async for item in stream()] == [0, 1, 2]
+
+    _assert_children_nest_under(
+        spans.get_finished_spans(), "async-parent-stream", "async-child-step", 3
+    )
+
+
+def test_update_current_span_inside_generator_targets_generator_span(spans):
+    """update_current_span() inside a generator body must update the generator's span."""
+    import json
+
+    @observe(name="meta-stream")
+    def stream():
+        traceroot.update_current_span(metadata={"chunk": "first"})
+        yield "a"
+
+    assert list(stream()) == ["a"]
+
+    span = next(s for s in spans.get_finished_spans() if s.name == "meta-stream")
+    metadata = json.loads(span.attributes.get(SpanAttributes.SPAN_METADATA))
+    assert metadata["chunk"] == "first"
+
+
+def test_generator_span_is_not_current_between_yields(spans):
+    """The caller's code between yields must not run under the generator's span."""
+    from opentelemetry import trace
+
+    @observe(name="caller-side-stream")
+    def stream():
+        yield 1
+        yield 2
+
+    gen = stream()
+    next(gen)
+    assert not trace.get_current_span().get_span_context().is_valid
+    assert list(gen) == [2]
+
+
+def test_generator_steps_keep_the_resuming_callers_context(spans):
+    """Each step must run in the context of the caller that resumed it."""
+    from opentelemetry import context as otel_context
+
+    key = otel_context.create_key("caller-value")
+    seen = []
+
+    @observe(name="caller-context-stream")
+    def stream():
+        seen.append(otel_context.get_value(key))
+        yield 1
+        seen.append(otel_context.get_value(key))
+        yield 2
+
+    gen = stream()
+    for value in ("first", "second"):
+        token = otel_context.attach(otel_context.set_value(key, value))
+        try:
+            next(gen)
+        finally:
+            otel_context.detach(token)
+
+    assert seen == ["first", "second"]
+
+
+def test_closed_generator_cleanup_runs_under_generator_span(spans):
+    """Closing a generator early must run its cleanup under its span."""
+
+    @observe(name="cleanup-step")
+    def cleanup():
+        return None
+
+    @observe(name="closed-stream")
+    def stream():
+        try:
+            yield 1
+            yield 2
+        finally:
+            cleanup()
+
+    gen = stream()
+    next(gen)
+    gen.close()
+
+    _assert_children_nest_under(spans.get_finished_spans(), "closed-stream", "cleanup-step", 1)
+
+
+@pytest.mark.asyncio
+async def test_closed_async_generator_cleanup_runs_under_generator_span(spans):
+    """Closing an async generator early must run its cleanup under its span."""
+
+    @observe(name="async-cleanup-step")
+    async def cleanup():
+        return None
+
+    @observe(name="closed-async-stream")
+    async def stream():
+        try:
+            yield 1
+            yield 2
+        finally:
+            await cleanup()
+
+    gen = stream()
+    await gen.__anext__()
+    await gen.aclose()
+
+    _assert_children_nest_under(
+        spans.get_finished_spans(), "closed-async-stream", "async-cleanup-step", 1
+    )
+
+
 # =============================================================================
 # Thread-safe init: concurrent initialize() must produce exactly one client
 # =============================================================================
