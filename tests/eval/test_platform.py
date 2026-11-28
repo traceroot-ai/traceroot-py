@@ -11,7 +11,7 @@ import pytest
 import traceroot
 from traceroot import Dataset, EvalCase, Score, evaluate
 from traceroot.eval.platform import PlatformTransport, pull_dataset, pull_dataset_version
-from traceroot.eval.results import UploadState
+from traceroot.eval.results import EvalRunResult, UploadState
 from traceroot.eval.transport import RunHandle
 
 
@@ -51,14 +51,17 @@ def acc(ctx):
 class _RunPathTransport(PlatformTransport):
     """Stubs the HTTP seam; create_run optionally returns a run_url and/or run_path."""
 
-    def __init__(self, *args, run_path=None, run_url=None, **kwargs):
+    def __init__(self, *args, run_path=None, run_url=None, run_number=1, **kwargs):
         super().__init__(*args, **kwargs)
         self._resp_run_path = run_path
         self._resp_run_url = run_url
+        self._resp_run_number = run_number
 
     def _request(self, method, path, body=None):
         if path == "/api/v1/public/evaluation-runs":
-            resp = {"evaluation_id": "ev_1", "evaluation_run_id": "run_1", "run_number": 1}
+            resp = {"evaluation_id": "ev_1", "evaluation_run_id": "run_1"}
+            if self._resp_run_number is not None:
+                resp["run_number"] = self._resp_run_number
             if self._resp_run_path is not None:
                 resp["run_path"] = self._resp_run_path
             if self._resp_run_url is not None:
@@ -115,6 +118,38 @@ class TestRunUrl:
         state = t.finish_run(RunHandle(name="e", dataset_name="d", metadata=None))
         assert state.dashboard_url is None
         assert state.status == "uploaded"
+
+
+class TestRunNumber:
+    def test_registration_response_number_reaches_upload_state(self):
+        t = _RunPathTransport("ds_1", api_key="tr-x", host_url="https://h", run_number=12)
+        t.create_run("e", "d", None)
+        assert t.run_number == 12
+        state = t.finish_run(RunHandle(name="e", dataset_name="d", metadata=None))
+        assert state.run_number == 12
+
+    def test_absent_run_number_is_none(self):
+        # Older/self-hosted backends do not send one; the run must still complete.
+        t = _RunPathTransport("ds_1", api_key="tr-x", host_url="https://h", run_number=None)
+        t.create_run("e", "d", None)
+        assert t.run_number is None
+        state = t.finish_run(RunHandle(name="e", dataset_name="d", metadata=None))
+        assert state.run_number is None
+        assert state.status == "uploaded"
+
+    def test_registered_number_survives_save_and_load(self, tmp_path):
+        t = _RunPathTransport("ds_1", api_key="tr-x", host_url="https://h", run_number=12)
+        t.create_run("e", "d", None)
+        result = EvalRunResult(
+            name="e",
+            item_results=[],
+            score_summary={},
+            upload_state=t.finish_run(RunHandle(name="e", dataset_name="d", metadata=None)),
+        )
+        p = tmp_path / "run.json"
+        result.save(str(p))
+        loaded = EvalRunResult.load(str(p))
+        assert loaded.upload_state.run_number == 12
 
 
 def _redaction_item():

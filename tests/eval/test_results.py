@@ -29,6 +29,17 @@ class TestUploadState:
         u = UploadState()
         assert u.status == "uploaded"
         assert u.dashboard_url is None
+        assert u.run_number is None
+
+    def test_run_number_round_trips(self):
+        u = UploadState(run_number=7)
+        assert u.to_dict()["run_number"] == 7
+        assert UploadState(**u.to_dict()).run_number == 7
+
+    def test_upload_block_without_run_number_still_reads(self):
+        # A run file written before run numbers were saved must keep loading.
+        legacy = {"status": "uploaded", "dashboard_url": None, "failed_result_count": 0}
+        assert UploadState(**legacy).run_number is None
 
 
 class TestAggregateScores:
