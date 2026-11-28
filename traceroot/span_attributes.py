@@ -48,6 +48,7 @@ class SpanAttributes:
     # System Attributes
     # =========================================================================
     ENVIRONMENT = "traceroot.environment"
+    RELEASE = "traceroot.release"
 
     # =========================================================================
     # Offline-evaluation Attributes

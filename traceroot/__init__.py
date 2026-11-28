@@ -56,6 +56,8 @@ def initialize(
     integrations: list[Integration] | None = None,
     git_repo: str | None = None,
     git_ref: str | None = None,
+    environment: str | None = None,
+    release: str | None = None,
     redact: Redact | None = None,
 ) -> TracerootClient:
     """Initialize the global traceroot client.
@@ -75,6 +77,12 @@ def initialize(
             TRACEROOT_ENABLED env var, then True.
         integrations: Libraries to auto-instrument. Use Integration enum
             values (e.g. [Integration.OPENAI, Integration.LANGCHAIN]).
+        environment: Deployment environment name (e.g. "production",
+            "staging"). Stamped as ``traceroot.environment`` on every
+            recording span. Falls back to TRACEROOT_ENVIRONMENT env var.
+        release: Release version or commit hash of the application. Stamped
+            as ``traceroot.release`` on every recording span. Falls back to
+            TRACEROOT_RELEASE env var.
         redact: Rewrites each finished span's attributes before export, so
             personal data never reaches traceroot (other exporters still see
             the original span). Also runs on event attributes and the status
@@ -123,6 +131,8 @@ def initialize(
             integrations=integrations,
             git_repo=git_repo,
             git_ref=git_ref,
+            environment=environment,
+            release=release,
             redact=redact,
         )
     return _client
