@@ -1,6 +1,7 @@
 """traceroot client."""
 
 import atexit
+import json
 import logging
 import os
 
@@ -20,6 +21,7 @@ from traceroot.env import (
     TRACEROOT_FLUSH_INTERVAL,
     TRACEROOT_GIT_REF,
     TRACEROOT_GIT_REPO,
+    TRACEROOT_GLOBAL_ATTRIBUTES,
     TRACEROOT_HOST_URL,
     TRACEROOT_TIMEOUT,
 )
@@ -32,6 +34,41 @@ from traceroot.instrumentation.registry import Integration
 from traceroot.transport.span_processor import LocalEvalSampler, Redact, TracerootSpanProcessor
 
 logger = logging.getLogger(__name__)
+
+GlobalAttributeValue = str | int | float | bool
+
+
+def _clean_global_attributes(raw: object) -> dict[str, GlobalAttributeValue] | None:
+    """Keep only attributes OTel can carry on a span.
+
+    Mirrors the TypeScript SDK's ``globalAttributes`` value type. Invalid
+    entries are skipped with a warning instead of failing initialization:
+    a malformed correlation tag must not stop the application from starting.
+    """
+    if not isinstance(raw, dict):
+        logger.warning(
+            "traceroot: global attributes must be a dict of str/int/float/bool values; ignoring."
+        )
+        return None
+    cleaned: dict[str, GlobalAttributeValue] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, (str, int, float, bool)):
+            logger.warning("traceroot: ignoring global attribute %r; unsupported key or value", key)
+            continue
+        cleaned[key] = value
+    return cleaned or None
+
+
+def _parse_global_attributes_env(value: str | None) -> dict[str, GlobalAttributeValue] | None:
+    """Parse ``TRACEROOT_GLOBAL_ATTRIBUTES`` (a JSON object) at initialization."""
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        logger.warning("traceroot: ignoring %s; it is not valid JSON.", TRACEROOT_GLOBAL_ATTRIBUTES)
+        return None
+    return _clean_global_attributes(parsed)
 
 
 class TracerootClient:
@@ -54,6 +91,7 @@ class TracerootClient:
         git_repo: str | None = None,
         git_ref: str | None = None,
         redact: Redact | None = None,
+        global_attributes: dict[str, GlobalAttributeValue] | None = None,
     ):
         """Initialize the traceroot client.
 
@@ -92,6 +130,13 @@ class TracerootClient:
                 not. A raising function fails closed: every
                 value except numbers and booleans is
                 withheld, and recorded metadata is dropped.
+            global_attributes: Attributes stamped as span metadata on every
+                span (root and children), so a value that a tool controls
+                through the environment can be queried back by metadata.
+                Falls back to the TRACEROOT_GLOBAL_ATTRIBUTES env var (a JSON
+                object). Keys are used verbatim; reserve the ``traceroot.``
+                prefix for SDK- and tool-set values. Per-call metadata wins
+                on a key collision.
         """
         # Resolve config with env var fallbacks
         self.api_key = api_key or os.environ.get(TRACEROOT_API_KEY, "")
@@ -118,6 +163,13 @@ class TracerootClient:
 
         self._integrations = integrations
         self._redact = redact
+        # Explicit wins over the env var entirely; an explicit empty dict means "none".
+        if global_attributes is not None:
+            self.global_attributes = _clean_global_attributes(global_attributes)
+        else:
+            self.global_attributes = _parse_global_attributes_env(
+                os.environ.get(TRACEROOT_GLOBAL_ATTRIBUTES)
+            )
 
         # Resolve git context: explicit > env > CI vars > auto-detect.
         # `or None` so an empty env var ("") is treated as unset — otherwise it
@@ -180,6 +232,7 @@ class TracerootClient:
             git_repo=self.git_repo,
             git_ref=self.git_ref,
             redact=self._redact,
+            global_attributes=self.global_attributes,
         )
 
         # OTel's global provider is set-once. If the host (e.g. `adk web`) already installed an SDK

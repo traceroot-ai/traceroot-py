@@ -12,6 +12,8 @@ from uuid import UUID
 
 from opentelemetry import trace
 
+from traceroot.span_attributes import SpanAttributes
+
 try:
     from pydantic import BaseModel as PydanticBaseModel
 except ImportError:
@@ -240,6 +242,27 @@ def _serialize_dict_object(value: Any, _seen: set[int]) -> Any:
     result = {k: _serialize(v, _seen) for k, v in attrs.items()}
     _seen.discard(obj_id)
     return result
+
+
+def merge_span_metadata(span: trace.Span, metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Merge per-call metadata over metadata the processor already stamped.
+
+    Global attributes are written to ``traceroot.span.metadata`` at span start.
+    A later ``@observe(metadata=...)`` or ``update_current_span(metadata=...)``
+    must add to them, not replace them; the per-call value wins on a collision.
+    """
+    if metadata is None:
+        return None
+    existing = getattr(span, "attributes", None)
+    current = existing.get(SpanAttributes.SPAN_METADATA) if existing else None
+    if isinstance(current, str):
+        try:
+            current = json.loads(current)
+        except ValueError:
+            return metadata
+    if isinstance(current, dict):
+        return {**current, **metadata}
+    return metadata
 
 
 def set_span_attribute(span: trace.Span, key: str, value: Any) -> None:
