@@ -21,6 +21,10 @@ evaluated app called ``traceroot.initialize()``. (User task/scorer code may stil
 call LLM providers, tools, or other services; the runner neither intercepts nor
 restricts that.)
 
+Each case records the LLM usage of its task and of its scorers, read from the LLM spans the
+integrations the eval module asked for (``initialize(integrations=...)``) create in-process. In a
+local run those spans go to a provider with no exporter, so counting them sends nothing anywhere.
+
 The event stream is the authoritative interface.
 """
 
@@ -42,6 +46,7 @@ from typing import Any
 import traceroot
 import traceroot.eval as ev
 from traceroot.constants import SDK_VERSION
+from traceroot.eval import usage as eval_usage
 from traceroot.eval.evaluation import Evaluation
 from traceroot.eval.ids import new_run_id
 from traceroot.eval.platform import PlatformTransport
@@ -350,6 +355,7 @@ def _case_metadata(item: EvalItemResult, policy: ScorePolicy) -> dict[str, Any]:
         "scorer_errors": _scorer_error_events(item),
         "trace_id": item.trace_id,
         "duration_ms": item.duration_ms,
+        "usage": item.usage,
     }
 
 
@@ -468,6 +474,7 @@ def write_artifacts(
             "task_error": item.error,
             "trace_id": item.trace_id,
             "duration_ms": item.duration_ms,
+            "usage": item.usage,
         }
         case_lines.append(json.dumps(serialize_value(record), ensure_ascii=False))
     _atomic_write(cases_path, "\n".join(case_lines) + ("\n" if case_lines else ""))
@@ -496,6 +503,7 @@ def write_artifacts(
         "scorer_specs": result.scorer_specs,
         "counts": _counts(result),
         "scores": {k: v.to_dict() for k, v in result.score_summary.items()},
+        "usage": result.usage,
         "upload": result.upload_state.to_dict(),
         "artifact": artifact,
         "cases": [_case_metadata(it, policy) for it in result.item_results],
@@ -512,7 +520,13 @@ def run_suite(paths: list[str], options: dict[str, Any], emitter: Emitter) -> bo
     reporting = bool(options.get("reporting"))
     if not reporting:
         _enforce_local_only()
+    # Armed BEFORE the eval modules import, so the client their initialize() builds feeds the
+    # usage collector.
+    with eval_usage.armed():
+        return _run_suite(paths, options, emitter)
 
+
+def _run_suite(paths: list[str], options: dict[str, Any], emitter: Emitter) -> bool:
     emitter.emit(
         {
             "type": "hello",
@@ -669,6 +683,10 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             candidate_version,
             registered.get("local_run_id"),
             registered.get("run_id"),
+            # The engine's own setting: a reported run keeps the Evaluation's local=.
+            usage_captured=eval_usage.capture_active(
+                local=bool(run_kwargs.get("local", evaluation.local))
+            ),
         )
 
     status = _run_status(result, cancelled=cancelled)
@@ -704,6 +722,7 @@ def _run_one(evaluation: Evaluation, options: dict[str, Any], emitter: Emitter) 
             },
             "counts": _counts(result),
             "score_summary": {k: v.to_dict() for k, v in result.score_summary.items()},
+            "usage": result.usage,
             "artifact": artifact,
         }
     )
@@ -717,12 +736,13 @@ def _partial_result(
     candidate_version: str | None,
     local_run_id: str | None = None,
     run_id: str | None = None,
+    usage_captured: bool = False,
 ) -> EvalRunResult:
     """Build an incomplete EvalRunResult from the cases that finished before cancel.
 
     Reuses the ids the run registered with (``local_run_id``/``run_id``) so the partial artifact
     reconciles with the cloud run; falls back to a fresh local id only if the run was cancelled
-    before it ever registered.
+    before it ever registered. Its usage sums the finished cases when usage was captured.
     """
     data = evaluation.dataset
     if isinstance(data, DatasetSnapshot):
@@ -746,6 +766,7 @@ def _partial_result(
             dataset_version_id=version_id,
             case_count=len(collected),
         ),
+        usage=eval_usage.sum_usage(it.usage for it in collected) if usage_captured else None,
     )
 
 

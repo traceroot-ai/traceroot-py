@@ -25,6 +25,7 @@ from opentelemetry.context import Context
 from opentelemetry.trace import Status, StatusCode
 
 from traceroot.constants import SpanKind
+from traceroot.eval import usage as _usage
 from traceroot.eval.ids import new_run_id
 from traceroot.eval.results import (
     EvalItemResult,
@@ -424,12 +425,15 @@ async def _run_case(
     emitted_ownership: dict[str, set[str]] | None = None,
     dropped_results: list[str] | None = None,
     local: bool = False,
+    capture_usage: bool = False,
 ) -> EvalItemResult:
     # A local run gets a NON-EXPORTING tracer: swapping the transport alone would still ship the
     # case input/output out of the process on the per-case spans.
     tracer = _eval_tracer(local=local)
     async with semaphore:
         started = time.perf_counter()
+        # The LLM calls the task and the scorers make, read from their spans (None: not captured).
+        case_usage = _usage.CaseUsage(str(case.id), local=local) if capture_usage else None
         # ONE deadline for the whole case (task + scorers), so a hung scorer cannot outlive it.
         deadline = time.monotonic() + timeout if timeout is not None else None
         output: Any = None
@@ -471,9 +475,10 @@ async def _run_case(
                     task_span, SpanAttributes.SPAN_INPUT, serialize_value(case.input)
                 )
                 try:
-                    output = await _bounded(
-                        _await_or_run(task, (case.input,), executor=executor), deadline, timeout
-                    )
+                    with _usage.scope(case_usage, _usage.TASK):
+                        output = await _bounded(
+                            _await_or_run(task, (case.input,), executor=executor), deadline, timeout
+                        )
                     set_span_attribute(
                         task_span, SpanAttributes.SPAN_OUTPUT, serialize_value(output)
                     )
@@ -522,9 +527,12 @@ async def _run_case(
                         )
                         try:
                             s_args, s_kwargs = _bind_scorer_args(scorer, ctx)
-                            raw = await _bounded(
-                                _await_or_run(scorer, s_args, s_kwargs, executor), deadline, timeout
-                            )
+                            with _usage.scope(case_usage, _usage.SCORER):
+                                raw = await _bounded(
+                                    _await_or_run(scorer, s_args, s_kwargs, executor),
+                                    deadline,
+                                    timeout,
+                                )
                             produced = _stamp_scorer_version(
                                 _normalize_score_like(raw, name), scorer
                             )
@@ -582,6 +590,9 @@ async def _run_case(
             error=error,
             trace_id=trace_id,
             duration_ms=(time.perf_counter() - started) * 1000.0,
+            # Includes the calls a task made before it raised. A call still running now (a
+            # timed-out task) is not counted.
+            usage=case_usage.take() if case_usage is not None else None,
         )
         try:
             await _off_loop(lambda: transport.record_item_result(run, item_result))
@@ -932,6 +943,9 @@ async def _run_async_inner(
             if _next is not None:
                 _next(item, duration_ms)
 
+    # Usage is recorded only when this run can see its LLM calls; otherwise every usage is None.
+    capture_usage = _usage.capture_active(local)
+
     semaphore = asyncio.Semaphore(max_concurrency)
     # Reuse the process-wide bounded pool (not a fresh per-run one) so timed-out, uncancellable sync
     # tasks can't accumulate leaked threads across repeated evaluations.
@@ -963,6 +977,7 @@ async def _run_async_inner(
                     emitted_ownership=emitted_ownership,
                     dropped_results=dropped_results,
                     local=local,
+                    capture_usage=capture_usage,
                 )
                 for c in cases
             ]
@@ -1036,6 +1051,7 @@ async def _run_async_inner(
         # Retain the scorer -> emitted-metric ownership so an explicit result.upload() re-declares it
         # on finish_run (the same manifest this run sent below). None when nothing was emitted.
         emitted_metrics={k: sorted(v) for k, v in emitted_ownership.items()} or None,
+        usage=_usage.sum_usage(it.usage for it in results_list) if capture_usage else None,
     )
 
     # When the bar was shown (interactive), print the run's summary too — so calling evaluate() on

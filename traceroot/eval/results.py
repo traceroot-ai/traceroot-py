@@ -41,6 +41,9 @@ class EvalItemResult:
     error: str | None
     trace_id: str | None
     duration_ms: float | None = None
+    # The case's LLM usage, {"task": bucket, "scorers": bucket}, read from the LLM spans its task
+    # and scorers created. None when usage was not captured (see traceroot.eval.usage).
+    usage: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -53,6 +56,7 @@ class EvalItemResult:
             "error": self.error,
             "trace_id": self.trace_id,
             "duration_ms": self.duration_ms,
+            "usage": self.usage,
         }
 
     @classmethod
@@ -70,6 +74,7 @@ class EvalItemResult:
             error=d.get("error"),
             trace_id=d.get("trace_id"),
             duration_ms=d.get("duration_ms"),
+            usage=d.get("usage"),
         )
 
 
@@ -224,6 +229,9 @@ class EvalRunResult:
     # which metric name). Retained so an explicit upload() re-declares it on finish_run; without it a
     # re-upload omits the manifest the platform keys each emitted metric's owner on.
     emitted_metrics: dict[str, list[str]] | None = None
+    # The run's LLM usage, {"task": bucket, "scorers": bucket} summed over its cases. None when
+    # usage was not captured.
+    usage: dict[str, Any] | None = None
 
     # --- inspection ---
     @property
@@ -277,6 +285,7 @@ class EvalRunResult:
             "metadata": self.metadata,
             "scorer_specs": self.scorer_specs,
             "emitted_metrics": self.emitted_metrics,
+            "usage": self.usage,
             "upload": self.upload_state.to_dict(),
         }
 
@@ -306,6 +315,7 @@ class EvalRunResult:
             metadata=d.get("metadata"),
             scorer_specs=d.get("scorer_specs"),
             emitted_metrics=d.get("emitted_metrics"),
+            usage=d.get("usage"),
         )
 
     @classmethod
@@ -339,6 +349,7 @@ class EvalRunResult:
                     error=c.get("task_error"),
                     trace_id=c.get("trace_id"),
                     duration_ms=c.get("duration_ms"),
+                    usage=c.get("usage"),  # absent in artifacts written before usage existed
                 )
             )
         ds = d.get("dataset")
@@ -356,6 +367,7 @@ class EvalRunResult:
             # the thresholds it was scored with (older artifacts have none -> falls back to names).
             scorer_specs=d.get("scorer_specs"),
             emitted_metrics=d.get("emitted_metrics"),
+            usage=d.get("usage"),
         )
 
     def save(self, path: str) -> None:

@@ -3,6 +3,7 @@
 import atexit
 import logging
 import os
+import sys
 
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
@@ -161,9 +162,14 @@ class TracerootClient:
         self._provider: TracerProvider | None = None
         self._initialized = False
         self._instrumented: list[Integration] = []
+        # True when the client exports nothing but runs a provider for an evaluation's usage
+        # capture (see _initialize_usage_capture).
+        self._capture_only = False
 
         if self._enabled:
             self._initialize()
+        elif self._integrations and _usage_capture_armed():
+            self._initialize_usage_capture()
 
     def _initialize(self) -> None:
         """Initialize TracerProvider with span processor."""
@@ -228,6 +234,37 @@ class TracerootClient:
                 integrations=self._integrations,
             )
 
+        # An evaluation runner counting each case's LLM usage reads the same spans; adding its
+        # collector last leaves export untouched.
+        if _usage_capture_armed():
+            from traceroot.eval import usage
+
+            usage.attach(self._provider)
+
+    def _initialize_usage_capture(self) -> None:
+        """Give a disabled client a provider that exports nothing, for evaluation usage capture.
+
+        Only while an evaluation runner has armed usage capture (a local run disables export). The
+        requested integrations are instrumented against this provider as in a reported run, and
+        the eval usage collector is its only processor, so the LLM spans they create are counted
+        in-process and never leave it: there is no exporter, no API key and no network call.
+        """
+        from traceroot.eval import usage
+        from traceroot.instrumentation.registry import initialize_integrations
+
+        provider = TracerProvider()
+        # Become the global provider only when none is installed, so @observe spans (an LLM
+        # judge's own span) reach the collector too. A provider someone else installed is never
+        # joined: it may export.
+        if isinstance(trace.get_tracer_provider(), trace.ProxyTracerProvider):
+            trace.set_tracer_provider(provider)
+        self._provider = provider
+        self._capture_only = True
+        self._instrumented = initialize_integrations(
+            tracer_provider=provider, integrations=self._integrations or []
+        )
+        usage.attach(provider)
+
     @property
     def enabled(self) -> bool:
         """Check if tracing is enabled."""
@@ -250,5 +287,13 @@ class TracerootClient:
             self._span_processor = None
 
         self._provider = None
+        self._capture_only = False
         self._initialized = False
         logger.debug("traceroot client shutdown")
+
+
+def _usage_capture_armed() -> bool:
+    """Whether an evaluation runner armed LLM usage capture. Never imports the eval package:
+    if its usage module was not imported, nothing armed it."""
+    usage = sys.modules.get("traceroot.eval.usage")
+    return usage is not None and usage.is_armed()
