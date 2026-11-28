@@ -16,6 +16,7 @@ import contextlib
 import contextvars
 import dataclasses
 import inspect
+import threading
 import time
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -243,6 +244,54 @@ async def _off_loop(call: Callable[[], Any]) -> Any:
     return await loop.run_in_executor(None, lambda: ctx.run(call))
 
 
+# How long a cancelled run waits for the replies to result uploads already sent before it is
+# finalized without them. A case still computing is cancelled at once; a case whose result is
+# uploading is kept either way, because the upload can't be stopped and TraceRoot may have saved the
+# result before replying. The wait only decides whether that upload is confirmed, and lets the run
+# close after its results rather than before them. traceroot-cli kills the runner 10s after Ctrl+C:
+# the first half lets an ordinary reply arrive, and the second is left for finalizing, including
+# closing the run as incomplete (its retries back off 0.5s + 1s), writing the run file and flushing
+# spans. The TypeScript SDK's CANCEL_DRAIN_MS is the same bound.
+_CANCEL_DRAIN_S = 5.0
+
+
+def _start_upload(call: Callable[[], Any]) -> asyncio.Future:
+    """Run one BLOCKING result upload on a daemon thread; the returned future settles with it.
+
+    Not ``_off_loop``: a cancelled run stops waiting for an upload after ``_CANCEL_DRAIN_S``, but
+    ``asyncio.run`` waits for the default executor's threads when it closes the loop, and the
+    interpreter waits for any executor's threads at exit. An upload whose reply is held for the
+    whole 30s timeout would then keep the run from being saved, and the runner from exiting, past
+    the point where traceroot-cli kills it. Nothing waits for a daemon thread: an upload still
+    running at exit ends with the process, its result already counted as unconfirmed.
+    """
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+    ctx = contextvars.copy_context()
+
+    def settle(value: Any, error: BaseException | None) -> None:
+        if future.done():
+            return
+        if error is None:
+            future.set_result(value)
+        else:
+            future.set_exception(error)
+
+    def upload() -> None:
+        value: Any = None
+        error: BaseException | None = None
+        try:
+            value = ctx.run(call)
+        except BaseException as exc:
+            error = exc
+        # The loop is closed if the run was saved without waiting for this upload.
+        with contextlib.suppress(RuntimeError):
+            loop.call_soon_threadsafe(settle, value, error)
+
+    threading.Thread(target=upload, name="traceroot-eval-upload", daemon=True).start()
+    return future
+
+
 async def _bounded(coro: Any, deadline: float | None, timeout: float | None) -> Any:
     """Await ``coro`` within the case's SHARED deadline (one budget for task + scorers, so a
     hung judge cannot outlive ``timeout=``). ``deadline`` is an absolute ``time.monotonic()``
@@ -424,6 +473,7 @@ async def _run_case(
     emitted_ownership: dict[str, set[str]] | None = None,
     dropped_results: list[str] | None = None,
     local: bool = False,
+    unconfirmed_results: list[str] | None = None,
 ) -> EvalItemResult:
     # A local run gets a NON-EXPORTING tracer: swapping the transport alone would still ship the
     # case input/output out of the process on the per-case spans.
@@ -583,19 +633,40 @@ async def _run_case(
             trace_id=trace_id,
             duration_ms=(time.perf_counter() - started) * 1000.0,
         )
+
+        def upload() -> None:
+            transport.record_item_result(run, item_result)
+            transport.record_scores(run, item_result.case_id, item_result.scores)
+
+        uploading = _start_upload(upload)
+        interrupted: asyncio.CancelledError | None = None
         try:
-            await _off_loop(lambda: transport.record_item_result(run, item_result))
-            await _off_loop(
-                lambda: transport.record_scores(run, item_result.case_id, item_result.scores)
-            )
-        except Exception as exc:
-            # Reporting is best-effort; the computed result is still returned. But a dropped
-            # result must not be invisible -- it is counted onto the run's upload state, so a
-            # run that completes "uploaded" with missing results can be told from a clean one.
-            if dropped_results is not None:
-                dropped_results.append(_fmt_error(exc))
+            await asyncio.wait({uploading})
+        except asyncio.CancelledError as cancel:
+            # The run was cancelled while this result was uploading. TraceRoot may already have
+            # saved it, so the case is kept rather than dropped; its reply gets until the drain
+            # bound to arrive.
+            interrupted = cancel
+            await asyncio.wait({uploading}, timeout=_CANCEL_DRAIN_S)
+        if not uploading.done():
+            # Kept without a reply: counted as unconfirmed. When the upload settles later it only
+            # has its outcome retrieved, so the case is never reported a second time.
+            uploading.add_done_callback(_observe)
+            if unconfirmed_results is not None:
+                unconfirmed_results.append(item_result.case_id)
+        else:
+            try:
+                uploading.result()
+            except Exception as exc:
+                # Reporting is best-effort; the computed result is still returned. But a dropped
+                # result must not be invisible -- it is counted onto the run's upload state, so a
+                # run that completes "uploaded" with missing results can be told from a clean one.
+                if dropped_results is not None:
+                    dropped_results.append(_fmt_error(exc))
         if on_case_complete is not None:
             on_case_complete(item_result, item_result.duration_ms)
+        if interrupted is not None:
+            raise interrupted
         return item_result
 
 
@@ -774,6 +845,7 @@ async def _run_async_inner(
     on_case_start: Callable[[EvalCase], None] | None = None,
     on_case_complete: Callable[[EvalItemResult, float], None] | None = None,
     on_run_start: Callable[[str, str | None], None] | None = None,
+    on_run_finish: Callable[[UploadState], None] | None = None,
 ) -> EvalRunResult:
     """Core async runner body. Public entry is ``evaluate``/``Evaluation`` (evaluation.py).
 
@@ -781,6 +853,8 @@ async def _run_async_inner(
     ``local`` runs fully but reports nowhere (see the transport block below).
     ``on_case_start``/``on_case_complete`` are internal hooks the runner uses to
     stream per-case events; ``on_case_complete(item, duration_ms)``.
+    ``on_run_finish(upload_state)`` is called once the run is finalized on the platform, also
+    when it was cancelled and so returns no result.
     """
     if local and transport is not None:
         raise ValueError(_LOCAL_AND_TRANSPORT)
@@ -944,33 +1018,47 @@ async def _run_async_inner(
     # Per-case result POSTs the transport dropped (best-effort reporting), surfaced on the
     # upload state so a green run with silently-missing results is detectable.
     dropped_results: list[str] = []
+    # Results a cancelled run kept although TraceRoot hadn't acknowledged their upload (see
+    # _CANCEL_DRAIN_S), surfaced the same way: TraceRoot may or may not have them.
+    unconfirmed_results: list[str] = []
     body_error: BaseException | None = None
-    try:
-        item_results = await asyncio.gather(
-            *[
-                _run_case(
-                    c,
-                    task,
-                    scorers,
-                    semaphore,
-                    identity,
-                    active_transport,
-                    run_handle,
-                    timeout=timeout,
-                    on_case_start=case_start_hook,
-                    on_case_complete=case_complete_hook,
-                    executor=sync_executor,
-                    emitted_ownership=emitted_ownership,
-                    dropped_results=dropped_results,
-                    local=local,
-                )
-                for c in cases
-            ]
+    case_tasks = [
+        asyncio.ensure_future(
+            _run_case(
+                c,
+                task,
+                scorers,
+                semaphore,
+                identity,
+                active_transport,
+                run_handle,
+                timeout=timeout,
+                on_case_start=case_start_hook,
+                on_case_complete=case_complete_hook,
+                executor=sync_executor,
+                emitted_ownership=emitted_ownership,
+                dropped_results=dropped_results,
+                local=local,
+                unconfirmed_results=unconfirmed_results,
+            )
         )
+        for c in cases
+    ]
+    try:
+        item_results = await asyncio.gather(*case_tasks)
         results_list = list(item_results)
         summary = aggregate_scores(results_list)
     except BaseException as exc:  # remembered, then re-raised untouched
         body_error = exc
+        if isinstance(exc, asyncio.CancelledError):
+            # gather() raises as soon as one cancelled case settles, but a case cancelled while
+            # its result was uploading waits up to _CANCEL_DRAIN_S for the reply before reporting
+            # (see _run_case). Finish the run only once the cases this cancellation reached have
+            # settled, so the run is closed after their results and its counts include them.
+            # _CANCEL_GRACE_S only bounds a case whose own code ignores its cancellation.
+            reached = [t for t in case_tasks if not t.done() and t.cancelling()]
+            if reached:
+                await asyncio.wait(reached, timeout=_CANCEL_DRAIN_S + _CANCEL_GRACE_S)
         raise
     finally:
         # The shared executor is intentionally NOT shut down here — it's reused across runs so
@@ -1013,8 +1101,16 @@ async def _run_async_inner(
                 "(the run may stay 'running' on the platform)"
             )
         else:
-            if dropped_results and isinstance(upload, UploadState):
-                upload = dataclasses.replace(upload, failed_result_count=len(dropped_results))
+            if (dropped_results or unconfirmed_results) and isinstance(upload, UploadState):
+                upload = dataclasses.replace(
+                    upload,
+                    failed_result_count=len(dropped_results),
+                    unconfirmed_result_count=len(unconfirmed_results),
+                )
+            # A cancelled run returns no result, so this is how its caller gets the upload state
+            # (and the counts above) to save with the partial run.
+            if on_run_finish is not None:
+                on_run_finish(upload)
 
     result = EvalRunResult(
         name=name,

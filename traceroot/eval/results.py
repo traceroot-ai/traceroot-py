@@ -83,6 +83,9 @@ class UploadState:
     # still completes). Counted so a run that reports "uploaded" with silently-missing results
     # is detectable instead of looking green.
     failed_result_count: int = 0
+    # Results a cancelled run kept although TraceRoot hadn't acknowledged their upload when the
+    # run was saved, so TraceRoot may or may not have them.
+    unconfirmed_result_count: int = 0
 
     @property
     def partial(self) -> bool:
@@ -94,7 +97,16 @@ class UploadState:
             "status": self.status,
             "dashboard_url": self.dashboard_url,
             "failed_result_count": self.failed_result_count,
+            "unconfirmed_result_count": self.unconfirmed_result_count,
         }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None) -> UploadState:
+        """Read an ``upload`` block back, taking only this class's own fields: an older run file
+        lacks the newer counts, and one written by a newer SDK may carry keys this one doesn't
+        know. Neither may fail the load."""
+        known = {f.name for f in dataclasses.fields(cls)}
+        return cls(**{k: v for k, v in (d or {}).items() if k in known})
 
 
 @dataclasses.dataclass
@@ -298,7 +310,7 @@ class EvalRunResult:
             name=d["name"],
             item_results=[EvalItemResult.from_dict(it) for it in d.get("item_results", [])],
             score_summary={k: ScoreSummary(**v) for k, v in d.get("score_summary", {}).items()},
-            upload_state=UploadState(**d.get("upload", {})),
+            upload_state=UploadState.from_dict(d.get("upload")),
             local_run_id=d.get("local_run_id", ""),
             candidate_version=d.get("candidate_version"),
             dataset=RunDatasetRef(**ds) if ds else None,
@@ -346,7 +358,7 @@ class EvalRunResult:
             name=d.get("evaluation_name") or d.get("name", ""),
             item_results=items,
             score_summary={k: ScoreSummary(**v) for k, v in d.get("scores", {}).items()},
-            upload_state=UploadState(**d.get("upload", {})),
+            upload_state=UploadState.from_dict(d.get("upload")),
             local_run_id=d.get("local_run_id", ""),
             candidate_version=d.get("candidate_version"),
             dataset=RunDatasetRef(**ds) if ds else None,
